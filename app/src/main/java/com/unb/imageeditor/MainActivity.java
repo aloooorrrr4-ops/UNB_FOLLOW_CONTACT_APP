@@ -12,7 +12,6 @@ import android.provider.MediaStore;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
-import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
@@ -29,11 +28,13 @@ import java.util.UUID;
 
 public class MainActivity extends Activity {
     private static final int PICK_IMAGE = 1001;
+    private static final String SERVER_BASE = "http://91.98.126.167:18081";
 
     private ImageView preview;
-    private EditText serverUrl;
     private TextView status;
     private ProgressBar progress;
+    private Button removeButton;
+    private Button saveButton;
     private Uri selectedUri;
     private byte[] resultPng;
 
@@ -57,7 +58,7 @@ public class MainActivity extends Activity {
         root.addView(title);
 
         TextView subtitle = new TextView(this);
-        subtitle.setText("الهدف الأول: اكتشاف الخلفية وإزالتها");
+        subtitle.setText("اكتشاف الخلفية وإزالتها");
         subtitle.setTextSize(16);
         subtitle.setGravity(Gravity.CENTER);
         subtitle.setPadding(0, 0, 0, dp(16));
@@ -75,20 +76,14 @@ public class MainActivity extends Activity {
         pick.setText("اختيار صورة");
         root.addView(pick);
 
-        serverUrl = new EditText(this);
-        serverUrl.setHint("رابط السيرفر، مثال: http://192.168.1.10:8000");
-        serverUrl.setSingleLine(true);
-        serverUrl.setText("http://10.0.2.2:8000");
-        root.addView(serverUrl);
+        removeButton = new Button(this);
+        removeButton.setText("اكتشاف وإزالة الخلفية");
+        root.addView(removeButton);
 
-        Button remove = new Button(this);
-        remove.setText("اكتشاف وإزالة الخلفية");
-        root.addView(remove);
-
-        Button save = new Button(this);
-        save.setText("حفظ PNG");
-        save.setEnabled(false);
-        root.addView(save);
+        saveButton = new Button(this);
+        saveButton.setText("حفظ PNG");
+        saveButton.setEnabled(false);
+        root.addView(saveButton);
 
         progress = new ProgressBar(this);
         progress.setVisibility(View.GONE);
@@ -97,20 +92,20 @@ public class MainActivity extends Activity {
         root.addView(progress, p);
 
         status = new TextView(this);
-        status.setText("اختر صورة للبدء");
+        status.setText("جاهز — اختر صورة للبدء");
         status.setGravity(Gravity.CENTER);
         status.setPadding(0, dp(8), 0, dp(8));
         root.addView(status);
 
         pick.setOnClickListener(v -> chooseImage());
-        remove.setOnClickListener(v -> {
+        removeButton.setOnClickListener(v -> {
             if (selectedUri == null) {
                 Toast.makeText(this, "اختر صورة أولاً", Toast.LENGTH_SHORT).show();
                 return;
             }
-            processImage(save);
+            processImage();
         });
-        save.setOnClickListener(v -> saveResult());
+        saveButton.setOnClickListener(v -> saveResult());
 
         setContentView(scroll);
     }
@@ -128,32 +123,33 @@ public class MainActivity extends Activity {
         if (requestCode == PICK_IMAGE && resultCode == RESULT_OK && data != null) {
             selectedUri = data.getData();
             resultPng = null;
+            saveButton.setEnabled(false);
             preview.setImageURI(selectedUri);
             status.setText("الصورة جاهزة");
         }
     }
 
-    private void processImage(Button saveButton) {
-        String base = serverUrl.getText().toString().trim();
-        if (base.endsWith("/")) base = base.substring(0, base.length() - 1);
-        String endpoint = base + "/api/background/cutout";
+    private void processImage() {
+        final String endpoint = SERVER_BASE + "/api/background/cutout";
 
         progress.setVisibility(View.VISIBLE);
         status.setText("جاري اكتشاف الخلفية...");
+        removeButton.setEnabled(false);
         saveButton.setEnabled(false);
 
-        final String url = endpoint;
         new Thread(() -> {
+            HttpURLConnection c = null;
             try {
                 byte[] image = readAll(getContentResolver().openInputStream(selectedUri));
                 String boundary = "----UNB" + UUID.randomUUID();
 
-                HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
-                c.setConnectTimeout(30000);
+                c = (HttpURLConnection) new URL(endpoint).openConnection();
+                c.setConnectTimeout(12000);
                 c.setReadTimeout(120000);
                 c.setDoOutput(true);
                 c.setRequestMethod("POST");
                 c.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
+                c.setRequestProperty("Connection", "close");
 
                 try (OutputStream out = c.getOutputStream()) {
                     String head = "--" + boundary + "\r\n" +
@@ -166,7 +162,7 @@ public class MainActivity extends Activity {
 
                 int code = c.getResponseCode();
                 if (code < 200 || code >= 300) {
-                    throw new Exception("HTTP " + code);
+                    throw new Exception("خطأ من الخادم: HTTP " + code);
                 }
 
                 byte[] result = readAll(c.getInputStream());
@@ -177,15 +173,20 @@ public class MainActivity extends Activity {
                 runOnUiThread(() -> {
                     preview.setImageBitmap(bmp);
                     progress.setVisibility(View.GONE);
-                    status.setText("تمت إزالة الخلفية");
+                    status.setText("تمت إزالة الخلفية بنجاح");
+                    removeButton.setEnabled(true);
                     saveButton.setEnabled(true);
                 });
             } catch (Exception e) {
+                final String message = e.getMessage() == null ? "تعذر الاتصال بالخادم" : e.getMessage();
                 runOnUiThread(() -> {
                     progress.setVisibility(View.GONE);
-                    status.setText("فشل: " + e.getMessage());
+                    removeButton.setEnabled(true);
+                    status.setText("فشل: " + message);
                     Toast.makeText(this, "تعذر معالجة الصورة", Toast.LENGTH_LONG).show();
                 });
+            } finally {
+                if (c != null) c.disconnect();
             }
         }).start();
     }
