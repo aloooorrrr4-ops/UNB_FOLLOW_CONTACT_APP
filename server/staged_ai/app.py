@@ -513,18 +513,11 @@ def detect_ocr_blocks_easyocr_guarded(img: Image.Image, timeout_seconds: int = 4
     return blocks
 
 def detect_ocr_blocks(img: Image.Image):
-    try:
-        print("EasyOCR isolated worker starting...", flush=True)
-        blocks = detect_ocr_blocks_easyocr_guarded(img, timeout_seconds=45)
-        print(f"EasyOCR isolated worker finished: {len(blocks)} blocks", flush=True)
-        if blocks:
-            return blocks
-    except Exception as e:
-        print("EasyOCR unavailable; falling back to Tesseract:", repr(e), flush=True)
-
-    print("Tesseract fallback started.", flush=True)
+    # Stable mode: EasyOCR/PyTorch repeatedly stalls on this 2-vCPU server.
+    # Use Tesseract immediately so the Android app always gets a response.
+    print("OCR stable mode: Tesseract started.", flush=True)
     blocks = detect_ocr_blocks_tesseract(img)
-    print(f"Tesseract fallback finished: {len(blocks)} blocks", flush=True)
+    print(f"OCR stable mode: Tesseract finished: {len(blocks)} blocks", flush=True)
     return blocks
 
 def parse_hex_color(value: str):
@@ -894,11 +887,11 @@ def health():
         "service": "UNB Staged AI Editor",
         "stages": 4,
         "features": ["cutout", "inpaint", "composite", "ocr_detect", "ocr_replace"],
-        "ocr_engine": "EasyOCR isolated (45s timeout) + Tesseract fallback",
+        "ocr_engine": "Tesseract Arabic+English stable mode",
         "arabic_render": "RAQM + character-count sizing + box-safe RTL anchoring",
         "same_text_mode": "preserve-original-pixels",
         "background_cleanup": "smooth-plane + Telea fallback",
-        "nonblocking_jobs": "except_easyocr",
+        "nonblocking_jobs": True,
         "lazy_ai_imports": True
     }
 
