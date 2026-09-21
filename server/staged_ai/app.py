@@ -1214,6 +1214,32 @@ def _source_render_style(img: Image.Image, x: int, y: int, w: int, h: int,
     if not font_path:
         font_path = pick_font(font_weight == "bold", True)
 
+    # Preserve the visual gap to the nearest same-line neighbor. For Arabic,
+    # anchoring only to the old right edge makes a shorter replacement leave a
+    # visibly large empty gap before the next word.
+    anchor_mode = "right"
+    nearest_gap = None
+    for sample in samples:
+        if sample.get("is_target"):
+            continue
+        b = sample.get("bbox") or {}
+        bx = int(b.get("x", 0))
+        bw = int(b.get("w", 0))
+
+        # Neighbor entirely on the left side of the selected word.
+        if bx + bw <= x:
+            gap = x - (bx + bw)
+            if nearest_gap is None or gap < nearest_gap:
+                nearest_gap = gap
+                anchor_mode = "left"
+
+        # Neighbor entirely on the right side.
+        elif bx >= x + w:
+            gap = bx - (x + w)
+            if nearest_gap is None or gap < nearest_gap:
+                nearest_gap = gap
+                anchor_mode = "right"
+
     # Source softness is measured locally; don't wash text out with low alpha.
     arr = np.array(img.convert("RGB"))
     x1, y1 = max(0, x), max(0, y)
@@ -1245,6 +1271,8 @@ def _source_render_style(img: Image.Image, x: int, y: int, w: int, h: int,
         "target_stroke": target_stroke,
         "baseline_bottom": baseline_bottom,
         "reference_count": reference_count,
+        "anchor_mode": anchor_mode,
+        "nearest_gap": nearest_gap,
     }
 
 
@@ -1252,6 +1280,43 @@ def erase_text_area(img: Image.Image, x: int, y: int, w: int, h: int):
     rgb = np.array(img.convert("RGB"))
     H, W = rgb.shape[:2]
 
+    # A tiny padded rectangle contains the complete old word including
+    # anti-aliased gray fringes that glyph-threshold masks can miss.
+    pad_x = max(2, int(round(w * 0.018)))
+    pad_y = max(2, int(round(h * 0.065)))
+    rx1 = max(0, x - pad_x)
+    ry1 = max(0, y - pad_y)
+    rx2 = min(W, x + w + pad_x)
+    ry2 = min(H, y + h + pad_y)
+
+    # Smooth scanned-card backgrounds are better reconstructed as a local
+    # color plane over the whole old-word footprint. This removes ghost
+    # remnants without the dirty Telea halo.
+    fill, residual = _smooth_background_fill(rgb, rx1, ry1, rx2, ry2)
+    if fill is not None and residual <= 30.0:
+        restored = rgb.copy()
+        restored[ry1:ry2, rx1:rx2] = fill
+
+        # Feather only the outer border; keep the interior fully replaced so no
+        # traces of the previous letters survive.
+        mask = np.zeros((H, W), dtype=np.uint8)
+        cv2.rectangle(mask, (rx1, ry1), (rx2 - 1, ry2 - 1), 255, -1)
+
+        # Erode before blur so the interior stays at alpha=1.
+        edge = max(1, min(4, int(round(min(w, h) * 0.05))))
+        k = np.ones((edge * 2 + 1, edge * 2 + 1), np.uint8)
+        core = cv2.erode(mask, k, iterations=1)
+        soft = cv2.GaussianBlur(mask, (0, 0), sigmaX=max(0.8, edge * 0.8))
+        soft = np.maximum(core, soft).astype(np.float32) / 255.0
+        soft = soft[..., None]
+
+        out = (
+            restored.astype(np.float32) * soft +
+            rgb.astype(np.float32) * (1.0 - soft)
+        ).clip(0, 255).astype(np.uint8)
+        return Image.fromarray(out)
+
+    # Textured/complex background fallback: erase only the detected glyphs.
     local_mask, bounds, glyph = _tight_word_mask(img, x, y, w, h)
     if local_mask is None or bounds is None:
         return img.copy()
@@ -1260,10 +1325,8 @@ def erase_text_area(img: Image.Image, x: int, y: int, w: int, h: int):
     if x2 <= x1 or y2 <= y1:
         return img.copy()
 
-    # Erase only actual glyph strokes. This avoids the dirty rectangular patch
-    # around the replaced word and protects neighboring words/background detail.
     glyph_mask = np.where(local_mask > 0, 255, 0).astype(np.uint8)
-    dilate_px = max(1, int(round(max(1, min(w, h)) * 0.055)))
+    dilate_px = max(1, int(round(max(1, min(w, h)) * 0.075)))
     kernel = np.ones((dilate_px * 2 + 1, dilate_px * 2 + 1), np.uint8)
     glyph_mask = cv2.dilate(glyph_mask, kernel, iterations=1)
 
@@ -1273,22 +1336,6 @@ def erase_text_area(img: Image.Image, x: int, y: int, w: int, h: int):
     bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
     restored_bgr = cv2.inpaint(bgr, full_mask, 2, cv2.INPAINT_TELEA)
     restored = cv2.cvtColor(restored_bgr, cv2.COLOR_BGR2RGB)
-
-    # For smooth document backgrounds, blend in a locally fitted plane only
-    # under the glyph mask. It removes the gray halo without flattening the
-    # whole word rectangle.
-    fill, residual = _smooth_background_fill(rgb, x1, y1, x2, y2)
-    if fill is not None and residual <= 24.0:
-        plane = restored.copy()
-        plane[y1:y2, x1:x2] = fill
-
-        soft = cv2.GaussianBlur(full_mask, (0, 0), sigmaX=0.8).astype(np.float32) / 255.0
-        soft = soft[..., None]
-        restored = (
-            plane.astype(np.float32) * soft +
-            restored.astype(np.float32) * (1.0 - soft)
-        ).clip(0, 255).astype(np.uint8)
-
     return Image.fromarray(restored)
 
 
@@ -1362,10 +1409,19 @@ def draw_replacement(
         source_left = x
         source_bottom = y + h
 
+    anchor_mode = style.get("anchor_mode", "right")
     if direction == "rtl" or is_ar:
-        paste_x = source_right - target_w
+        if anchor_mode == "left":
+            # Keep the original gap to the word on the left. A shorter Arabic
+            # replacement then grows toward the right instead of opening a gap.
+            paste_x = source_left
+        else:
+            paste_x = source_right - target_w
     else:
-        paste_x = source_left
+        if anchor_mode == "right":
+            paste_x = source_right - target_w
+        else:
+            paste_x = source_left
 
     # Bottom alignment approximates a shared Arabic baseline much better than
     # top alignment when the replacement contains different ascenders/descenders.
@@ -1441,8 +1497,8 @@ def health():
         "arabic_render": "RAQM + character-count sizing + box-safe RTL anchoring",
         "same_text_mode": "preserve-original-pixels",
         "background_cleanup": "glyph-mask inpaint + local-plane blend",
-        "text_render": "same-line multiword font calibration + width/stroke/color/baseline transfer",
-        "style_match_version": 3,
+        "text_render": "same-line calibration + neighbor-gap anchor + full-footprint background reconstruction",
+        "style_match_version": 4,
         "nonblocking_jobs": True,
         "lazy_ai_imports": True,
         "ocr_selection": "word-level boxes",
