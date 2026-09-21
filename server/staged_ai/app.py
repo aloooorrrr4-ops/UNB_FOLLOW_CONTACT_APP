@@ -736,11 +736,11 @@ def _tight_word_mask(img: Image.Image, x: int, y: int, w: int, h: int):
     threshold = max(10.0, min(p88 * 0.72, max(14.0, p70)))
 
     mask = np.where(diff >= threshold, 255, 0).astype(np.uint8)
-    mask = cv2.medianBlur(mask, 3)
 
-    # Remove isolated speckles without thickening the actual glyphs.
+    # Preserve Arabic dots/diacritics. A morphology-open here can delete dots
+    # such as ب/ت/ث/ن/ي, so only close tiny gaps and leave small components.
     kernel = np.ones((2, 2), np.uint8)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
 
     ys, xs = np.where(mask > 0)
     if len(xs) < 4:
