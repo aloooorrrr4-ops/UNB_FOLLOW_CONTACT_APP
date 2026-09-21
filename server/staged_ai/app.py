@@ -915,6 +915,7 @@ def _match_source_font(img: Image.Image, x: int, y: int, w: int, h: int,
 
 def _source_render_style(img: Image.Image, x: int, y: int, w: int, h: int,
                          original_text: str, font_weight: str):
+    # Match font using the actual source word silhouette.
     font_path, font_size, glyph, font_score = _match_source_font(
         img, x, y, w, h, original_text, font_weight
     )
@@ -929,27 +930,50 @@ def _source_render_style(img: Image.Image, x: int, y: int, w: int, h: int,
     y2 = min(H, y + h)
     roi = arr[y1:y2, x1:x2]
 
+    # Start almost sharp. The source examples are soft because the whole image
+    # is soft; excessive alpha reduction made replacement words look washed out.
     blur_radius = 0.18
     opacity = 255
+    stroke_px = 0.0
+    ink_density = 0.0
+
+    mask, _, tight = _tight_word_mask(img, x, y, w, h)
+    if mask is not None and tight is not None:
+        local = mask[
+            tight["local_y"]:tight["local_y"] + tight["local_h"],
+            tight["local_x"]:tight["local_x"] + tight["local_w"]
+        ]
+        if local.size:
+            binary = np.where(local > 0, 255, 0).astype(np.uint8)
+            ink_density = float(np.mean(binary > 0))
+            dist = cv2.distanceTransform(binary, cv2.DIST_L2, 5)
+            vals = dist[dist > 0]
+            if vals.size:
+                # Median half-stroke thickness in source raster.
+                stroke_px = float(np.median(vals))
 
     if roi.size:
         gray = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
         sharpness = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+        if sharpness < 18:
+            blur_radius = 0.45
+        elif sharpness < 35:
+            blur_radius = 0.32
+        elif sharpness < 70:
+            blur_radius = 0.22
 
-        # Preserve the source softness, but cap blur so the replacement does
-        # not become thin/pale compared with neighboring printed names.
-        if sharpness < 20:
-            blur_radius = 0.48
-        elif sharpness < 45:
-            blur_radius = 0.34
-        elif sharpness < 90:
-            blur_radius = 0.24
-        else:
-            blur_radius = 0.12
+    # If the source glyph itself is visibly heavy, prefer bold rendering.
+    effective_weight = detected_weight or font_weight
+    if stroke_px >= 1.35 or ink_density >= 0.34:
+        effective_weight = "bold"
 
-        # Always use full alpha. The sampled source color already carries the
-        # document's gray/black tone; reducing alpha was washing text out.
-        opacity = 255
+    # Re-run font matching with the effective weight only when it changed.
+    if effective_weight != font_weight:
+        p2, s2, g2, score2 = _match_source_font(
+            img, x, y, w, h, original_text, effective_weight
+        )
+        if p2:
+            font_path, font_size, glyph, font_score = p2, s2, g2, score2
 
     return {
         "font_path": font_path,
@@ -958,9 +982,11 @@ def _source_render_style(img: Image.Image, x: int, y: int, w: int, h: int,
         "font_score": font_score,
         "text_color": text_color,
         "bg_color": bg_color,
-        "font_weight": detected_weight or font_weight,
+        "font_weight": effective_weight,
         "blur_radius": blur_radius,
         "opacity": opacity,
+        "stroke_px": round(stroke_px, 3),
+        "ink_density": round(ink_density, 4),
     }
 
 
@@ -1089,6 +1115,9 @@ def draw_replacement(
     # available as fallback if source analysis did not succeed.
     color_hex = style.get("text_color") or text_color
     color = parse_hex_color(color_hex)
+    # Compensate very slightly for blur/antialiasing so perceived darkness
+    # remains close to the source word instead of turning gray.
+    color = tuple(max(0, int(v) - 6) for v in color)
     opacity = int(style.get("opacity", 255))
 
     rgba = Image.new("RGBA", (target_w, target_h), (*color, 0))
