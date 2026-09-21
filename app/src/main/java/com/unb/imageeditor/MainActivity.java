@@ -13,6 +13,7 @@ import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
 import android.widget.ImageView;
+import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
@@ -29,7 +30,9 @@ import java.util.UUID;
 public class MainActivity extends Activity {
     private static final int PICK_FIRST = 1001;
     private static final int PICK_SECOND = 1002;
-    private static final String SERVER_BASE = "http://91.98.126.167:18083";
+    private static final String DEFAULT_SERVER_BASE = "http://91.98.126.167:18083";
+    private static final String PREFS = "unb_image_editor_settings";
+    private static final String KEY_SERVER = "server_base";
 
     private Uri firstUri;
     private Uri secondUri;
@@ -56,6 +59,8 @@ public class MainActivity extends Activity {
 
     private ProgressBar progress;
     private TextView status;
+    private EditText serverInput;
+    private String serverBase;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -71,8 +76,25 @@ public class MainActivity extends Activity {
         root.addView(title);
 
         TextView subtitle = title("قص الشخص + استعادة الخلفية + تركيب شخص جديد", 16);
-        subtitle.setPadding(0, dp(4), 0, dp(16));
+        subtitle.setPadding(0, dp(4), 0, dp(10));
         root.addView(subtitle);
+
+        serverBase = getSharedPreferences(PREFS, MODE_PRIVATE)
+                .getString(KEY_SERVER, DEFAULT_SERVER_BASE);
+
+        root.addView(sectionTitle("رابط خادم AI"));
+
+        serverInput = new EditText(this);
+        serverInput.setSingleLine(true);
+        serverInput.setText(serverBase);
+        serverInput.setHint("http://SERVER:PORT");
+        root.addView(serverInput);
+
+        Button saveServer = new Button(this);
+        saveServer.setText("حفظ رابط الخادم");
+        root.addView(saveServer);
+
+        saveServer.setOnClickListener(v -> saveServerAddress());
 
         root.addView(sectionTitle("الصورة الأولى"));
         firstPreview = imageBox(260);
@@ -169,6 +191,29 @@ public class MainActivity extends Activity {
                 saveBytes(stage4Jpg, "UNB_stage4_final_", "image/jpeg", ".jpg"));
 
         setContentView(scroll);
+    }
+
+    private void saveServerAddress() {
+        String value = serverInput.getText().toString().trim();
+
+        while (value.endsWith("/")) {
+            value = value.substring(0, value.length() - 1);
+        }
+
+        if (!(value.startsWith("http://") || value.startsWith("https://"))) {
+            Toast.makeText(this, "الرابط يجب أن يبدأ بـ http:// أو https://", Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        serverBase = value;
+
+        getSharedPreferences(PREFS, MODE_PRIVATE)
+                .edit()
+                .putString(KEY_SERVER, serverBase)
+                .apply();
+
+        status.setText("تم حفظ الخادم: " + serverBase);
+        Toast.makeText(this, "تم حفظ رابط الخادم", Toast.LENGTH_SHORT).show();
     }
 
     private TextView title(String text, int size) {
@@ -284,7 +329,7 @@ public class MainActivity extends Activity {
             try {
                 byte[] first = readAll(getContentResolver().openInputStream(firstUri));
                 byte[] result = postMultipart(
-                        SERVER_BASE + "/api/stage1/cut-first",
+                        serverBase + "/api/stage1/cut-first",
                         new Part("file", "first.jpg", "image/jpeg", first)
                 );
 
@@ -311,7 +356,7 @@ public class MainActivity extends Activity {
             try {
                 byte[] first = readAll(getContentResolver().openInputStream(firstUri));
                 byte[] result = postMultipart(
-                        SERVER_BASE + "/api/stage2/restore-background",
+                        serverBase + "/api/stage2/restore-background",
                         new Part("file", "first.jpg", "image/jpeg", first)
                 );
 
@@ -339,7 +384,7 @@ public class MainActivity extends Activity {
             try {
                 byte[] second = readAll(getContentResolver().openInputStream(secondUri));
                 byte[] result = postMultipart(
-                        SERVER_BASE + "/api/stage3/cut-second",
+                        serverBase + "/api/stage3/cut-second",
                         new Part("file", "second.jpg", "image/jpeg", second)
                 );
 
@@ -368,7 +413,7 @@ public class MainActivity extends Activity {
                 byte[] first = readAll(getContentResolver().openInputStream(firstUri));
 
                 byte[] result = postMultipart(
-                        SERVER_BASE + "/api/stage4/composite",
+                        serverBase + "/api/stage4/composite",
                         new Part("target", "first.jpg", "image/jpeg", first),
                         new Part("background", "background.jpg", "image/jpeg", stage2Jpg),
                         new Part("subject", "subject.png", "image/png", stage3Png)
