@@ -23,45 +23,13 @@ _lama = None
 _easy_ocr = None
 
 def get_session():
-    global _session
-    if _session is None:
-        from rembg import new_session
-        _session = new_session("u2net_human_seg")
-    return _session
+    raise RuntimeError("Person cutout is disabled in OCR Lite mode")
 
 def get_lama():
-    global _lama
-    if _lama is None:
-        from simple_lama_inpainting import SimpleLama
-        _lama = SimpleLama()
-    return _lama
+    raise RuntimeError("Background inpainting is disabled in OCR Lite mode")
 
 def get_easy_ocr():
-    global _easy_ocr
-    if _easy_ocr is None:
-        import torch
-        import easyocr
-
-        # Keep PyTorch predictable on the small CPU server. EasyOCR's default
-        # dynamic quantization was stalling inside the quantized RNN path.
-        torch.set_num_threads(2)
-        try:
-            torch.set_num_interop_threads(1)
-        except RuntimeError:
-            pass
-
-        print("EasyOCR reader loading (CPU, quantize=False)...", flush=True)
-        _easy_ocr = easyocr.Reader(
-            ["ar", "en"],
-            gpu=False,
-            quantize=False,
-            model_storage_directory="/root/.EasyOCR/model",
-            user_network_directory="/root/.EasyOCR/user_network",
-            download_enabled=True,
-            verbose=False
-        )
-        print("EasyOCR reader ready.", flush=True)
-    return _easy_ocr
+    raise RuntimeError("EasyOCR is disabled in OCR Lite mode")
 
 def ensure_image(data: bytes) -> Image.Image:
     if not data:
@@ -1155,123 +1123,34 @@ def health():
         "ok": True,
         "service": "UNB Staged AI Editor",
         "stages": 4,
-        "features": ["cutout", "inpaint", "composite", "ocr_detect", "ocr_replace"],
-        "ocr_engine": "Tesseract Arabic+English word-level stable mode",
+        "features": ["ocr_detect", "ocr_replace"],
+        "ocr_engine": "Tesseract Arabic+English word-level lite mode",
         "arabic_render": "RAQM + character-count sizing + box-safe RTL anchoring",
         "same_text_mode": "preserve-original-pixels",
         "background_cleanup": "glyph-mask inpaint + local-plane blend",
         "text_render": "source font-shape match + real glyph anchor + adaptive blur",
         "nonblocking_jobs": True,
         "lazy_ai_imports": True,
-        "ocr_selection": "word-level boxes"
+        "ocr_selection": "word-level boxes",
+        "server_mode": "ocr-lite",
+        "heavy_ai_models": false
     }
 
 @app.post("/api/stage1/cut-first")
-async def stage1(file: UploadFile = File(...)):
-    data = await file.read()
-    try:
-        result = await asyncio.to_thread(cutout_bytes, data)
-        return Response(result, media_type="image/png", headers={"Cache-Control": "no-store"})
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(500, str(e))
+async def stage1():
+    raise HTTPException(503, "هذه النسخة مخصصة لتحرير النصوص فقط")
 
 @app.post("/api/stage2/restore-background")
-async def stage2(
-    file: UploadFile = File(...),
-    cutout: UploadFile | None = File(None)
-):
-    data = await file.read()
-    try:
-        original = ensure_image(data)
-
-        if cutout is not None:
-            cutout_data = await cutout.read()
-            mask = mask_from_cutout(cutout_data)
-        else:
-            mask = mask_image(data)
-
-        restored = await asyncio.to_thread(run_lama, original, mask)
-        return Response(jpg_bytes(restored), media_type="image/jpeg", headers={"Cache-Control": "no-store"})
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(500, str(e))
-    finally:
-        gc.collect()
+async def stage2():
+    raise HTTPException(503, "هذه النسخة مخصصة لتحرير النصوص فقط")
 
 @app.post("/api/stage3/cut-second")
-async def stage3(file: UploadFile = File(...)):
-    data = await file.read()
-    try:
-        result = await asyncio.to_thread(cutout_bytes, data)
-        return Response(result, media_type="image/png", headers={"Cache-Control": "no-store"})
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(500, str(e))
+async def stage3():
+    raise HTTPException(503, "هذه النسخة مخصصة لتحرير النصوص فقط")
 
 @app.post("/api/stage4/composite")
-async def stage4(
-    target: UploadFile = File(...),
-    background: UploadFile = File(...),
-    subject: UploadFile = File(...),
-    target_cutout: UploadFile | None = File(None)
-):
-    target_data = await target.read()
-    bg_data = await background.read()
-    subject_data = await subject.read()
-    target_cutout_data = await target_cutout.read() if target_cutout is not None else None
-
-    try:
-        target_img = ensure_image(target_data)
-        target_mask = mask_from_cutout(target_cutout_data) if target_cutout_data else mask_image(target_data)
-        box = bbox_from_mask(target_mask)
-        if box is None:
-            raise HTTPException(422, "لم يتم العثور على الشخص في الصورة الأولى")
-
-        background_img = ensure_image(bg_data)
-        if background_img.size != target_img.size:
-            background_img = background_img.resize(target_img.size, Image.Resampling.LANCZOS)
-
-        try:
-            subject_img = Image.open(BytesIO(subject_data)).convert("RGBA")
-        except Exception:
-            raise HTTPException(400, "تعذر قراءة قصاصة الصورة الثانية")
-
-        alpha = subject_img.getchannel("A")
-        sb = alpha.getbbox()
-        if sb is None:
-            raise HTTPException(422, "قصاصة الصورة الثانية فارغة")
-        subject_img = subject_img.crop(sb)
-
-        x1, y1, x2, y2 = box
-        target_w = max(1, x2 - x1)
-        target_h = max(1, y2 - y1)
-
-        sw, sh = subject_img.size
-        scale = min(target_w / sw, target_h / sh) * 0.98
-        nw = max(1, int(sw * scale))
-        nh = max(1, int(sh * scale))
-        subject_img = subject_img.resize((nw, nh), Image.Resampling.LANCZOS)
-
-        center_x = (x1 + x2) // 2
-        px = int(center_x - nw / 2)
-        py = int(y2 - nh)
-
-        px = max(0, min(background_img.width - nw, px))
-        py = max(0, min(background_img.height - nh, py))
-
-        canvas = background_img.convert("RGBA")
-        canvas.alpha_composite(subject_img, (px, py))
-        final = canvas.convert("RGB")
-
-        return Response(jpg_bytes(final), media_type="image/jpeg", headers={"Cache-Control": "no-store"})
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(500, str(e))
+async def stage4():
+    raise HTTPException(503, "هذه النسخة مخصصة لتحرير النصوص فقط")
 
 @app.post("/api/ocr/detect")
 async def ocr_detect(image: UploadFile = File(...)):
