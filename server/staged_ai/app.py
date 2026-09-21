@@ -176,8 +176,9 @@ def rgb_to_hex(rgb):
     )
 
 def color_info(img: Image.Image, x: int, y: int, w: int, h: int):
-    arr = np.array(img)
+    arr = np.array(img).astype(np.float32)
     H, W = arr.shape[:2]
+
     x1 = max(0, x)
     y1 = max(0, y)
     x2 = min(W, x + w)
@@ -187,55 +188,55 @@ def color_info(img: Image.Image, x: int, y: int, w: int, h: int):
     if roi.size == 0:
         return "#000000", "#FFFFFF", "normal"
 
-    pixels = roi.reshape(-1, 3).astype(np.float32)
+    # Estimate background from a thin ring around the detected text box.
+    pad = max(2, int(round(min(max(1, w), max(1, h)) * 0.12)))
+    rx1 = max(0, x1 - pad)
+    ry1 = max(0, y1 - pad)
+    rx2 = min(W, x2 + pad)
+    ry2 = min(H, y2 + pad)
 
-    # Use 3 color clusters: the dominant cluster is usually the local background,
-    # while the cluster farthest from it is normally the text color.
-    if len(pixels) > 5000:
-        step = max(1, len(pixels) // 5000)
-        sample = pixels[::step]
+    outer = arr[ry1:ry2, rx1:rx2]
+    ring_parts = []
+
+    if y1 > ry1:
+        ring_parts.append(arr[ry1:y1, rx1:rx2].reshape(-1, 3))
+    if ry2 > y2:
+        ring_parts.append(arr[y2:ry2, rx1:rx2].reshape(-1, 3))
+    if x1 > rx1:
+        ring_parts.append(arr[y1:y2, rx1:x1].reshape(-1, 3))
+    if rx2 > x2:
+        ring_parts.append(arr[y1:y2, x2:rx2].reshape(-1, 3))
+
+    ring_parts = [p for p in ring_parts if p.size > 0]
+
+    if ring_parts:
+        border = np.concatenate(ring_parts, axis=0)
+        bg = np.median(border, axis=0)
     else:
-        sample = pixels
+        bg = np.median(roi.reshape(-1, 3), axis=0)
 
-    if len(sample) < 8:
-        bg = np.median(sample, axis=0)
+    pixels = roi.reshape(-1, 3)
+    dist = np.linalg.norm(pixels - bg, axis=1)
+
+    if len(dist) < 8 or float(np.max(dist)) < 8:
         fg = np.array([0, 0, 0], dtype=np.float32)
-        return rgb_to_hex(fg), rgb_to_hex(bg), "normal"
+        density = 0.0
+    else:
+        # Keep only the strongest-contrast pixels; these are normally the
+        # interior of the glyphs rather than anti-aliased edges/background.
+        q = float(np.percentile(dist, 88))
+        threshold = max(12.0, q)
+        selected = pixels[dist >= threshold]
 
-    try:
-        criteria = (
-            cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER,
-            30,
-            0.5
-        )
-        compactness, labels, centers = cv2.kmeans(
-            sample,
-            3,
-            None,
-            criteria,
-            4,
-            cv2.KMEANS_PP_CENTERS
-        )
-        labels = labels.reshape(-1)
-        counts = np.bincount(labels, minlength=len(centers))
-        bg_idx = int(np.argmax(counts))
-        bg = centers[bg_idx]
+        if len(selected) < 4:
+            order = np.argsort(dist)
+            selected = pixels[order[-max(4, len(order) // 12):]]
 
-        distances = np.linalg.norm(centers - bg, axis=1)
-        distances[bg_idx] = -1
-        fg_idx = int(np.argmax(distances))
-        fg = centers[fg_idx]
+        fg = np.median(selected, axis=0)
+        density = float(len(selected)) / max(1.0, float(len(pixels)))
 
-        fg_density = float(counts[fg_idx]) / max(1.0, float(counts.sum()))
-        weight = "bold" if fg_density > 0.22 else "normal"
-        return rgb_to_hex(fg), rgb_to_hex(bg), weight
-
-    except Exception:
-        bg = np.median(sample, axis=0)
-        dist = np.linalg.norm(sample - bg, axis=1)
-        selected = sample[dist >= np.percentile(dist, 85)]
-        fg = np.median(selected, axis=0) if len(selected) else np.array([0, 0, 0])
-        return rgb_to_hex(fg), rgb_to_hex(bg), "normal"
+    weight = "bold" if density > 0.18 else "normal"
+    return rgb_to_hex(fg), rgb_to_hex(bg), weight
 
 def detect_ocr_blocks_easyocr(img: Image.Image):
     np_img = np.array(img)
@@ -419,6 +420,18 @@ def shape_text(text: str):
             return text
     return text
 
+def count_text_units(text: str) -> int:
+    # Count visible letters/digits only. Spaces and punctuation do not inflate
+    # the ratio used to size a replacement word.
+    return max(
+        1,
+        sum(
+            1
+            for ch in (text or "")
+            if ch.isalnum() or has_arabic(ch)
+        )
+    )
+
 def make_font(font_path: str | None, size: int, arabic: bool):
     if not font_path:
         return ImageFont.load_default(), False
@@ -455,8 +468,10 @@ def erase_text_area(img: Image.Image, x: int, y: int, w: int, h: int):
     arr = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
     H, W = arr.shape[:2]
 
-    pad_x = max(2, int(w * 0.04))
-    pad_y = max(2, int(h * 0.10))
+    # Keep horizontal padding very small so a selected word does not erase
+    # neighboring words on the same Arabic line.
+    pad_x = max(1, int(round(w * 0.01)))
+    pad_y = max(2, int(round(h * 0.08)))
 
     x1 = max(0, x - pad_x)
     y1 = max(0, y - pad_y)
@@ -464,7 +479,13 @@ def erase_text_area(img: Image.Image, x: int, y: int, w: int, h: int):
     y2 = min(H, y + h + pad_y)
 
     mask = np.zeros((H, W), dtype=np.uint8)
-    cv2.rectangle(mask, (x1, y1), (max(x1, x2 - 1), max(y1, y2 - 1)), 255, -1)
+    cv2.rectangle(
+        mask,
+        (x1, y1),
+        (max(x1, x2 - 1), max(y1, y2 - 1)),
+        255,
+        -1
+    )
 
     restored = cv2.inpaint(arr, mask, 3, cv2.INPAINT_TELEA)
     return Image.fromarray(cv2.cvtColor(restored, cv2.COLOR_BGR2RGB))
@@ -476,31 +497,38 @@ def draw_replacement(
     w: int,
     h: int,
     new_text: str,
+    original_text: str,
     font_size: int,
     text_color: str,
     direction: str,
     font_weight: str
 ):
-    # Important: new_text is rendered exactly as entered by the user.
-    # OCR is never used to rewrite/correct the replacement text.
+    # new_text is rendered exactly as typed by the user.
     canvas = img.copy()
     draw = ImageDraw.Draw(canvas)
 
     is_ar = has_arabic(new_text)
     font_path = pick_font(font_weight == "bold", is_ar)
 
+    old_count = count_text_units(original_text)
+    new_count = count_text_units(new_text)
+
     requested_size = max(8, int(font_size))
-    min_size = max(8, int(round(requested_size * 0.82)))
+
+    # Character-count ratio gives a good first estimate when replacing a short
+    # word with a much longer one. Actual pixel width below is still decisive.
+    ratio = old_count / float(max(1, new_count))
+    ratio_scale = min(1.0, max(0.70, ratio ** 0.5))
+    start_size = max(8, int(round(requested_size * ratio_scale)))
 
     chosen_font = None
     chosen_raqm = False
     chosen_box = None
     tw = th = 1
 
-    # Keep the detected/original font size as much as possible.
-    # A longer replacement such as "التويتي" replacing "نادي" is allowed
-    # to grow horizontally instead of being crushed to a tiny unreadable font.
-    for test_size in range(requested_size, min_size - 1, -1):
+    # Always fit inside the original OCR box. This prevents the replacement
+    # from running into the adjacent Arabic word.
+    for test_size in range(start_size, 7, -1):
         font, use_raqm = make_font(font_path, test_size, is_ar)
         box, test_w, test_h = text_metrics(
             draw,
@@ -516,11 +544,11 @@ def draw_replacement(
         tw = test_w
         th = test_h
 
-        if test_h <= max(1, int(h * 1.20)) and test_w <= max(w, int(w * 1.55)):
+        if test_w <= max(1, int(w * 0.98)) and test_h <= max(1, int(h * 1.12)):
             break
 
     if chosen_font is None:
-        chosen_font, chosen_raqm = make_font(font_path, requested_size, is_ar)
+        chosen_font, chosen_raqm = make_font(font_path, 8, is_ar)
         chosen_box, tw, th = text_metrics(
             draw,
             new_text,
@@ -529,10 +557,13 @@ def draw_replacement(
             chosen_raqm
         )
 
-    # Preserve the centre of the original text box. This makes a longer
-    # replacement expand naturally to both sides instead of shrinking heavily.
-    center_x = x + (w / 2.0)
-    tx = int(round(center_x - (tw / 2.0)))
+    # Preserve the original direction and anchor. Arabic is anchored to the
+    # right edge of the selected word box.
+    if direction == "rtl" or is_ar:
+        tx = int(round(x + w - tw))
+    else:
+        tx = int(round(x))
+
     ty = int(round(y + max(0, (h - th) / 2.0) - chosen_box[1]))
 
     tx = max(0, min(max(0, canvas.width - tw), tx))
@@ -570,7 +601,7 @@ def health():
         "stages": 4,
         "features": ["cutout", "inpaint", "composite", "ocr_detect", "ocr_replace"],
         "ocr_engine": "EasyOCR Arabic+English + Tesseract fallback",
-        "arabic_render": "RAQM when available + reshaper fallback"
+        "arabic_render": "RAQM + character-count sizing + box-safe RTL anchoring"
     }
 
 @app.post("/api/stage1/cut-first")
@@ -706,6 +737,7 @@ async def ocr_replace(
     w: int = Form(...),
     h: int = Form(...),
     new_text: str = Form(...),
+    original_text: str = Form(""),
     font_size: int = Form(24),
     text_color: str = Form("#000000"),
     direction: str = Form("auto"),
@@ -728,6 +760,7 @@ async def ocr_replace(
             cleaned,
             x, y, w, h,
             new_text,
+            original_text,
             font_size,
             text_color,
             direction,
