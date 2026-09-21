@@ -1,24 +1,29 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import Response
 from rembg import remove, new_session
+from simple_lama_inpainting import SimpleLama
 from PIL import Image, ImageFilter
 from io import BytesIO
 import cv2
 import gc
 import numpy as np
-import os
-import subprocess
-import tempfile
 
 app = FastAPI(title="UNB Staged AI Editor")
 
 _session = None
+_lama = None
 
 def get_session():
     global _session
     if _session is None:
         _session = new_session("u2net_human_seg")
     return _session
+
+def get_lama():
+    global _lama
+    if _lama is None:
+        _lama = SimpleLama()
+    return _lama
 
 def ensure_image(data: bytes) -> Image.Image:
     if not data:
@@ -39,15 +44,8 @@ def cutout_bytes(data: bytes) -> bytes:
         force_return_bytes=True
     )
 
-def mask_image(data: bytes) -> Image.Image:
-    ensure_image(data)
-    raw = remove(
-        data,
-        session=get_session(),
-        only_mask=True,
-        force_return_bytes=True
-    )
-    mask = Image.open(BytesIO(raw)).convert("L")
+def refine_mask(mask: Image.Image) -> Image.Image:
+    mask = mask.convert("L")
     arr = np.array(mask)
     arr = np.where(arr > 20, 255, 0).astype(np.uint8)
 
@@ -61,6 +59,23 @@ def mask_image(data: bytes) -> Image.Image:
     arr = np.where(arr > 24, 255, 0).astype(np.uint8)
     return Image.fromarray(arr, mode="L")
 
+def mask_image(data: bytes) -> Image.Image:
+    ensure_image(data)
+    raw = remove(
+        data,
+        session=get_session(),
+        only_mask=True,
+        force_return_bytes=True
+    )
+    return refine_mask(Image.open(BytesIO(raw)).convert("L"))
+
+def mask_from_cutout(data: bytes) -> Image.Image:
+    try:
+        cutout = Image.open(BytesIO(data)).convert("RGBA")
+        return refine_mask(cutout.getchannel("A"))
+    except Exception:
+        raise HTTPException(400, "تعذر قراءة قصاصة المرحلة 1")
+
 def run_lama(original: Image.Image, mask: Image.Image) -> Image.Image:
     ow, oh = original.size
     max_dim = max(ow, oh)
@@ -68,46 +83,23 @@ def run_lama(original: Image.Image, mask: Image.Image) -> Image.Image:
     work_img = original
     work_mask = mask
 
-    if max_dim > 1280:
-        scale = 1280.0 / max_dim
+    # 768px is much faster on the current 2-vCPU server while preserving
+    # full-resolution pixels outside the inpainted subject area.
+    if max_dim > 768:
+        scale = 768.0 / max_dim
         nw = max(64, int(ow * scale))
         nh = max(64, int(oh * scale))
         work_img = original.resize((nw, nh), Image.Resampling.LANCZOS)
         work_mask = mask.resize((nw, nh), Image.Resampling.NEAREST)
 
-    with tempfile.TemporaryDirectory(prefix="unb_lama_") as td:
-        image_path = os.path.join(td, "image.png")
-        mask_path = os.path.join(td, "mask.png")
-        out_path = os.path.join(td, "out.png")
-
-        work_img.save(image_path, "PNG")
-        work_mask.save(mask_path, "PNG")
-
-        env = os.environ.copy()
-        env["OMP_NUM_THREADS"] = "2"
-        env["MKL_NUM_THREADS"] = "2"
-
-        proc = subprocess.run(
-            ["simple_lama", image_path, mask_path, out_path],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            timeout=360,
-            env=env
-        )
-
-        if proc.returncode != 0 or not os.path.exists(out_path):
-            tail = (proc.stdout or "")[-1500:]
-            raise RuntimeError("LaMa failed: " + tail)
-
-        restored_small = Image.open(out_path).convert("RGB").copy()
+    restored_small = get_lama()(work_img, work_mask).convert("RGB")
 
     if restored_small.size == original.size:
         return restored_small
 
     restored_up = restored_small.resize(original.size, Image.Resampling.LANCZOS)
 
-    # Keep original pixels outside the removed subject at full quality.
+    # Preserve original full-resolution pixels outside the removed person.
     soft = mask.filter(ImageFilter.GaussianBlur(radius=3))
     return Image.composite(restored_up, original, soft)
 
@@ -148,17 +140,24 @@ async def stage1(file: UploadFile = File(...)):
         raise HTTPException(500, str(e))
 
 @app.post("/api/stage2/restore-background")
-async def stage2(file: UploadFile = File(...)):
+async def stage2(
+    file: UploadFile = File(...),
+    cutout: UploadFile | None = File(None)
+):
     data = await file.read()
     try:
         original = ensure_image(data)
-        mask = mask_image(data)
+
+        if cutout is not None:
+            cutout_data = await cutout.read()
+            mask = mask_from_cutout(cutout_data)
+        else:
+            mask = mask_image(data)
+
         restored = run_lama(original, mask)
         return Response(jpg_bytes(restored), media_type="image/jpeg", headers={"Cache-Control": "no-store"})
     except HTTPException:
         raise
-    except subprocess.TimeoutExpired:
-        raise HTTPException(504, "تعبئة الخلفية استغرقت وقتًا أطول من المسموح")
     except Exception as e:
         raise HTTPException(500, str(e))
     finally:
@@ -179,15 +178,17 @@ async def stage3(file: UploadFile = File(...)):
 async def stage4(
     target: UploadFile = File(...),
     background: UploadFile = File(...),
-    subject: UploadFile = File(...)
+    subject: UploadFile = File(...),
+    target_cutout: UploadFile | None = File(None)
 ):
     target_data = await target.read()
     bg_data = await background.read()
     subject_data = await subject.read()
+    target_cutout_data = await target_cutout.read() if target_cutout is not None else None
 
     try:
         target_img = ensure_image(target_data)
-        target_mask = mask_image(target_data)
+        target_mask = mask_from_cutout(target_cutout_data) if target_cutout_data else mask_image(target_data)
         box = bbox_from_mask(target_mask)
         if box is None:
             raise HTTPException(422, "لم يتم العثور على الشخص في الصورة الأولى")
