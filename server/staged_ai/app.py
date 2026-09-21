@@ -766,7 +766,7 @@ def health():
         "arabic_render": "RAQM + character-count sizing + box-safe RTL anchoring",
         "same_text_mode": "preserve-original-pixels",
         "background_cleanup": "smooth-plane + Telea fallback",
-        "nonblocking_jobs": True,
+        "nonblocking_jobs": "except_easyocr",
         "lazy_ai_imports": True
     }
 
@@ -882,7 +882,12 @@ async def ocr_detect(image: UploadFile = File(...)):
     data = await image.read()
     try:
         img = ensure_image(data)
-        blocks = await asyncio.to_thread(detect_ocr_blocks, img)
+        print(f"OCR detect started: {img.width}x{img.height}", flush=True)
+        # EasyOCR/PyTorch is more stable in the main Uvicorn thread on this
+        # small CPU server. Running it through asyncio.to_thread can stall
+        # inside quantized RNN inference.
+        blocks = detect_ocr_blocks(img)
+        print(f"OCR detect finished: {len(blocks)} blocks", flush=True)
         return {
             "ok": True,
             "image_width": img.width,
