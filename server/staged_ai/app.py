@@ -766,8 +766,8 @@ def health():
         "arabic_render": "RAQM + character-count sizing + box-safe RTL anchoring",
         "same_text_mode": "preserve-original-pixels",
         "background_cleanup": "smooth-plane + Telea fallback",
-        "nonblocking_jobs": true,
-        "lazy_ai_imports": true
+        "nonblocking_jobs": True,
+        "lazy_ai_imports": True
     }
 
 @app.post("/api/stage1/cut-first")
