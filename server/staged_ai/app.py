@@ -733,12 +733,20 @@ def _font_candidates(arabic: bool, bold: bool):
     paths = []
 
     if arabic:
+        # OCR "normal/bold" is only a rough hint. Compare BOTH weights because
+        # scanned Arabic often gets classified as normal even when the source
+        # glyphs are visibly heavy.
         preferred = [
-            "*NotoNaskhArabic*Bold*.ttf" if bold else "*NotoNaskhArabic*Regular*.ttf",
-            "*NotoSansArabic*Bold*.ttf" if bold else "*NotoSansArabic*Regular*.ttf",
-            "*NotoKufiArabic*Bold*.ttf" if bold else "*NotoKufiArabic*Regular*.ttf",
-            "*Naskh*Bold*.ttf" if bold else "*Naskh*Regular*.ttf",
-            "*Arabic*Bold*.ttf" if bold else "*Arabic*Regular*.ttf",
+            "*NotoSansArabic*Bold*.ttf",
+            "*NotoSansArabic*Regular*.ttf",
+            "*NotoKufiArabic*Bold*.ttf",
+            "*NotoKufiArabic*Regular*.ttf",
+            "*NotoNaskhArabic*Bold*.ttf",
+            "*NotoNaskhArabic*Regular*.ttf",
+            "*Naskh*Bold*.ttf",
+            "*Naskh*Regular*.ttf",
+            "*Arabic*Bold*.ttf",
+            "*Arabic*Regular*.ttf",
         ]
         roots = [
             "/usr/share/fonts/truetype/noto/",
@@ -750,19 +758,17 @@ def _font_candidates(arabic: bool, bold: bool):
                 paths.extend(glob.glob(root + pat))
                 paths.extend(glob.glob(root + "**/" + pat, recursive=True))
 
-    if bold:
-        paths.extend(glob.glob("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"))
-    else:
-        paths.extend(glob.glob("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"))
+    # Latin fallback candidates; keep both weights available for comparison.
+    paths.extend(glob.glob("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"))
+    paths.extend(glob.glob("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"))
 
-    # Stable order, no duplicates, and keep the search bounded.
     out = []
     seen = set()
     for path in paths:
         if path not in seen and os.path.isfile(path):
             seen.add(path)
             out.append(path)
-        if len(out) >= 14:
+        if len(out) >= 24:
             break
     return out
 
@@ -879,8 +885,17 @@ def _match_source_font(img: Image.Image, x: int, y: int, w: int, h: int,
             a = (target_norm.astype(np.float32) / 255.0)
             b = (rendered_norm.astype(np.float32) / 255.0)
             mse = float(np.mean((a - b) ** 2))
-            density_delta = abs(float(np.mean(a > 0.35)) - float(np.mean(b > 0.35)))
-            score = mse + density_delta * 0.55
+
+            # Weight/stroke density is critical for names on scanned IDs.
+            target_density = float(np.mean(a > 0.30))
+            rendered_density = float(np.mean(b > 0.30))
+            density_delta = abs(target_density - rendered_density)
+
+            target_aspect = glyph["w"] / float(max(1, glyph["h"]))
+            rendered_aspect = alpha.width / float(max(1, alpha.height))
+            aspect_delta = abs(np.log(max(0.05, rendered_aspect) / max(0.05, target_aspect)))
+
+            score = mse + density_delta * 1.80 + aspect_delta * 0.28
 
             if best is None or score < best["score"]:
                 best = {
@@ -914,27 +929,27 @@ def _source_render_style(img: Image.Image, x: int, y: int, w: int, h: int,
     y2 = min(H, y + h)
     roi = arr[y1:y2, x1:x2]
 
-    blur_radius = 0.25
+    blur_radius = 0.18
     opacity = 255
 
     if roi.size:
         gray = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
         sharpness = float(cv2.Laplacian(gray, cv2.CV_64F).var())
-        if sharpness < 25:
-            blur_radius = 0.85
-        elif sharpness < 55:
-            blur_radius = 0.60
-        elif sharpness < 100:
-            blur_radius = 0.40
 
-        # Slightly lower alpha on low-contrast scanned text.
-        bg = estimate_background_rgb(img, x, y, w, h)
-        fg = np.array(parse_hex_color(text_color), dtype=np.float32)
-        contrast = float(np.linalg.norm(fg - bg))
-        if contrast < 55:
-            opacity = 210
-        elif contrast < 90:
-            opacity = 230
+        # Preserve the source softness, but cap blur so the replacement does
+        # not become thin/pale compared with neighboring printed names.
+        if sharpness < 20:
+            blur_radius = 0.48
+        elif sharpness < 45:
+            blur_radius = 0.34
+        elif sharpness < 90:
+            blur_radius = 0.24
+        else:
+            blur_radius = 0.12
+
+        # Always use full alpha. The sampled source color already carries the
+        # document's gray/black tone; reducing alpha was washing text out.
+        opacity = 255
 
     return {
         "font_path": font_path,
@@ -964,7 +979,7 @@ def erase_text_area(img: Image.Image, x: int, y: int, w: int, h: int):
     # Erase only actual glyph strokes. This avoids the dirty rectangular patch
     # around the replaced word and protects neighboring words/background detail.
     glyph_mask = np.where(local_mask > 0, 255, 0).astype(np.uint8)
-    dilate_px = max(1, int(round(max(1, min(w, h)) * 0.035)))
+    dilate_px = max(1, int(round(max(1, min(w, h)) * 0.055)))
     kernel = np.ones((dilate_px * 2 + 1, dilate_px * 2 + 1), np.uint8)
     glyph_mask = cv2.dilate(glyph_mask, kernel, iterations=1)
 
@@ -1052,17 +1067,20 @@ def draw_replacement(
     if glyph:
         source_right = int(glyph["x"] + glyph["w"])
         source_left = int(glyph["x"])
-        source_top = int(glyph["y"])
+        source_bottom = int(glyph["y"] + glyph["h"])
     else:
         source_right = x + w
         source_left = x
-        source_top = y
+        source_bottom = y + h
 
     if direction == "rtl" or is_ar:
         paste_x = source_right - target_w
     else:
         paste_x = source_left
-    paste_y = source_top
+
+    # Bottom alignment approximates a shared Arabic baseline much better than
+    # top alignment when the replacement contains different ascenders/descenders.
+    paste_y = source_bottom - target_h
 
     paste_x = max(0, min(canvas.width - target_w, paste_x))
     paste_y = max(0, min(canvas.height - target_h, paste_y))
@@ -1128,7 +1146,8 @@ def health():
         "arabic_render": "RAQM + character-count sizing + box-safe RTL anchoring",
         "same_text_mode": "preserve-original-pixels",
         "background_cleanup": "glyph-mask inpaint + local-plane blend",
-        "text_render": "source font-shape match + real glyph anchor + adaptive blur",
+        "text_render": "source font-shape v2 + stroke-density match + baseline anchor",
+        "style_match_version": 2,
         "nonblocking_jobs": True,
         "lazy_ai_imports": True,
         "ocr_selection": "word-level boxes",
