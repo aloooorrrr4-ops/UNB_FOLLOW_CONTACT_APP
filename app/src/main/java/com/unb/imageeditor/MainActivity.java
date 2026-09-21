@@ -1,19 +1,25 @@
 package com.unb.imageeditor;
 
+import android.Manifest;
 import android.app.Activity;
+import android.content.BroadcastReceiver;
 import android.content.ContentResolver;
 import android.content.ContentValues;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
+import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.provider.MediaStore;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
-import android.widget.ImageView;
 import android.widget.EditText;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
@@ -21,26 +27,20 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.util.UUID;
 
 public class MainActivity extends Activity {
     private static final int PICK_FIRST = 1001;
     private static final int PICK_SECOND = 1002;
+    private static final int REQ_NOTIFICATIONS = 2001;
+
     private static final String DEFAULT_SERVER_BASE = "http://91.98.126.167:18083";
     private static final String PREFS = "unb_image_editor_settings";
     private static final String KEY_SERVER = "server_base";
-
-    private Uri firstUri;
-    private Uri secondUri;
-
-    private byte[] stage1Png;
-    private byte[] stage2Jpg;
-    private byte[] stage3Png;
-    private byte[] stage4Jpg;
 
     private ImageView firstPreview;
     private ImageView secondPreview;
@@ -62,6 +62,28 @@ public class MainActivity extends Activity {
     private EditText serverInput;
     private String serverBase;
 
+    private boolean receiverRegistered = false;
+
+    private final BroadcastReceiver stageReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            int stage = intent.getIntExtra(AiProcessService.EXTRA_STAGE, 0);
+            String message = intent.getStringExtra(AiProcessService.EXTRA_MESSAGE);
+
+            progress.setVisibility(View.GONE);
+            loadExistingFiles();
+            refreshButtons();
+
+            if (AiProcessService.ACTION_DONE.equals(intent.getAction())) {
+                status.setText(message == null ? "تمت المعالجة" : message);
+                Toast.makeText(MainActivity.this, "تمت المرحلة " + stage, Toast.LENGTH_SHORT).show();
+            } else {
+                status.setText("فشل المرحلة " + stage + ": " + message);
+                Toast.makeText(MainActivity.this, "فشل المرحلة " + stage, Toast.LENGTH_LONG).show();
+            }
+        }
+    };
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -72,8 +94,7 @@ public class MainActivity extends Activity {
         root.setPadding(dp(14), dp(14), dp(14), dp(24));
         scroll.addView(root);
 
-        TextView title = title("UNB Image Editor", 26);
-        root.addView(title);
+        root.addView(title("UNB Image Editor", 26));
 
         TextView subtitle = title("قص الشخص + استعادة الخلفية + تركيب شخص جديد", 16);
         subtitle.setPadding(0, dp(4), 0, dp(10));
@@ -93,7 +114,6 @@ public class MainActivity extends Activity {
         Button saveServer = new Button(this);
         saveServer.setText("حفظ رابط الخادم");
         root.addView(saveServer);
-
         saveServer.setOnClickListener(v -> saveServerAddress());
 
         root.addView(sectionTitle("الصورة الأولى"));
@@ -106,7 +126,6 @@ public class MainActivity extends Activity {
 
         stage1Button = new Button(this);
         stage1Button.setText("1) قص الشخص من الصورة الأولى");
-        stage1Button.setEnabled(false);
         root.addView(stage1Button);
 
         root.addView(sectionTitle("معاينة المرحلة 1"));
@@ -115,7 +134,6 @@ public class MainActivity extends Activity {
 
         stage2Button = new Button(this);
         stage2Button.setText("2) تعبئة نفس الخلفية الأصلية");
-        stage2Button.setEnabled(false);
         root.addView(stage2Button);
 
         root.addView(sectionTitle("نتيجة المرحلة 2 — الخلفية المستعادة"));
@@ -124,7 +142,6 @@ public class MainActivity extends Activity {
 
         save2Button = new Button(this);
         save2Button.setText("تحميل المرحلة 2");
-        save2Button.setEnabled(false);
         root.addView(save2Button);
 
         root.addView(sectionTitle("الصورة الثانية"));
@@ -137,7 +154,6 @@ public class MainActivity extends Activity {
 
         stage3Button = new Button(this);
         stage3Button.setText("3) قص الشخص من الصورة الثانية");
-        stage3Button.setEnabled(false);
         root.addView(stage3Button);
 
         root.addView(sectionTitle("نتيجة المرحلة 3 — القصاصة"));
@@ -146,12 +162,10 @@ public class MainActivity extends Activity {
 
         save3Button = new Button(this);
         save3Button.setText("تحميل المرحلة 3");
-        save3Button.setEnabled(false);
         root.addView(save3Button);
 
         stage4Button = new Button(this);
         stage4Button.setText("4) تركيب الشخص الثاني على الخلفية");
-        stage4Button.setEnabled(false);
         root.addView(stage4Button);
 
         root.addView(sectionTitle("النتيجة النهائية"));
@@ -160,7 +174,6 @@ public class MainActivity extends Activity {
 
         save4Button = new Button(this);
         save4Button.setText("تحميل المرحلة 4");
-        save4Button.setEnabled(false);
         root.addView(save4Button);
 
         progress = new ProgressBar(this);
@@ -169,28 +182,77 @@ public class MainActivity extends Activity {
         pp.gravity = Gravity.CENTER_HORIZONTAL;
         root.addView(progress, pp);
 
-        status = title("جاهز", 15);
+        status = title("جاهز — المعالجة تستمر حتى لو خرجت من التطبيق", 15);
         status.setPadding(0, dp(8), 0, dp(8));
         root.addView(status);
 
         pickFirst.setOnClickListener(v -> chooseImage(PICK_FIRST));
         pickSecond.setOnClickListener(v -> chooseImage(PICK_SECOND));
 
-        stage1Button.setOnClickListener(v -> runStage1());
-        stage2Button.setOnClickListener(v -> runStage2());
-        stage3Button.setOnClickListener(v -> runStage3());
-        stage4Button.setOnClickListener(v -> runStage4());
+        stage1Button.setOnClickListener(v -> startStage(1));
+        stage2Button.setOnClickListener(v -> startStage(2));
+        stage3Button.setOnClickListener(v -> startStage(3));
+        stage4Button.setOnClickListener(v -> startStage(4));
 
         save2Button.setOnClickListener(v ->
-                saveBytes(stage2Jpg, "UNB_stage2_background_", "image/jpeg", ".jpg"));
+                saveFile(new File(getFilesDir(), AiProcessService.STAGE2),
+                        "UNB_stage2_background_", "image/jpeg", ".jpg"));
 
         save3Button.setOnClickListener(v ->
-                saveBytes(stage3Png, "UNB_stage3_subject_", "image/png", ".png"));
+                saveFile(new File(getFilesDir(), AiProcessService.STAGE3),
+                        "UNB_stage3_subject_", "image/png", ".png"));
 
         save4Button.setOnClickListener(v ->
-                saveBytes(stage4Jpg, "UNB_stage4_final_", "image/jpeg", ".jpg"));
+                saveFile(new File(getFilesDir(), AiProcessService.STAGE4),
+                        "UNB_stage4_final_", "image/jpeg", ".jpg"));
 
         setContentView(scroll);
+
+        registerStageReceiver();
+        requestNotificationPermission();
+        loadExistingFiles();
+        refreshButtons();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        loadExistingFiles();
+        refreshButtons();
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        if (receiverRegistered) {
+            unregisterReceiver(stageReceiver);
+            receiverRegistered = false;
+        }
+    }
+
+    private void registerStageReceiver() {
+        if (receiverRegistered) return;
+
+        IntentFilter filter = new IntentFilter();
+        filter.addAction(AiProcessService.ACTION_DONE);
+        filter.addAction(AiProcessService.ACTION_FAILED);
+
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(stageReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+        } else {
+            registerReceiver(stageReceiver, filter);
+        }
+        receiverRegistered = true;
+    }
+
+    private void requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= 33 &&
+                checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(
+                    new String[]{Manifest.permission.POST_NOTIFICATIONS},
+                    REQ_NOTIFICATIONS
+            );
+        }
     }
 
     private void saveServerAddress() {
@@ -214,6 +276,213 @@ public class MainActivity extends Activity {
 
         status.setText("تم حفظ الخادم: " + serverBase);
         Toast.makeText(this, "تم حفظ رابط الخادم", Toast.LENGTH_SHORT).show();
+    }
+
+    private void chooseImage(int requestCode) {
+        Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        i.addCategory(Intent.CATEGORY_OPENABLE);
+        i.setType("image/*");
+        startActivityForResult(i, requestCode);
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+
+        if (resultCode != RESULT_OK || data == null || data.getData() == null) return;
+
+        Uri uri = data.getData();
+
+        try {
+            if (requestCode == PICK_FIRST) {
+                copyUriToFile(uri, new File(getFilesDir(), AiProcessService.FIRST));
+                delete(AiProcessService.STAGE1);
+                delete(AiProcessService.STAGE2);
+                delete(AiProcessService.STAGE4);
+                status.setText("الصورة الأولى جاهزة");
+            } else if (requestCode == PICK_SECOND) {
+                copyUriToFile(uri, new File(getFilesDir(), AiProcessService.SECOND));
+                delete(AiProcessService.STAGE3);
+                delete(AiProcessService.STAGE4);
+                status.setText("الصورة الثانية جاهزة");
+            }
+
+            loadExistingFiles();
+            refreshButtons();
+
+        } catch (Exception e) {
+            Toast.makeText(this, "تعذر حفظ الصورة: " + e.getMessage(), Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void startStage(int stage) {
+        if (!requirementsReady(stage)) return;
+
+        saveServerAddress();
+
+        Intent i = new Intent(this, AiProcessService.class);
+        i.putExtra(AiProcessService.EXTRA_STAGE, stage);
+        i.putExtra(AiProcessService.EXTRA_SERVER, serverBase);
+
+        progress.setVisibility(View.VISIBLE);
+        status.setText(stageText(stage));
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(i);
+        } else {
+            startService(i);
+        }
+
+        Toast.makeText(
+                this,
+                "بدأت المرحلة " + stage + " — يمكنك الخروج من التطبيق وستستمر المعالجة",
+                Toast.LENGTH_LONG
+        ).show();
+    }
+
+    private boolean requirementsReady(int stage) {
+        File dir = getFilesDir();
+
+        if (stage == 1 && !exists(AiProcessService.FIRST)) {
+            Toast.makeText(this, "اختر الصورة الأولى", Toast.LENGTH_SHORT).show();
+            return false;
+        }
+
+        if (stage == 2 && (!exists(AiProcessService.FIRST) || !exists(AiProcessService.STAGE1))) {
+            Toast.makeText(this, "نفذ المرحلة 1 أولاً", Toast.LENGTH_SHORT).show();
+            return false;
+        }
+
+        if (stage == 3 && !exists(AiProcessService.SECOND)) {
+            Toast.makeText(this, "اختر الصورة الثانية", Toast.LENGTH_SHORT).show();
+            return false;
+        }
+
+        if (stage == 4 &&
+                (!exists(AiProcessService.FIRST) ||
+                 !exists(AiProcessService.STAGE1) ||
+                 !exists(AiProcessService.STAGE2) ||
+                 !exists(AiProcessService.STAGE3))) {
+            Toast.makeText(this, "أكمل المراحل 1 و2 و3 أولاً", Toast.LENGTH_SHORT).show();
+            return false;
+        }
+
+        return true;
+    }
+
+    private String stageText(int stage) {
+        if (stage == 1) return "المرحلة 1: جاري قص الشخص الأول...";
+        if (stage == 2) return "المرحلة 2: جاري استعادة نفس الخلفية...";
+        if (stage == 3) return "المرحلة 3: جاري قص الشخص الثاني...";
+        return "المرحلة 4: جاري تركيب الشخص الثاني...";
+    }
+
+    private void refreshButtons() {
+        stage1Button.setEnabled(exists(AiProcessService.FIRST));
+        stage2Button.setEnabled(exists(AiProcessService.FIRST) && exists(AiProcessService.STAGE1));
+        stage3Button.setEnabled(exists(AiProcessService.SECOND));
+        stage4Button.setEnabled(
+                exists(AiProcessService.FIRST) &&
+                exists(AiProcessService.STAGE1) &&
+                exists(AiProcessService.STAGE2) &&
+                exists(AiProcessService.STAGE3)
+        );
+
+        save2Button.setEnabled(exists(AiProcessService.STAGE2));
+        save3Button.setEnabled(exists(AiProcessService.STAGE3));
+        save4Button.setEnabled(exists(AiProcessService.STAGE4));
+    }
+
+    private void loadExistingFiles() {
+        setPreview(firstPreview, AiProcessService.FIRST);
+        setPreview(secondPreview, AiProcessService.SECOND);
+        setPreview(stage1Preview, AiProcessService.STAGE1);
+        setPreview(stage2Preview, AiProcessService.STAGE2);
+        setPreview(stage3Preview, AiProcessService.STAGE3);
+        setPreview(stage4Preview, AiProcessService.STAGE4);
+    }
+
+    private void setPreview(ImageView view, String filename) {
+        File f = new File(getFilesDir(), filename);
+        if (!f.exists() || f.length() == 0) {
+            view.setImageDrawable(null);
+            return;
+        }
+
+        Bitmap bmp = BitmapFactory.decodeFile(f.getAbsolutePath());
+        view.setImageBitmap(bmp);
+    }
+
+    private void copyUriToFile(Uri uri, File outFile) throws Exception {
+        try (InputStream in = getContentResolver().openInputStream(uri);
+             FileOutputStream out = new FileOutputStream(outFile, false)) {
+
+            if (in == null) throw new Exception("تعذر قراءة الصورة");
+
+            byte[] buffer = new byte[8192];
+            int n;
+            while ((n = in.read(buffer)) != -1) {
+                out.write(buffer, 0, n);
+            }
+            out.flush();
+        }
+    }
+
+    private void saveFile(File source, String prefix, String mime, String ext) {
+        if (!source.exists() || source.length() == 0) return;
+
+        try {
+            ContentResolver resolver = getContentResolver();
+            ContentValues values = new ContentValues();
+
+            values.put(
+                    MediaStore.Images.Media.DISPLAY_NAME,
+                    prefix + System.currentTimeMillis() + ext
+            );
+            values.put(MediaStore.Images.Media.MIME_TYPE, mime);
+            values.put(
+                    MediaStore.Images.Media.RELATIVE_PATH,
+                    "Pictures/UNB Image Editor"
+            );
+
+            Uri uri = resolver.insert(
+                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                    values
+            );
+
+            if (uri == null) throw new Exception("تعذر إنشاء الملف");
+
+            try (InputStream in = new FileInputStream(source);
+                 OutputStream out = resolver.openOutputStream(uri)) {
+
+                if (out == null) throw new Exception("تعذر فتح الملف");
+
+                byte[] buffer = new byte[8192];
+                int n;
+                while ((n = in.read(buffer)) != -1) {
+                    out.write(buffer, 0, n);
+                }
+            }
+
+            Toast.makeText(this, "تم الحفظ في الاستوديو", Toast.LENGTH_LONG).show();
+
+        } catch (Exception e) {
+            Toast.makeText(
+                    this,
+                    "فشل الحفظ: " + e.getMessage(),
+                    Toast.LENGTH_LONG
+            ).show();
+        }
+    }
+
+    private boolean exists(String name) {
+        File f = new File(getFilesDir(), name);
+        return f.exists() && f.length() > 0;
+    }
+
+    private void delete(String name) {
+        File f = new File(getFilesDir(), name);
+        if (f.exists()) f.delete();
     }
 
     private TextView title(String text, int size) {
@@ -242,331 +511,7 @@ public class MainActivity extends Activity {
         return v;
     }
 
-    private void chooseImage(int requestCode) {
-        Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-        i.addCategory(Intent.CATEGORY_OPENABLE);
-        i.setType("image/*");
-        startActivityForResult(i, requestCode);
-    }
-
-    @Override
-    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-        super.onActivityResult(requestCode, resultCode, data);
-
-        if (resultCode != RESULT_OK || data == null || data.getData() == null) {
-            return;
-        }
-
-        Uri uri = data.getData();
-
-        if (requestCode == PICK_FIRST) {
-            firstUri = uri;
-            firstPreview.setImageURI(uri);
-
-            stage1Png = null;
-            stage2Jpg = null;
-            stage4Jpg = null;
-
-            stage1Preview.setImageDrawable(null);
-            stage2Preview.setImageDrawable(null);
-            stage4Preview.setImageDrawable(null);
-
-            stage1Button.setEnabled(true);
-            stage2Button.setEnabled(false);
-            save2Button.setEnabled(false);
-            save4Button.setEnabled(false);
-
-            status.setText("الصورة الأولى جاهزة");
-        }
-
-        if (requestCode == PICK_SECOND) {
-            secondUri = uri;
-            secondPreview.setImageURI(uri);
-
-            stage3Png = null;
-            stage4Jpg = null;
-
-            stage3Preview.setImageDrawable(null);
-            stage4Preview.setImageDrawable(null);
-
-            stage3Button.setEnabled(true);
-            save3Button.setEnabled(false);
-            save4Button.setEnabled(false);
-
-            status.setText("الصورة الثانية جاهزة");
-        }
-
-        refreshStage4();
-    }
-
-    private void setBusy(boolean busy, String text) {
-        progress.setVisibility(busy ? View.VISIBLE : View.GONE);
-        status.setText(text);
-
-        if (busy) {
-            stage1Button.setEnabled(false);
-            stage2Button.setEnabled(false);
-            stage3Button.setEnabled(false);
-            stage4Button.setEnabled(false);
-        } else {
-            stage1Button.setEnabled(firstUri != null);
-            stage2Button.setEnabled(firstUri != null && stage1Png != null);
-            stage3Button.setEnabled(secondUri != null);
-            refreshStage4();
-        }
-    }
-
-    private void refreshStage4() {
-        stage4Button.setEnabled(stage2Jpg != null && stage3Png != null && firstUri != null);
-    }
-
-    private void runStage1() {
-        if (firstUri == null) return;
-
-        setBusy(true, "المرحلة 1: جاري قص الشخص الأول...");
-
-        new Thread(() -> {
-            try {
-                byte[] first = readAll(getContentResolver().openInputStream(firstUri));
-                byte[] result = postMultipart(
-                        serverBase + "/api/stage1/cut-first",
-                        new Part("file", "first.jpg", "image/jpeg", first)
-                );
-
-                Bitmap bmp = decodeBitmap(result);
-                stage1Png = result;
-
-                runOnUiThread(() -> {
-                    stage1Preview.setImageBitmap(bmp);
-                    stage2Button.setEnabled(true);
-                    setBusy(false, "تمت المرحلة 1 — الشخص الأول مقصوص");
-                });
-            } catch (Exception e) {
-                fail("المرحلة 1", e);
-            }
-        }).start();
-    }
-
-    private void runStage2() {
-        if (firstUri == null || stage1Png == null) return;
-
-        setBusy(true, "المرحلة 2: الذكاء الاصطناعي يعيد بناء نفس الخلفية...");
-
-        new Thread(() -> {
-            try {
-                byte[] first = readAll(getContentResolver().openInputStream(firstUri));
-                byte[] result = postMultipart(
-                        serverBase + "/api/stage2/restore-background",
-                        new Part("file", "first.jpg", "image/jpeg", first),
-                        new Part("cutout", "stage1.png", "image/png", stage1Png)
-                );
-
-                Bitmap bmp = decodeBitmap(result);
-                stage2Jpg = result;
-
-                runOnUiThread(() -> {
-                    stage2Preview.setImageBitmap(bmp);
-                    save2Button.setEnabled(true);
-                    refreshStage4();
-                    setBusy(false, "تمت المرحلة 2 — الخلفية الأصلية مستعادة");
-                });
-            } catch (Exception e) {
-                fail("المرحلة 2", e);
-            }
-        }).start();
-    }
-
-    private void runStage3() {
-        if (secondUri == null) return;
-
-        setBusy(true, "المرحلة 3: جاري قص الشخص من الصورة الثانية...");
-
-        new Thread(() -> {
-            try {
-                byte[] second = readAll(getContentResolver().openInputStream(secondUri));
-                byte[] result = postMultipart(
-                        serverBase + "/api/stage3/cut-second",
-                        new Part("file", "second.jpg", "image/jpeg", second)
-                );
-
-                Bitmap bmp = decodeBitmap(result);
-                stage3Png = result;
-
-                runOnUiThread(() -> {
-                    stage3Preview.setImageBitmap(bmp);
-                    save3Button.setEnabled(true);
-                    refreshStage4();
-                    setBusy(false, "تمت المرحلة 3 — الشخص الثاني مقصوص");
-                });
-            } catch (Exception e) {
-                fail("المرحلة 3", e);
-            }
-        }).start();
-    }
-
-    private void runStage4() {
-        if (firstUri == null || stage2Jpg == null || stage3Png == null) return;
-
-        setBusy(true, "المرحلة 4: جاري تركيب الشخص الثاني في مكان الأول...");
-
-        new Thread(() -> {
-            try {
-                byte[] first = readAll(getContentResolver().openInputStream(firstUri));
-
-                byte[] result = postMultipart(
-                        serverBase + "/api/stage4/composite",
-                        new Part("target", "first.jpg", "image/jpeg", first),
-                        new Part("background", "background.jpg", "image/jpeg", stage2Jpg),
-                        new Part("subject", "subject.png", "image/png", stage3Png),
-                        new Part("target_cutout", "stage1.png", "image/png", stage1Png)
-                );
-
-                Bitmap bmp = decodeBitmap(result);
-                stage4Jpg = result;
-
-                runOnUiThread(() -> {
-                    stage4Preview.setImageBitmap(bmp);
-                    save4Button.setEnabled(true);
-                    setBusy(false, "تمت المرحلة 4 — النتيجة جاهزة");
-                });
-            } catch (Exception e) {
-                fail("المرحلة 4", e);
-            }
-        }).start();
-    }
-
-    private void fail(String stage, Exception e) {
-        String message = e.getMessage() == null ? "خطأ غير معروف" : e.getMessage();
-        runOnUiThread(() -> {
-            setBusy(false, stage + " فشلت: " + message);
-            Toast.makeText(this, stage + " فشلت", Toast.LENGTH_LONG).show();
-        });
-    }
-
-    private Bitmap decodeBitmap(byte[] bytes) throws Exception {
-        Bitmap bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
-        if (bmp == null) throw new Exception("الخادم لم يرجع صورة صالحة");
-        return bmp;
-    }
-
-    private byte[] postMultipart(String endpoint, Part... parts) throws Exception {
-        String boundary = "----UNB" + UUID.randomUUID();
-        HttpURLConnection c = (HttpURLConnection) new URL(endpoint).openConnection();
-
-        try {
-            c.setConnectTimeout(20000);
-            c.setReadTimeout(360000);
-            c.setDoOutput(true);
-            c.setRequestMethod("POST");
-            c.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
-            c.setRequestProperty("Connection", "close");
-
-            try (OutputStream out = c.getOutputStream()) {
-                for (Part p : parts) {
-                    String head =
-                            "--" + boundary + "\r\n" +
-                            "Content-Disposition: form-data; name=\"" + p.name +
-                            "\"; filename=\"" + p.filename + "\"\r\n" +
-                            "Content-Type: " + p.mime + "\r\n\r\n";
-
-                    out.write(head.getBytes("UTF-8"));
-                    out.write(p.bytes);
-                    out.write("\r\n".getBytes("UTF-8"));
-                }
-
-                out.write(("--" + boundary + "--\r\n").getBytes("UTF-8"));
-            }
-
-            int code = c.getResponseCode();
-
-            if (code < 200 || code >= 300) {
-                InputStream err = c.getErrorStream();
-                String body = "";
-                if (err != null) {
-                    body = new String(readAll(err), "UTF-8");
-                }
-                throw new Exception("HTTP " + code + (body.isEmpty() ? "" : " — " + body));
-            }
-
-            return readAll(c.getInputStream());
-
-        } finally {
-            c.disconnect();
-        }
-    }
-
-    private void saveBytes(byte[] bytes, String prefix, String mime, String ext) {
-        if (bytes == null) return;
-
-        try {
-            ContentResolver resolver = getContentResolver();
-            ContentValues values = new ContentValues();
-
-            values.put(
-                    MediaStore.Images.Media.DISPLAY_NAME,
-                    prefix + System.currentTimeMillis() + ext
-            );
-            values.put(MediaStore.Images.Media.MIME_TYPE, mime);
-            values.put(
-                    MediaStore.Images.Media.RELATIVE_PATH,
-                    "Pictures/UNB Image Editor"
-            );
-
-            Uri uri = resolver.insert(
-                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                    values
-            );
-
-            if (uri == null) throw new Exception("تعذر إنشاء الملف");
-
-            try (OutputStream out = resolver.openOutputStream(uri)) {
-                if (out == null) throw new Exception("تعذر فتح الملف");
-                out.write(bytes);
-            }
-
-            Toast.makeText(this, "تم الحفظ في الاستوديو", Toast.LENGTH_LONG).show();
-
-        } catch (Exception e) {
-            Toast.makeText(
-                    this,
-                    "فشل الحفظ: " + e.getMessage(),
-                    Toast.LENGTH_LONG
-            ).show();
-        }
-    }
-
-    private byte[] readAll(InputStream input) throws Exception {
-        if (input == null) throw new Exception("تعذر قراءة الصورة");
-
-        try (InputStream in = input;
-             ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-
-            byte[] buffer = new byte[8192];
-            int n;
-
-            while ((n = in.read(buffer)) != -1) {
-                out.write(buffer, 0, n);
-            }
-
-            return out.toByteArray();
-        }
-    }
-
     private int dp(int value) {
         return (int) (value * getResources().getDisplayMetrics().density);
-    }
-
-    private static class Part {
-        final String name;
-        final String filename;
-        final String mime;
-        final byte[] bytes;
-
-        Part(String name, String filename, String mime, byte[] bytes) {
-            this.name = name;
-            this.filename = filename;
-            this.mime = mime;
-            this.bytes = bytes;
-        }
     }
 }
