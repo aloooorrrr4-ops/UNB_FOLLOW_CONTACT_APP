@@ -9,6 +9,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 \
     libgomp1 \
     curl \
+    tesseract-ocr \
+    tesseract-ocr-eng \
+    tesseract-ocr-ara \
+    fonts-dejavu-core \
+    fonts-noto-core \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -24,7 +29,10 @@ RUN pip install --no-cache-dir \
     opencv-python-headless \
     onnxruntime \
     rembg \
-    simple-lama-inpainting
+    simple-lama-inpainting \
+    pytesseract \
+    arabic-reshaper \
+    python-bidi
 
 COPY app.py /app/app.py
 
