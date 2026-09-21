@@ -116,6 +116,14 @@ public class MainActivity extends Activity {
         root.addView(saveServer);
         saveServer.setOnClickListener(v -> saveServerAddress());
 
+        Button ocrEditor = new Button(this);
+        ocrEditor.setText("محرر النصوص OCR — اكتشاف واستبدال النص");
+        root.addView(ocrEditor);
+        ocrEditor.setOnClickListener(v -> {
+            saveServerAddress();
+            startActivity(new Intent(this, OcrEditorActivity.class));
+        });
+
         root.addView(sectionTitle("الصورة الأولى"));
         firstPreview = imageBox(260);
         root.addView(firstPreview);
