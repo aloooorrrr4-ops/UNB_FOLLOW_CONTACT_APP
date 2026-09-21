@@ -32,7 +32,9 @@ RUN pip install --no-cache-dir \
     simple-lama-inpainting \
     pytesseract \
     arabic-reshaper \
-    python-bidi
+    python-bidi \
+    paddlepaddle==3.3.1 \
+    paddleocr==3.3.2
 
 COPY app.py /app/app.py
 
