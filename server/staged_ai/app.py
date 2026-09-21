@@ -12,12 +12,14 @@ import glob
 import numpy as np
 import pytesseract
 from pytesseract import Output
+from paddleocr import PaddleOCR
 import re
 
 app = FastAPI(title="UNB Staged AI Editor")
 
 _session = None
 _lama = None
+_paddle_ocr = None
 
 def get_session():
     global _session
@@ -30,6 +32,23 @@ def get_lama():
     if _lama is None:
         _lama = SimpleLama()
     return _lama
+
+def get_paddle_ocr():
+    global _paddle_ocr
+    if _paddle_ocr is None:
+        _paddle_ocr = PaddleOCR(
+            lang="ar",
+            ocr_version="PP-OCRv5",
+            device="cpu",
+            text_detection_model_name="PP-OCRv5_mobile_det",
+            text_recognition_model_name="arabic_PP-OCRv5_mobile_rec",
+            use_doc_orientation_classify=False,
+            use_doc_unwarping=False,
+            use_textline_orientation=False,
+            text_detection_batch_size=1,
+            text_recognition_batch_size=1
+        )
+    return _paddle_ocr
 
 def ensure_image(data: bytes) -> Image.Image:
     if not data:
@@ -172,34 +191,146 @@ def color_info(img: Image.Image, x: int, y: int, w: int, h: int):
     if roi.size == 0:
         return "#000000", "#FFFFFF", "normal"
 
-    hh, ww = roi.shape[:2]
-    bw = max(1, min(3, min(hh, ww) // 4))
-    border = np.concatenate([
-        roi[:bw].reshape(-1, 3),
-        roi[-bw:].reshape(-1, 3),
-        roi[:, :bw].reshape(-1, 3),
-        roi[:, -bw:].reshape(-1, 3)
-    ], axis=0)
+    pixels = roi.reshape(-1, 3).astype(np.float32)
 
-    bg = np.median(border, axis=0)
-    flat = roi.reshape(-1, 3).astype(np.float32)
-    dist = np.linalg.norm(flat - bg.astype(np.float32), axis=1)
-
-    if len(dist) < 4 or float(dist.max()) < 10:
-        fg = np.array([0, 0, 0], dtype=np.float32)
-        density = 0.0
+    # Use 3 color clusters: the dominant cluster is usually the local background,
+    # while the cluster farthest from it is normally the text color.
+    if len(pixels) > 5000:
+        step = max(1, len(pixels) // 5000)
+        sample = pixels[::step]
     else:
-        threshold = max(18.0, float(np.percentile(dist, 70)))
-        selected = flat[dist >= threshold]
-        if selected.size == 0:
-            selected = flat[np.argsort(dist)[-max(1, len(dist) // 8):]]
-        fg = np.median(selected, axis=0)
-        density = float((dist >= threshold).mean())
+        sample = pixels
 
-    weight = "bold" if density > 0.23 else "normal"
-    return rgb_to_hex(fg), rgb_to_hex(bg), weight
+    if len(sample) < 8:
+        bg = np.median(sample, axis=0)
+        fg = np.array([0, 0, 0], dtype=np.float32)
+        return rgb_to_hex(fg), rgb_to_hex(bg), "normal"
 
-def detect_ocr_blocks(img: Image.Image):
+    try:
+        criteria = (
+            cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER,
+            30,
+            0.5
+        )
+        compactness, labels, centers = cv2.kmeans(
+            sample,
+            3,
+            None,
+            criteria,
+            4,
+            cv2.KMEANS_PP_CENTERS
+        )
+        labels = labels.reshape(-1)
+        counts = np.bincount(labels, minlength=len(centers))
+        bg_idx = int(np.argmax(counts))
+        bg = centers[bg_idx]
+
+        distances = np.linalg.norm(centers - bg, axis=1)
+        distances[bg_idx] = -1
+        fg_idx = int(np.argmax(distances))
+        fg = centers[fg_idx]
+
+        fg_density = float(counts[fg_idx]) / max(1.0, float(counts.sum()))
+        weight = "bold" if fg_density > 0.22 else "normal"
+        return rgb_to_hex(fg), rgb_to_hex(bg), weight
+
+    except Exception:
+        bg = np.median(sample, axis=0)
+        dist = np.linalg.norm(sample - bg, axis=1)
+        selected = sample[dist >= np.percentile(dist, 85)]
+        fg = np.median(selected, axis=0) if len(selected) else np.array([0, 0, 0])
+        return rgb_to_hex(fg), rgb_to_hex(bg), "normal"
+
+def _result_json(res):
+    value = getattr(res, "json", None)
+    if callable(value):
+        value = value()
+    if value is None:
+        try:
+            value = dict(res)
+        except Exception:
+            value = None
+    if isinstance(value, dict) and "res" in value and isinstance(value["res"], dict):
+        value = value["res"]
+    return value if isinstance(value, dict) else {}
+
+def detect_ocr_blocks_paddle(img: Image.Image):
+    np_img = np.array(img)
+    result = get_paddle_ocr().predict(np_img)
+
+    blocks = []
+    block_id = 1
+
+    for res in result:
+        payload = _result_json(res)
+        texts = payload.get("rec_texts", []) or []
+        scores = payload.get("rec_scores", []) or []
+        boxes = payload.get("rec_boxes", []) or []
+
+        try:
+            scores = scores.tolist()
+        except Exception:
+            pass
+
+        try:
+            boxes = boxes.tolist()
+        except Exception:
+            pass
+
+        count = min(len(texts), len(scores), len(boxes))
+
+        for i in range(count):
+            text = str(texts[i] or "").strip()
+            if not text:
+                continue
+
+            try:
+                confidence = float(scores[i])
+            except Exception:
+                confidence = 0.0
+
+            if confidence < 0.35:
+                continue
+
+            box = boxes[i]
+            if box is None or len(box) < 4:
+                continue
+
+            x1, y1, x2, y2 = [int(round(float(v))) for v in box[:4]]
+            x = max(0, min(x1, x2))
+            y = max(0, min(y1, y2))
+            w = max(1, abs(x2 - x1))
+            h = max(1, abs(y2 - y1))
+
+            language = detect_language(text)
+            direction = "rtl" if has_arabic(text) else "ltr"
+            number_type = detect_number_type(text)
+            text_color, bg_color, font_weight = color_info(img, x, y, w, h)
+            font_size = max(9, int(round(h * 0.80)))
+
+            blocks.append({
+                "id": f"blk_{block_id:03d}",
+                "text": text,
+                "language": language,
+                "number_type": number_type,
+                "direction": direction,
+                "bbox": {"x": x, "y": y, "w": w, "h": h},
+                "font_size": font_size,
+                "font_weight": font_weight,
+                "text_color": text_color,
+                "bg_color": bg_color,
+                "confidence": round(max(0.0, min(1.0, confidence)), 3),
+                "engine": "paddleocr"
+            })
+            block_id += 1
+
+    blocks.sort(key=lambda b: (b["bbox"]["y"], b["bbox"]["x"]))
+    for i, block in enumerate(blocks, 1):
+        block["id"] = f"blk_{i:03d}"
+
+    return blocks
+
+def detect_ocr_blocks_tesseract(img: Image.Image):
     data = pytesseract.image_to_data(
         img,
         lang="ara+eng",
@@ -257,7 +388,7 @@ def detect_ocr_blocks(img: Image.Image):
         h = max(1, y2 - y1)
 
         language = detect_language(text)
-        direction = "rtl" if language in ("ar", "mixed") and has_arabic(text) else "ltr"
+        direction = "rtl" if has_arabic(text) else "ltr"
         number_type = detect_number_type(text)
         text_color, bg_color, font_weight = color_info(img, x1, y1, w, h)
         confidence = float(np.mean([v["conf"] for v in words])) / 100.0
@@ -274,11 +405,22 @@ def detect_ocr_blocks(img: Image.Image):
             "font_weight": font_weight,
             "text_color": text_color,
             "bg_color": bg_color,
-            "confidence": round(max(0.0, min(1.0, confidence)), 3)
+            "confidence": round(max(0.0, min(1.0, confidence)), 3),
+            "engine": "tesseract"
         })
         block_id += 1
 
     return blocks
+
+def detect_ocr_blocks(img: Image.Image):
+    try:
+        blocks = detect_ocr_blocks_paddle(img)
+        if blocks:
+            return blocks
+    except Exception as e:
+        print("PaddleOCR failed, falling back to Tesseract:", repr(e), flush=True)
+
+    return detect_ocr_blocks_tesseract(img)
 
 def parse_hex_color(value: str):
     v = (value or "#000000").strip().lstrip("#")
@@ -379,7 +521,8 @@ def health():
         "ok": True,
         "service": "UNB Staged AI Editor",
         "stages": 4,
-        "features": ["cutout", "inpaint", "composite", "ocr_detect", "ocr_replace"]
+        "features": ["cutout", "inpaint", "composite", "ocr_detect", "ocr_replace"],
+        "ocr_engine": "PaddleOCR Arabic PP-OCRv5 mobile + Tesseract fallback"
     }
 
 @app.post("/api/stage1/cut-first")
