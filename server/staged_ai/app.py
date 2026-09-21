@@ -7,6 +7,8 @@ from bidi.algorithm import get_display
 import cv2
 import gc
 import asyncio
+import multiprocessing
+import os
 import glob
 import numpy as np
 import pytesseract
@@ -403,15 +405,127 @@ def detect_ocr_blocks_tesseract(img: Image.Image):
 
     return blocks
 
+
+def _easyocr_process_worker(image_array, queue):
+    try:
+        # Import/load in an isolated process so a PyTorch stall cannot block
+        # the API process forever.
+        os.environ.setdefault("OMP_NUM_THREADS", "2")
+        os.environ.setdefault("MKL_NUM_THREADS", "2")
+        import torch
+        torch.set_num_threads(2)
+        try:
+            torch.set_num_interop_threads(1)
+        except RuntimeError:
+            pass
+        import easyocr
+
+        reader = easyocr.Reader(
+            ["ar", "en"],
+            gpu=False,
+            quantize=False,
+            model_storage_directory="/root/.EasyOCR/model",
+            user_network_directory="/root/.EasyOCR/user_network",
+            download_enabled=False,
+            verbose=False
+        )
+        results = reader.readtext(
+            image_array,
+            detail=1,
+            paragraph=False,
+            decoder="greedy",
+            batch_size=1,
+            workers=0,
+            canvas_size=1280,
+            mag_ratio=1.0
+        )
+        queue.put(("ok", results))
+    except Exception as e:
+        queue.put(("error", repr(e)))
+
+def detect_ocr_blocks_easyocr_guarded(img: Image.Image, timeout_seconds: int = 45):
+    ctx = multiprocessing.get_context("spawn")
+    q = ctx.Queue(maxsize=1)
+    p = ctx.Process(
+        target=_easyocr_process_worker,
+        args=(np.array(img), q),
+        daemon=True
+    )
+    p.start()
+    p.join(timeout_seconds)
+
+    if p.is_alive():
+        p.terminate()
+        p.join(5)
+        raise TimeoutError(f"EasyOCR timed out after {timeout_seconds}s")
+
+    if q.empty():
+        raise RuntimeError(f"EasyOCR worker exited without result (code={p.exitcode})")
+
+    status, payload = q.get()
+    if status != "ok":
+        raise RuntimeError(payload)
+
+    # Convert raw EasyOCR output using the same block schema.
+    blocks = []
+    block_id = 1
+    for item in payload:
+        if not item or len(item) < 3:
+            continue
+        points, text, confidence = item[0], str(item[1] or "").strip(), float(item[2] or 0.0)
+        if not text or confidence < 0.30:
+            continue
+
+        xs = [float(p[0]) for p in points]
+        ys = [float(p[1]) for p in points]
+        x1 = max(0, int(round(min(xs))))
+        y1 = max(0, int(round(min(ys))))
+        x2 = min(img.width, int(round(max(xs))))
+        y2 = min(img.height, int(round(max(ys))))
+        w = max(1, x2 - x1)
+        h = max(1, y2 - y1)
+
+        language = detect_language(text)
+        direction = "rtl" if has_arabic(text) else "ltr"
+        number_type = detect_number_type(text)
+        text_color, bg_color, font_weight = color_info(img, x1, y1, w, h)
+        font_size = max(9, int(round(h * 0.80)))
+
+        blocks.append({
+            "id": f"blk_{block_id:03d}",
+            "text": text,
+            "language": language,
+            "number_type": number_type,
+            "direction": direction,
+            "bbox": {"x": x1, "y": y1, "w": w, "h": h},
+            "font_size": font_size,
+            "font_weight": font_weight,
+            "text_color": text_color,
+            "bg_color": bg_color,
+            "confidence": round(max(0.0, min(1.0, confidence)), 3),
+            "engine": "easyocr"
+        })
+        block_id += 1
+
+    blocks.sort(key=lambda b: (b["bbox"]["y"], b["bbox"]["x"]))
+    for i, block in enumerate(blocks, 1):
+        block["id"] = f"blk_{i:03d}"
+    return blocks
+
 def detect_ocr_blocks(img: Image.Image):
     try:
-        blocks = detect_ocr_blocks_easyocr(img)
+        print("EasyOCR isolated worker starting...", flush=True)
+        blocks = detect_ocr_blocks_easyocr_guarded(img, timeout_seconds=45)
+        print(f"EasyOCR isolated worker finished: {len(blocks)} blocks", flush=True)
         if blocks:
             return blocks
     except Exception as e:
-        print("EasyOCR failed, falling back to Tesseract:", repr(e), flush=True)
+        print("EasyOCR unavailable; falling back to Tesseract:", repr(e), flush=True)
 
-    return detect_ocr_blocks_tesseract(img)
+    print("Tesseract fallback started.", flush=True)
+    blocks = detect_ocr_blocks_tesseract(img)
+    print(f"Tesseract fallback finished: {len(blocks)} blocks", flush=True)
+    return blocks
 
 def parse_hex_color(value: str):
     v = (value or "#000000").strip().lstrip("#")
@@ -780,7 +894,7 @@ def health():
         "service": "UNB Staged AI Editor",
         "stages": 4,
         "features": ["cutout", "inpaint", "composite", "ocr_detect", "ocr_replace"],
-        "ocr_engine": "EasyOCR Arabic+English (quantize off) + Tesseract fallback",
+        "ocr_engine": "EasyOCR isolated (45s timeout) + Tesseract fallback",
         "arabic_render": "RAQM + character-count sizing + box-safe RTL anchoring",
         "same_text_mode": "preserve-original-pixels",
         "background_cleanup": "smooth-plane + Telea fallback",
