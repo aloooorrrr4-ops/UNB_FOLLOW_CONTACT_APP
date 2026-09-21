@@ -1,7 +1,5 @@
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import Response
-from rembg import remove, new_session
-from simple_lama_inpainting import SimpleLama
 from PIL import Image, ImageFilter, ImageDraw, ImageFont, ImageOps, features
 from io import BytesIO
 import arabic_reshaper
@@ -13,7 +11,6 @@ import glob
 import numpy as np
 import pytesseract
 from pytesseract import Output
-import easyocr
 import re
 import unicodedata
 
@@ -26,18 +23,21 @@ _easy_ocr = None
 def get_session():
     global _session
     if _session is None:
+        from rembg import new_session
         _session = new_session("u2net_human_seg")
     return _session
 
 def get_lama():
     global _lama
     if _lama is None:
+        from simple_lama_inpainting import SimpleLama
         _lama = SimpleLama()
     return _lama
 
 def get_easy_ocr():
     global _easy_ocr
     if _easy_ocr is None:
+        import easyocr
         _easy_ocr = easyocr.Reader(
             ["ar", "en"],
             gpu=False,
@@ -61,6 +61,7 @@ def ensure_image(data: bytes) -> Image.Image:
         raise HTTPException(400, "تعذر قراءة الصورة")
 
 def cutout_bytes(data: bytes) -> bytes:
+    from rembg import remove
     img = ensure_image(data)
     normalized = BytesIO()
     img.save(normalized, "PNG")
@@ -87,6 +88,7 @@ def refine_mask(mask: Image.Image) -> Image.Image:
     return Image.fromarray(arr, mode="L")
 
 def mask_image(data: bytes) -> Image.Image:
+    from rembg import remove
     img = ensure_image(data)
     normalized = BytesIO()
     img.save(normalized, "PNG")
@@ -764,7 +766,8 @@ def health():
         "arabic_render": "RAQM + character-count sizing + box-safe RTL anchoring",
         "same_text_mode": "preserve-original-pixels",
         "background_cleanup": "smooth-plane + Telea fallback",
-        "nonblocking_jobs": true
+        "nonblocking_jobs": true,
+        "lazy_ai_imports": true
     }
 
 @app.post("/api/stage1/cut-first")
