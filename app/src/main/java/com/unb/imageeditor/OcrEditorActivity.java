@@ -304,17 +304,46 @@ public class OcrEditorActivity extends Activity {
         input.setHint("اكتب النص البديل");
         box.addView(input);
 
+        EditText sizeInput = new EditText(this);
+        sizeInput.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        sizeInput.setText(String.valueOf(block.optInt("font_size", 24)));
+        sizeInput.setHint("حجم الخط");
+        box.addView(sizeInput);
+
+        EditText colorInput = new EditText(this);
+        colorInput.setSingleLine(true);
+        colorInput.setText(block.optString("text_color", "#000000"));
+        colorInput.setHint("#000000");
+        box.addView(colorInput);
+
         new AlertDialog.Builder(this)
                 .setTitle("استبدال النص")
                 .setView(box)
                 .setNegativeButton("إلغاء", null)
                 .setPositiveButton("استبدال", (dialog, which) -> {
-                    startReplace(block, input.getText().toString());
+                    int requestedSize = block.optInt("font_size", 24);
+
+                    try {
+                        requestedSize = Integer.parseInt(sizeInput.getText().toString().trim());
+                    } catch (Exception ignored) {
+                    }
+
+                    startReplace(
+                            block,
+                            input.getText().toString(),
+                            requestedSize,
+                            colorInput.getText().toString().trim()
+                    );
                 })
                 .show();
     }
 
-    private void startReplace(JSONObject block, String newText) {
+    private void startReplace(
+            JSONObject block,
+            String newText,
+            int requestedFontSize,
+            String requestedColor
+    ) {
         JSONObject bbox = block.optJSONObject("bbox");
         if (bbox == null) return;
 
@@ -326,8 +355,16 @@ public class OcrEditorActivity extends Activity {
         i.putExtra(AiProcessService.EXTRA_W, bbox.optInt("w"));
         i.putExtra(AiProcessService.EXTRA_H, bbox.optInt("h"));
         i.putExtra(AiProcessService.EXTRA_NEW_TEXT, newText);
-        i.putExtra(AiProcessService.EXTRA_FONT_SIZE, block.optInt("font_size", 24));
-        i.putExtra(AiProcessService.EXTRA_TEXT_COLOR, block.optString("text_color", "#000000"));
+        i.putExtra(
+                AiProcessService.EXTRA_FONT_SIZE,
+                Math.max(8, requestedFontSize)
+        );
+
+        if (requestedColor == null || requestedColor.trim().isEmpty()) {
+            requestedColor = block.optString("text_color", "#000000");
+        }
+
+        i.putExtra(AiProcessService.EXTRA_TEXT_COLOR, requestedColor);
         i.putExtra(AiProcessService.EXTRA_DIRECTION, block.optString("direction", "auto"));
         i.putExtra(AiProcessService.EXTRA_LANGUAGE, block.optString("language", "unknown"));
         i.putExtra(AiProcessService.EXTRA_FONT_WEIGHT, block.optString("font_weight", "normal"));
