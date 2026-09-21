@@ -327,7 +327,7 @@ def detect_ocr_blocks_tesseract(img: Image.Image):
     data = pytesseract.image_to_data(
         img,
         lang="ara+eng",
-        config="--psm 6 -c preserve_interword_spaces=1",
+        config="--psm 6",
         output_type=Output.DICT
     )
 
@@ -344,8 +344,6 @@ def detect_ocr_blocks_tesseract(img: Image.Image):
         except Exception:
             conf = -1.0
 
-        # Keep each OCR WORD as its own selectable block.
-        # Do not merge words into a full line.
         if conf < 20:
             continue
 
@@ -354,24 +352,13 @@ def detect_ocr_blocks_tesseract(img: Image.Image):
         w = max(1, int(data["width"][i]))
         h = max(1, int(data["height"][i]))
 
-        # Small word-local padding only. This keeps replacement/cleanup away
-        # from neighboring words on the same line.
-        pad_x = max(1, int(round(w * 0.015)))
-        pad_y = max(1, int(round(h * 0.04)))
-        x1 = max(0, x - pad_x)
-        y1 = max(0, y - pad_y)
-        x2 = min(img.width, x + w + pad_x)
-        y2 = min(img.height, y + h + pad_y)
-        bw = max(1, x2 - x1)
-        bh = max(1, y2 - y1)
-
+        # image_to_data already gives a box per word. Keep those boxes
+        # separate so replacing one word never erases the whole line.
         language = detect_language(text)
         direction = "rtl" if has_arabic(text) else "ltr"
         number_type = detect_number_type(text)
-
-        # Style is measured independently for this exact word.
         text_color, bg_color, font_weight = color_info(img, x, y, w, h)
-        font_size = max(8, int(round(h * 0.98)))
+        font_size = max(9, int(round(h * 0.95)))
 
         blocks.append({
             "id": "",
@@ -379,30 +366,32 @@ def detect_ocr_blocks_tesseract(img: Image.Image):
             "language": language,
             "number_type": number_type,
             "direction": direction,
-            "bbox": {"x": x1, "y": y1, "w": bw, "h": bh},
-            "glyph_bbox": {"x": x, "y": y, "w": w, "h": h},
+            "bbox": {"x": x, "y": y, "w": w, "h": h},
             "font_size": font_size,
             "font_weight": font_weight,
             "text_color": text_color,
             "bg_color": bg_color,
             "confidence": round(max(0.0, min(1.0, conf / 100.0)), 3),
-            "engine": "tesseract-word",
+            "engine": "tesseract",
             "block_num": int(data["block_num"][i]),
             "par_num": int(data["par_num"][i]),
             "line_num": int(data["line_num"][i]),
             "word_num": int(data["word_num"][i])
         })
 
-    # Visual reading order. Arabic words on the same line are returned
-    # individually; their boxes remain independent and tappable.
-    blocks.sort(key=lambda b: (
-        b["bbox"]["y"],
-        b["line_num"],
-        -b["bbox"]["x"] if b["direction"] == "rtl" else b["bbox"]["x"]
-    ))
+    def sort_key(b):
+        rtl = b["direction"] == "rtl"
+        x_key = -b["bbox"]["x"] if rtl else b["bbox"]["x"]
+        return (
+            b["block_num"],
+            b["par_num"],
+            b["line_num"],
+            x_key
+        )
 
-    for idx, block in enumerate(blocks, 1):
-        block["id"] = f"blk_{idx:03d}"
+    blocks.sort(key=sort_key)
+    for i, block in enumerate(blocks, 1):
+        block["id"] = f"blk_{i:03d}"
 
     return blocks
 
@@ -893,7 +882,8 @@ def health():
         "same_text_mode": "preserve-original-pixels",
         "background_cleanup": "smooth-plane + Telea fallback",
         "nonblocking_jobs": True,
-        "lazy_ai_imports": True
+        "lazy_ai_imports": True,
+        "ocr_selection": "word-level boxes"
     }
 
 @app.post("/api/stage1/cut-first")
