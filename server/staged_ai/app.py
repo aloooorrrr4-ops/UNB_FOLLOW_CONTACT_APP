@@ -37,15 +37,28 @@ def get_lama():
 def get_easy_ocr():
     global _easy_ocr
     if _easy_ocr is None:
+        import torch
         import easyocr
+
+        # Keep PyTorch predictable on the small CPU server. EasyOCR's default
+        # dynamic quantization was stalling inside the quantized RNN path.
+        torch.set_num_threads(2)
+        try:
+            torch.set_num_interop_threads(1)
+        except RuntimeError:
+            pass
+
+        print("EasyOCR reader loading (CPU, quantize=False)...", flush=True)
         _easy_ocr = easyocr.Reader(
             ["ar", "en"],
             gpu=False,
+            quantize=False,
             model_storage_directory="/root/.EasyOCR/model",
             user_network_directory="/root/.EasyOCR/user_network",
             download_enabled=True,
             verbose=False
         )
+        print("EasyOCR reader ready.", flush=True)
     return _easy_ocr
 
 def ensure_image(data: bytes) -> Image.Image:
@@ -244,14 +257,19 @@ def color_info(img: Image.Image, x: int, y: int, w: int, h: int):
 
 def detect_ocr_blocks_easyocr(img: Image.Image):
     np_img = np.array(img)
-    results = get_easy_ocr().readtext(
+    reader = get_easy_ocr()
+    print("EasyOCR readtext started.", flush=True)
+    results = reader.readtext(
         np_img,
         detail=1,
         paragraph=False,
         decoder="greedy",
         batch_size=1,
-        workers=0
+        workers=0,
+        canvas_size=1280,
+        mag_ratio=1.0
     )
+    print(f"EasyOCR readtext finished: {len(results)} raw items", flush=True)
 
     blocks = []
     block_id = 1
@@ -762,7 +780,7 @@ def health():
         "service": "UNB Staged AI Editor",
         "stages": 4,
         "features": ["cutout", "inpaint", "composite", "ocr_detect", "ocr_replace"],
-        "ocr_engine": "EasyOCR Arabic+English + Tesseract fallback",
+        "ocr_engine": "EasyOCR Arabic+English (quantize off) + Tesseract fallback",
         "arabic_render": "RAQM + character-count sizing + box-safe RTL anchoring",
         "same_text_mode": "preserve-original-pixels",
         "background_cleanup": "smooth-plane + Telea fallback",
