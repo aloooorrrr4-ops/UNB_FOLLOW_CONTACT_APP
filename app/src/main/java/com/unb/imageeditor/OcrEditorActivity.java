@@ -25,6 +25,8 @@ import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.text.Editable;
+import android.text.TextWatcher;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -304,6 +306,21 @@ public class OcrEditorActivity extends Activity {
         input.setHint("اكتب النص البديل");
         box.addView(input);
 
+        TextView countInfo = new TextView(this);
+        countInfo.setText("عدد الحروف: الأصلي " + countVisible(block.optString("text")) +
+                " | الجديد " + countVisible(input.getText().toString()));
+        countInfo.setTextSize(14);
+        box.addView(countInfo);
+
+        input.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
+                countInfo.setText("عدد الحروف: الأصلي " + countVisible(block.optString("text")) +
+                        " | الجديد " + countVisible(s.toString()));
+            }
+            @Override public void afterTextChanged(Editable s) {}
+        });
+
         EditText sizeInput = new EditText(this);
         sizeInput.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
         sizeInput.setText(String.valueOf(block.optInt("font_size", 24)));
@@ -355,6 +372,7 @@ public class OcrEditorActivity extends Activity {
         i.putExtra(AiProcessService.EXTRA_W, bbox.optInt("w"));
         i.putExtra(AiProcessService.EXTRA_H, bbox.optInt("h"));
         i.putExtra(AiProcessService.EXTRA_NEW_TEXT, newText);
+        i.putExtra(AiProcessService.EXTRA_ORIGINAL_TEXT, block.optString("text"));
         i.putExtra(
                 AiProcessService.EXTRA_FONT_SIZE,
                 Math.max(8, requestedFontSize)
@@ -612,6 +630,16 @@ public class OcrEditorActivity extends Activity {
     private void delete(String name) {
         File f = new File(getFilesDir(), name);
         if (f.exists()) f.delete();
+    }
+
+    private int countVisible(String value) {
+        if (value == null || value.isEmpty()) return 0;
+        int count = 0;
+        for (int i = 0; i < value.length(); i++) {
+            char ch = value.charAt(i);
+            if (Character.isLetterOrDigit(ch)) count++;
+        }
+        return count;
     }
 
     private TextView text(String value, int size) {
