@@ -45,7 +45,6 @@ def get_paddle_ocr():
             use_doc_orientation_classify=False,
             use_doc_unwarping=False,
             use_textline_orientation=False,
-            text_detection_batch_size=1,
             text_recognition_batch_size=1
         )
     return _paddle_ocr
