@@ -2,7 +2,7 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import Response
 from rembg import remove, new_session
 from simple_lama_inpainting import SimpleLama
-from PIL import Image, ImageFilter, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageFilter, ImageDraw, ImageFont, ImageOps, features
 from io import BytesIO
 import arabic_reshaper
 from bidi.algorithm import get_display
@@ -419,14 +419,49 @@ def shape_text(text: str):
             return text
     return text
 
+def make_font(font_path: str | None, size: int, arabic: bool):
+    if not font_path:
+        return ImageFont.load_default(), False
+
+    if arabic:
+        try:
+            if features.check("raqm"):
+                return ImageFont.truetype(
+                    font_path,
+                    size=size,
+                    layout_engine=ImageFont.Layout.RAQM
+                ), True
+        except Exception:
+            pass
+
+    return ImageFont.truetype(font_path, size=size), False
+
+def text_metrics(draw, text: str, font, arabic: bool, use_raqm: bool):
+    if arabic and use_raqm:
+        box = draw.textbbox(
+            (0, 0),
+            text,
+            font=font,
+            direction="rtl",
+            language="ar"
+        )
+    else:
+        render_text = shape_text(text) if arabic else text
+        box = draw.textbbox((0, 0), render_text, font=font)
+
+    return box, max(1, box[2] - box[0]), max(1, box[3] - box[1])
+
 def erase_text_area(img: Image.Image, x: int, y: int, w: int, h: int):
     arr = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
     H, W = arr.shape[:2]
 
-    x1 = max(0, x - 2)
-    y1 = max(0, y - 2)
-    x2 = min(W, x + w + 2)
-    y2 = min(H, y + h + 2)
+    pad_x = max(2, int(w * 0.04))
+    pad_y = max(2, int(h * 0.10))
+
+    x1 = max(0, x - pad_x)
+    y1 = max(0, y - pad_y)
+    x2 = min(W, x + w + pad_x)
+    y2 = min(H, y + h + pad_y)
 
     mask = np.zeros((H, W), dtype=np.uint8)
     cv2.rectangle(mask, (x1, y1), (max(x1, x2 - 1), max(y1, y2 - 1)), 255, -1)
@@ -446,42 +481,86 @@ def draw_replacement(
     direction: str,
     font_weight: str
 ):
+    # Important: new_text is rendered exactly as entered by the user.
+    # OCR is never used to rewrite/correct the replacement text.
     canvas = img.copy()
     draw = ImageDraw.Draw(canvas)
-    shaped = shape_text(new_text)
+
     is_ar = has_arabic(new_text)
     font_path = pick_font(font_weight == "bold", is_ar)
 
-    size = max(8, int(font_size))
-    if font_path:
-        font = ImageFont.truetype(font_path, size=size)
-    else:
-        font = ImageFont.load_default()
+    requested_size = max(8, int(font_size))
+    min_size = max(8, int(round(requested_size * 0.82)))
 
-    max_w = max(1, w)
-    max_h = max(1, h)
+    chosen_font = None
+    chosen_raqm = False
+    chosen_box = None
+    tw = th = 1
 
-    for test_size in range(size, 7, -1):
-        if font_path:
-            font = ImageFont.truetype(font_path, size=test_size)
-        box = draw.textbbox((0, 0), shaped, font=font)
-        tw = max(1, box[2] - box[0])
-        th = max(1, box[3] - box[1])
-        if tw <= max_w and th <= max_h * 1.25:
+    # Keep the detected/original font size as much as possible.
+    # A longer replacement such as "التويتي" replacing "نادي" is allowed
+    # to grow horizontally instead of being crushed to a tiny unreadable font.
+    for test_size in range(requested_size, min_size - 1, -1):
+        font, use_raqm = make_font(font_path, test_size, is_ar)
+        box, test_w, test_h = text_metrics(
+            draw,
+            new_text,
+            font,
+            is_ar,
+            use_raqm
+        )
+
+        chosen_font = font
+        chosen_raqm = use_raqm
+        chosen_box = box
+        tw = test_w
+        th = test_h
+
+        if test_h <= max(1, int(h * 1.20)) and test_w <= max(w, int(w * 1.55)):
             break
 
-    box = draw.textbbox((0, 0), shaped, font=font)
-    tw = max(1, box[2] - box[0])
-    th = max(1, box[3] - box[1])
+    if chosen_font is None:
+        chosen_font, chosen_raqm = make_font(font_path, requested_size, is_ar)
+        chosen_box, tw, th = text_metrics(
+            draw,
+            new_text,
+            chosen_font,
+            is_ar,
+            chosen_raqm
+        )
 
-    if direction == "rtl" or is_ar:
-        tx = x + w - tw
+    # Preserve the centre of the original text box. This makes a longer
+    # replacement expand naturally to both sides instead of shrinking heavily.
+    center_x = x + (w / 2.0)
+    tx = int(round(center_x - (tw / 2.0)))
+    ty = int(round(y + max(0, (h - th) / 2.0) - chosen_box[1]))
+
+    tx = max(0, min(max(0, canvas.width - tw), tx))
+    ty = max(0, min(max(0, canvas.height - th), ty))
+
+    color = parse_hex_color(text_color)
+
+    if is_ar and chosen_raqm:
+        draw.text(
+            (tx + tw, ty),
+            new_text,
+            font=chosen_font,
+            fill=color,
+            anchor="ra",
+            direction="rtl",
+            language="ar"
+        )
     else:
-        tx = x
+        render_text = shape_text(new_text) if is_ar else new_text
+        draw.text(
+            (tx, ty),
+            render_text,
+            font=chosen_font,
+            fill=color
+        )
 
-    ty = y + max(0, int((h - th) / 2)) - box[1]
-    draw.text((tx, ty), shaped, font=font, fill=parse_hex_color(text_color))
     return canvas
+
 
 @app.get("/health")
 def health():
@@ -490,7 +569,8 @@ def health():
         "service": "UNB Staged AI Editor",
         "stages": 4,
         "features": ["cutout", "inpaint", "composite", "ocr_detect", "ocr_replace"],
-        "ocr_engine": "EasyOCR Arabic+English + Tesseract fallback"
+        "ocr_engine": "EasyOCR Arabic+English + Tesseract fallback",
+        "arabic_render": "RAQM when available + reshaper fallback"
     }
 
 @app.post("/api/stage1/cut-first")
