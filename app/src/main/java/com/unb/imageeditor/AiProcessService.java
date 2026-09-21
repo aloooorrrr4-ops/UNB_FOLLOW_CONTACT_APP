@@ -32,6 +32,7 @@ public class AiProcessService extends Service {
     public static final String EXTRA_W = "w";
     public static final String EXTRA_H = "h";
     public static final String EXTRA_NEW_TEXT = "new_text";
+    public static final String EXTRA_ORIGINAL_TEXT = "original_text";
     public static final String EXTRA_FONT_SIZE = "font_size";
     public static final String EXTRA_TEXT_COLOR = "text_color";
     public static final String EXTRA_DIRECTION = "direction";
@@ -179,6 +180,7 @@ public class AiProcessService extends Service {
         int h = intent.getIntExtra(EXTRA_H, 0);
         int fontSize = intent.getIntExtra(EXTRA_FONT_SIZE, 24);
         String newText = safe(intent.getStringExtra(EXTRA_NEW_TEXT));
+        String originalText = safe(intent.getStringExtra(EXTRA_ORIGINAL_TEXT));
         String textColor = defaultString(intent.getStringExtra(EXTRA_TEXT_COLOR), "#000000");
         String direction = defaultString(intent.getStringExtra(EXTRA_DIRECTION), "auto");
         String language = defaultString(intent.getStringExtra(EXTRA_LANGUAGE), "unknown");
@@ -192,6 +194,7 @@ public class AiProcessService extends Service {
                 Part.text("w", String.valueOf(w)),
                 Part.text("h", String.valueOf(h)),
                 Part.text("new_text", newText),
+                Part.text("original_text", originalText),
                 Part.text("font_size", String.valueOf(fontSize)),
                 Part.text("text_color", textColor),
                 Part.text("direction", direction),
