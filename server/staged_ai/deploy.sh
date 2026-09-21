@@ -29,10 +29,23 @@ docker run -d \
   -v /opt/unb-stage-ai/easyocr:/root/.EasyOCR \
   unb-stage-ai:latest
 
-sleep 8
+echo "Waiting for API health..."
+healthy=0
+for i in $(seq 1 30); do
+  if curl -fsS --max-time 5 http://127.0.0.1:18083/health >/tmp/unb_health.json 2>/dev/null; then
+    healthy=1
+    break
+  fi
+  sleep 4
+done
 
 echo "===== HEALTH ====="
-curl --max-time 30 http://127.0.0.1:18083/health || true
+if [ "$healthy" = "1" ]; then
+  cat /tmp/unb_health.json
+  echo
+else
+  echo "Health check did not become ready within 120 seconds."
+fi
 
 echo
 echo "===== STATUS ====="
