@@ -17,6 +17,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.util.UUID;
 
 public class AiProcessService extends Service {
@@ -26,12 +27,30 @@ public class AiProcessService extends Service {
     public static final String EXTRA_SERVER = "server";
     public static final String EXTRA_MESSAGE = "message";
 
+    public static final String EXTRA_X = "x";
+    public static final String EXTRA_Y = "y";
+    public static final String EXTRA_W = "w";
+    public static final String EXTRA_H = "h";
+    public static final String EXTRA_NEW_TEXT = "new_text";
+    public static final String EXTRA_FONT_SIZE = "font_size";
+    public static final String EXTRA_TEXT_COLOR = "text_color";
+    public static final String EXTRA_DIRECTION = "direction";
+    public static final String EXTRA_LANGUAGE = "language";
+    public static final String EXTRA_FONT_WEIGHT = "font_weight";
+
+    public static final int OCR_DETECT = 5;
+    public static final int OCR_REPLACE = 6;
+
     public static final String FIRST = "first_input.img";
     public static final String SECOND = "second_input.img";
     public static final String STAGE1 = "stage1.png";
     public static final String STAGE2 = "stage2.jpg";
     public static final String STAGE3 = "stage3.png";
     public static final String STAGE4 = "stage4.jpg";
+
+    public static final String OCR_INPUT = "ocr_input.img";
+    public static final String OCR_BLOCKS = "ocr_blocks.json";
+    public static final String OCR_RESULT = "ocr_result.png";
 
     private static final String CHANNEL_ID = "unb_ai_processing";
     private static final int NOTIFICATION_ID = 4201;
@@ -52,7 +71,7 @@ public class AiProcessService extends Service {
         final int stage = intent.getIntExtra(EXTRA_STAGE, 0);
         final String server = intent.getStringExtra(EXTRA_SERVER);
 
-        if (stage < 1 || stage > 4 || server == null || server.trim().isEmpty()) {
+        if (stage < 1 || stage > OCR_REPLACE || server == null || server.trim().isEmpty()) {
             stopSelf(startId);
             return START_NOT_STICKY;
         }
@@ -60,13 +79,13 @@ public class AiProcessService extends Service {
         working = true;
         startForeground(
                 NOTIFICATION_ID,
-                buildNotification("جاري تنفيذ المرحلة " + stage + " بالذكاء الاصطناعي")
+                buildNotification(notificationText(stage))
         );
 
         new Thread(() -> {
             try {
-                runStage(stage, normalizeServer(server));
-                sendResult(ACTION_DONE, stage, "تمت المرحلة " + stage + " بنجاح");
+                runStage(stage, normalizeServer(server), intent);
+                sendResult(ACTION_DONE, stage, doneText(stage));
             } catch (Exception e) {
                 String msg = e.getMessage() == null ? "خطأ غير معروف" : e.getMessage();
                 sendResult(ACTION_FAILED, stage, msg);
@@ -80,14 +99,14 @@ public class AiProcessService extends Service {
         return START_NOT_STICKY;
     }
 
-    private void runStage(int stage, String server) throws Exception {
+    private void runStage(int stage, String server, Intent intent) throws Exception {
         File dir = getFilesDir();
 
         if (stage == 1) {
             byte[] first = readFile(required(dir, FIRST));
             byte[] result = postMultipart(
                     server + "/api/stage1/cut-first",
-                    new Part("file", "first.jpg", "image/jpeg", first)
+                    Part.file("file", "first.jpg", "image/jpeg", first)
             );
             writeFile(new File(dir, STAGE1), result);
             return;
@@ -98,8 +117,8 @@ public class AiProcessService extends Service {
             byte[] cutout = readFile(required(dir, STAGE1));
             byte[] result = postMultipart(
                     server + "/api/stage2/restore-background",
-                    new Part("file", "first.jpg", "image/jpeg", first),
-                    new Part("cutout", "stage1.png", "image/png", cutout)
+                    Part.file("file", "first.jpg", "image/jpeg", first),
+                    Part.file("cutout", "stage1.png", "image/png", cutout)
             );
             writeFile(new File(dir, STAGE2), result);
             return;
@@ -109,25 +128,97 @@ public class AiProcessService extends Service {
             byte[] second = readFile(required(dir, SECOND));
             byte[] result = postMultipart(
                     server + "/api/stage3/cut-second",
-                    new Part("file", "second.jpg", "image/jpeg", second)
+                    Part.file("file", "second.jpg", "image/jpeg", second)
             );
             writeFile(new File(dir, STAGE3), result);
             return;
         }
 
-        byte[] first = readFile(required(dir, FIRST));
-        byte[] background = readFile(required(dir, STAGE2));
-        byte[] subject = readFile(required(dir, STAGE3));
-        byte[] targetCutout = readFile(required(dir, STAGE1));
+        if (stage == 4) {
+            byte[] first = readFile(required(dir, FIRST));
+            byte[] background = readFile(required(dir, STAGE2));
+            byte[] subject = readFile(required(dir, STAGE3));
+            byte[] targetCutout = readFile(required(dir, STAGE1));
+
+            byte[] result = postMultipart(
+                    server + "/api/stage4/composite",
+                    Part.file("target", "first.jpg", "image/jpeg", first),
+                    Part.file("background", "background.jpg", "image/jpeg", background),
+                    Part.file("subject", "subject.png", "image/png", subject),
+                    Part.file("target_cutout", "stage1.png", "image/png", targetCutout)
+            );
+            writeFile(new File(dir, STAGE4), result);
+            return;
+        }
+
+        if (stage == OCR_DETECT) {
+            File source = new File(dir, OCR_RESULT);
+            if (!source.exists() || source.length() == 0) {
+                source = required(dir, OCR_INPUT);
+            }
+
+            byte[] image = readFile(source);
+            byte[] result = postMultipart(
+                    server + "/api/ocr/detect",
+                    Part.file("image", "ocr.jpg", "image/jpeg", image)
+            );
+            writeFile(new File(dir, OCR_BLOCKS), result);
+            return;
+        }
+
+        File source = new File(dir, OCR_RESULT);
+        if (!source.exists() || source.length() == 0) {
+            source = required(dir, OCR_INPUT);
+        }
+
+        byte[] image = readFile(source);
+
+        int x = intent.getIntExtra(EXTRA_X, 0);
+        int y = intent.getIntExtra(EXTRA_Y, 0);
+        int w = intent.getIntExtra(EXTRA_W, 0);
+        int h = intent.getIntExtra(EXTRA_H, 0);
+        int fontSize = intent.getIntExtra(EXTRA_FONT_SIZE, 24);
+        String newText = safe(intent.getStringExtra(EXTRA_NEW_TEXT));
+        String textColor = defaultString(intent.getStringExtra(EXTRA_TEXT_COLOR), "#000000");
+        String direction = defaultString(intent.getStringExtra(EXTRA_DIRECTION), "auto");
+        String language = defaultString(intent.getStringExtra(EXTRA_LANGUAGE), "unknown");
+        String fontWeight = defaultString(intent.getStringExtra(EXTRA_FONT_WEIGHT), "normal");
 
         byte[] result = postMultipart(
-                server + "/api/stage4/composite",
-                new Part("target", "first.jpg", "image/jpeg", first),
-                new Part("background", "background.jpg", "image/jpeg", background),
-                new Part("subject", "subject.png", "image/png", subject),
-                new Part("target_cutout", "stage1.png", "image/png", targetCutout)
+                server + "/api/ocr/replace",
+                Part.file("image", "ocr.png", "image/png", image),
+                Part.text("x", String.valueOf(x)),
+                Part.text("y", String.valueOf(y)),
+                Part.text("w", String.valueOf(w)),
+                Part.text("h", String.valueOf(h)),
+                Part.text("new_text", newText),
+                Part.text("font_size", String.valueOf(fontSize)),
+                Part.text("text_color", textColor),
+                Part.text("direction", direction),
+                Part.text("language", language),
+                Part.text("font_weight", fontWeight)
         );
-        writeFile(new File(dir, STAGE4), result);
+        writeFile(new File(dir, OCR_RESULT), result);
+    }
+
+    private String safe(String value) {
+        return value == null ? "" : value;
+    }
+
+    private String defaultString(String value, String fallback) {
+        return value == null || value.trim().isEmpty() ? fallback : value;
+    }
+
+    private String notificationText(int stage) {
+        if (stage == OCR_DETECT) return "جاري اكتشاف النصوص العربية والإنجليزية";
+        if (stage == OCR_REPLACE) return "جاري استبدال النص داخل الصورة";
+        return "جاري تنفيذ المرحلة " + stage + " بالذكاء الاصطناعي";
+    }
+
+    private String doneText(int stage) {
+        if (stage == OCR_DETECT) return "تم اكتشاف النصوص";
+        if (stage == OCR_REPLACE) return "تم استبدال النص";
+        return "تمت المرحلة " + stage + " بنجاح";
     }
 
     private File required(File dir, String name) throws Exception {
@@ -168,28 +259,44 @@ public class AiProcessService extends Service {
 
             try (OutputStream out = c.getOutputStream()) {
                 for (Part p : parts) {
-                    String head =
-                            "--" + boundary + "\r\n" +
-                            "Content-Disposition: form-data; name=\"" + p.name +
-                            "\"; filename=\"" + p.filename + "\"\r\n" +
-                            "Content-Type: " + p.mime + "\r\n\r\n";
+                    StringBuilder head = new StringBuilder();
+                    head.append("--").append(boundary).append("\r\n");
+                    head.append("Content-Disposition: form-data; name=\"")
+                            .append(p.name).append("\"");
 
-                    out.write(head.getBytes("UTF-8"));
+                    if (p.filename != null) {
+                        head.append("; filename=\"").append(p.filename).append("\"");
+                    }
+
+                    head.append("\r\n");
+
+                    if (p.mime != null) {
+                        head.append("Content-Type: ").append(p.mime).append("\r\n");
+                    }
+
+                    head.append("\r\n");
+
+                    out.write(head.toString().getBytes(StandardCharsets.UTF_8));
                     out.write(p.bytes);
-                    out.write("\r\n".getBytes("UTF-8"));
+                    out.write("\r\n".getBytes(StandardCharsets.UTF_8));
                 }
-                out.write(("--" + boundary + "--\r\n").getBytes("UTF-8"));
+
+                out.write(("--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
             }
 
             int code = c.getResponseCode();
+
             if (code < 200 || code >= 300) {
                 InputStream err = c.getErrorStream();
                 String body = "";
-                if (err != null) body = new String(readAll(err), "UTF-8");
+                if (err != null) {
+                    body = new String(readAll(err), StandardCharsets.UTF_8);
+                }
                 throw new Exception("HTTP " + code + (body.isEmpty() ? "" : " — " + body));
             }
 
             return readAll(c.getInputStream());
+
         } finally {
             c.disconnect();
         }
@@ -211,11 +318,14 @@ public class AiProcessService extends Service {
     private byte[] readAll(InputStream input) throws Exception {
         try (InputStream in = input;
              ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+
             byte[] buffer = new byte[8192];
             int n;
+
             while ((n = in.read(buffer)) != -1) {
                 out.write(buffer, 0, n);
             }
+
             return out.toByteArray();
         }
     }
@@ -228,8 +338,11 @@ public class AiProcessService extends Service {
                     NotificationManager.IMPORTANCE_LOW
             );
             channel.setDescription("يبقي معالجة الذكاء الاصطناعي مستمرة عند الخروج من التطبيق");
+
             NotificationManager nm = getSystemService(NotificationManager.class);
-            if (nm != null) nm.createNotificationChannel(channel);
+            if (nm != null) {
+                nm.createNotificationChannel(channel);
+            }
         }
     }
 
@@ -267,11 +380,24 @@ public class AiProcessService extends Service {
         final String mime;
         final byte[] bytes;
 
-        Part(String name, String filename, String mime, byte[] bytes) {
+        private Part(String name, String filename, String mime, byte[] bytes) {
             this.name = name;
             this.filename = filename;
             this.mime = mime;
             this.bytes = bytes;
+        }
+
+        static Part file(String name, String filename, String mime, byte[] bytes) {
+            return new Part(name, filename, mime, bytes);
+        }
+
+        static Part text(String name, String value) {
+            return new Part(
+                    name,
+                    null,
+                    "text/plain; charset=UTF-8",
+                    value.getBytes(StandardCharsets.UTF_8)
+            );
         }
     }
 }
