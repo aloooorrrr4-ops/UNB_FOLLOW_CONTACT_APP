@@ -712,47 +712,318 @@ def _smooth_background_fill(arr_rgb: np.ndarray, x1: int, y1: int, x2: int, y2: 
     fill = np.clip(fill, 0, 255).astype(np.uint8)
     return fill, residual
 
+
+def _tight_word_mask(img: Image.Image, x: int, y: int, w: int, h: int):
+    arr = np.array(img.convert("RGB"))
+    H, W = arr.shape[:2]
+
+    x1 = max(0, x)
+    y1 = max(0, y)
+    x2 = min(W, x + w)
+    y2 = min(H, y + h)
+    roi = arr[y1:y2, x1:x2]
+
+    if roi.size == 0:
+        return None, None, None
+
+    bg = estimate_background_rgb(img, x, y, w, h)
+    diff = np.linalg.norm(roi.astype(np.float32) - bg.reshape(1, 1, 3), axis=2)
+
+    # Adaptive threshold: text is the locally strongest contrast, while
+    # preserving anti-aliased edge pixels.
+    p70 = float(np.percentile(diff, 70))
+    p88 = float(np.percentile(diff, 88))
+    threshold = max(10.0, min(p88 * 0.72, max(14.0, p70)))
+
+    mask = np.where(diff >= threshold, 255, 0).astype(np.uint8)
+    mask = cv2.medianBlur(mask, 3)
+
+    # Remove isolated speckles without thickening the actual glyphs.
+    kernel = np.ones((2, 2), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+
+    ys, xs = np.where(mask > 0)
+    if len(xs) < 4:
+        return mask, (x1, y1, x2, y2), None
+
+    gx1, gy1 = int(xs.min()), int(ys.min())
+    gx2, gy2 = int(xs.max()) + 1, int(ys.max()) + 1
+
+    return mask, (x1, y1, x2, y2), {
+        "x": x1 + gx1,
+        "y": y1 + gy1,
+        "w": max(1, gx2 - gx1),
+        "h": max(1, gy2 - gy1),
+        "local_x": gx1,
+        "local_y": gy1,
+        "local_w": max(1, gx2 - gx1),
+        "local_h": max(1, gy2 - gy1),
+    }
+
+
+def _font_candidates(arabic: bool, bold: bool):
+    paths = []
+
+    if arabic:
+        preferred = [
+            "*NotoNaskhArabic*Bold*.ttf" if bold else "*NotoNaskhArabic*Regular*.ttf",
+            "*NotoSansArabic*Bold*.ttf" if bold else "*NotoSansArabic*Regular*.ttf",
+            "*NotoKufiArabic*Bold*.ttf" if bold else "*NotoKufiArabic*Regular*.ttf",
+            "*Naskh*Bold*.ttf" if bold else "*Naskh*Regular*.ttf",
+            "*Arabic*Bold*.ttf" if bold else "*Arabic*Regular*.ttf",
+        ]
+        roots = [
+            "/usr/share/fonts/truetype/noto/",
+            "/usr/share/fonts/opentype/noto/",
+            "/usr/share/fonts/truetype/",
+        ]
+        for root in roots:
+            for pat in preferred:
+                paths.extend(glob.glob(root + pat))
+                paths.extend(glob.glob(root + "**/" + pat, recursive=True))
+
+    if bold:
+        paths.extend(glob.glob("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"))
+    else:
+        paths.extend(glob.glob("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"))
+
+    # Stable order, no duplicates, and keep the search bounded.
+    out = []
+    seen = set()
+    for path in paths:
+        if path not in seen and os.path.isfile(path):
+            seen.add(path)
+            out.append(path)
+        if len(out) >= 14:
+            break
+    return out
+
+
+def _render_text_alpha(text: str, font_path: str, size: int, arabic: bool):
+    font, use_raqm = make_font(font_path, max(6, int(size)), arabic)
+
+    # Large scratch canvas; crop to real glyph pixels afterwards.
+    scratch_w = max(256, int(size * max(8, len(text)) * 2.2))
+    scratch_h = max(128, int(size * 3.2))
+    layer = Image.new("L", (scratch_w, scratch_h), 0)
+    d = ImageDraw.Draw(layer)
+
+    if arabic and use_raqm:
+        d.text(
+            (scratch_w - 8, 8),
+            text,
+            font=font,
+            fill=255,
+            anchor="ra",
+            direction="rtl",
+            language="ar"
+        )
+    else:
+        render_text = shape_text(text) if arabic else text
+        d.text((8, 8), render_text, font=font, fill=255)
+
+    box = layer.getbbox()
+    if box is None:
+        return None, use_raqm
+    return layer.crop(box), use_raqm
+
+
+def _font_size_for_height(font_path: str, text: str, arabic: bool, target_h: int):
+    lo = 6
+    hi = max(16, int(target_h * 3.2))
+    best_size = max(8, int(target_h))
+    best_delta = 10**9
+
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        alpha, _ = _render_text_alpha(text, font_path, mid, arabic)
+        gh = alpha.height if alpha is not None else 0
+        delta = abs(gh - target_h)
+
+        if delta < best_delta:
+            best_delta = delta
+            best_size = mid
+
+        if gh < target_h:
+            lo = mid + 1
+        else:
+            hi = mid - 1
+
+    return max(6, best_size)
+
+
+def _normalized_mask(mask: np.ndarray, width=128, height=64):
+    if mask is None or mask.size == 0:
+        return None
+    src = np.where(mask > 0, 255, 0).astype(np.uint8)
+    ys, xs = np.where(src > 0)
+    if len(xs) == 0:
+        return None
+    crop = src[ys.min():ys.max()+1, xs.min():xs.max()+1]
+    return cv2.resize(crop, (width, height), interpolation=cv2.INTER_AREA)
+
+
+def _match_source_font(img: Image.Image, x: int, y: int, w: int, h: int,
+                       original_text: str, font_weight: str):
+    arabic = has_arabic(original_text)
+    mask, _, glyph = _tight_word_mask(img, x, y, w, h)
+
+    if glyph is None or not original_text.strip():
+        fallback = pick_font(font_weight == "bold", arabic)
+        return fallback, max(8, int(h * 0.95)), glyph, None
+
+    local = mask[
+        glyph["local_y"]:glyph["local_y"] + glyph["local_h"],
+        glyph["local_x"]:glyph["local_x"] + glyph["local_w"]
+    ]
+    target_norm = _normalized_mask(local)
+
+    candidates = _font_candidates(arabic, font_weight == "bold")
+    fallback = pick_font(font_weight == "bold", arabic)
+    if fallback and fallback not in candidates:
+        candidates.append(fallback)
+
+    if not candidates or target_norm is None:
+        return fallback, max(8, int(h * 0.95)), glyph, None
+
+    best = None
+
+    for path in candidates:
+        try:
+            size = _font_size_for_height(
+                path,
+                original_text,
+                arabic,
+                max(4, glyph["h"])
+            )
+            alpha, use_raqm = _render_text_alpha(original_text, path, size, arabic)
+            if alpha is None:
+                continue
+
+            rendered = np.array(alpha)
+            rendered_norm = _normalized_mask(rendered)
+            if rendered_norm is None:
+                continue
+
+            # Compare silhouette plus stroke density. This is not font-name
+            # recognition; it finds the installed font whose raster shape most
+            # closely resembles the actual source word.
+            a = (target_norm.astype(np.float32) / 255.0)
+            b = (rendered_norm.astype(np.float32) / 255.0)
+            mse = float(np.mean((a - b) ** 2))
+            density_delta = abs(float(np.mean(a > 0.35)) - float(np.mean(b > 0.35)))
+            score = mse + density_delta * 0.55
+
+            if best is None or score < best["score"]:
+                best = {
+                    "path": path,
+                    "size": size,
+                    "score": score,
+                    "raqm": use_raqm
+                }
+        except Exception:
+            continue
+
+    if best is None:
+        return fallback, max(8, int(h * 0.95)), glyph, None
+
+    return best["path"], best["size"], glyph, round(best["score"], 4)
+
+
+def _source_render_style(img: Image.Image, x: int, y: int, w: int, h: int,
+                         original_text: str, font_weight: str):
+    font_path, font_size, glyph, font_score = _match_source_font(
+        img, x, y, w, h, original_text, font_weight
+    )
+
+    text_color, bg_color, detected_weight = color_info(img, x, y, w, h)
+
+    arr = np.array(img.convert("RGB"))
+    H, W = arr.shape[:2]
+    x1 = max(0, x)
+    y1 = max(0, y)
+    x2 = min(W, x + w)
+    y2 = min(H, y + h)
+    roi = arr[y1:y2, x1:x2]
+
+    blur_radius = 0.25
+    opacity = 255
+
+    if roi.size:
+        gray = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
+        sharpness = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+        if sharpness < 25:
+            blur_radius = 0.85
+        elif sharpness < 55:
+            blur_radius = 0.60
+        elif sharpness < 100:
+            blur_radius = 0.40
+
+        # Slightly lower alpha on low-contrast scanned text.
+        bg = estimate_background_rgb(img, x, y, w, h)
+        fg = np.array(parse_hex_color(text_color), dtype=np.float32)
+        contrast = float(np.linalg.norm(fg - bg))
+        if contrast < 55:
+            opacity = 210
+        elif contrast < 90:
+            opacity = 230
+
+    return {
+        "font_path": font_path,
+        "font_size": max(6, int(font_size)),
+        "glyph": glyph,
+        "font_score": font_score,
+        "text_color": text_color,
+        "bg_color": bg_color,
+        "font_weight": detected_weight or font_weight,
+        "blur_radius": blur_radius,
+        "opacity": opacity,
+    }
+
+
 def erase_text_area(img: Image.Image, x: int, y: int, w: int, h: int):
     rgb = np.array(img.convert("RGB"))
     H, W = rgb.shape[:2]
 
-    # Tiny horizontal padding avoids touching neighboring Arabic words.
-    pad_x = max(1, int(round(w * 0.01)))
-    pad_y = max(2, int(round(h * 0.10)))
+    local_mask, bounds, glyph = _tight_word_mask(img, x, y, w, h)
+    if local_mask is None or bounds is None:
+        return img.copy()
 
-    x1 = max(0, x - pad_x)
-    y1 = max(0, y - pad_y)
-    x2 = min(W, x + w + pad_x)
-    y2 = min(H, y + h + pad_y)
-
+    x1, y1, x2, y2 = bounds
     if x2 <= x1 or y2 <= y1:
         return img.copy()
 
-    fill, residual = _smooth_background_fill(rgb, x1, y1, x2, y2)
+    # Erase only actual glyph strokes. This avoids the dirty rectangular patch
+    # around the replaced word and protects neighboring words/background detail.
+    glyph_mask = np.where(local_mask > 0, 255, 0).astype(np.uint8)
+    dilate_px = max(1, int(round(max(1, min(w, h)) * 0.035)))
+    kernel = np.ones((dilate_px * 2 + 1, dilate_px * 2 + 1), np.uint8)
+    glyph_mask = cv2.dilate(glyph_mask, kernel, iterations=1)
 
-    # Receipts/documents usually have a smooth or gently graded background.
-    # Plane reconstruction prevents the dirty halo that Telea creates there.
-    if fill is not None and residual <= 18.0:
-        restored = rgb.copy()
-        restored[y1:y2, x1:x2] = fill
+    full_mask = np.zeros((H, W), dtype=np.uint8)
+    full_mask[y1:y2, x1:x2] = glyph_mask
 
-        mask = np.zeros((H, W), dtype=np.uint8)
-        cv2.rectangle(mask, (x1, y1), (x2 - 1, y2 - 1), 255, -1)
-        soft = cv2.GaussianBlur(mask, (0, 0), sigmaX=1.2).astype(np.float32) / 255.0
-        soft = soft[..., None]
-
-        blended = (
-            restored.astype(np.float32) * soft +
-            rgb.astype(np.float32) * (1.0 - soft)
-        )
-        return Image.fromarray(np.clip(blended, 0, 255).astype(np.uint8))
-
-    # Complex/textured area: fall back to OpenCV inpainting.
     bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-    mask = np.zeros((H, W), dtype=np.uint8)
-    cv2.rectangle(mask, (x1, y1), (x2 - 1, y2 - 1), 255, -1)
-    restored = cv2.inpaint(bgr, mask, 3, cv2.INPAINT_TELEA)
-    return Image.fromarray(cv2.cvtColor(restored, cv2.COLOR_BGR2RGB))
+    restored_bgr = cv2.inpaint(bgr, full_mask, 2, cv2.INPAINT_TELEA)
+    restored = cv2.cvtColor(restored_bgr, cv2.COLOR_BGR2RGB)
+
+    # For smooth document backgrounds, blend in a locally fitted plane only
+    # under the glyph mask. It removes the gray halo without flattening the
+    # whole word rectangle.
+    fill, residual = _smooth_background_fill(rgb, x1, y1, x2, y2)
+    if fill is not None and residual <= 24.0:
+        plane = restored.copy()
+        plane[y1:y2, x1:x2] = fill
+
+        soft = cv2.GaussianBlur(full_mask, (0, 0), sigmaX=0.8).astype(np.float32) / 255.0
+        soft = soft[..., None]
+        restored = (
+            plane.astype(np.float32) * soft +
+            restored.astype(np.float32) * (1.0 - soft)
+        ).clip(0, 255).astype(np.uint8)
+
+    return Image.fromarray(restored)
+
 
 def draw_replacement(
     img: Image.Image,
@@ -765,109 +1036,117 @@ def draw_replacement(
     font_size: int,
     text_color: str,
     direction: str,
+    font_weight: str,
+    source_style: dict | None = None
+):
+    canvas = img.copy()
+    is_ar = has_arabic(new_text)
+
+    style = source_style or {}
+    glyph = style.get("glyph")
+
+    font_path = style.get("font_path") or pick_font(font_weight == "bold", is_ar)
+
+    # Auto-match source height first. Manual font size remains a fallback when
+    # source analysis was not possible.
+    if glyph and font_path:
+        chosen_size = _font_size_for_height(
+            font_path,
+            new_text,
+            is_ar,
+            max(4, int(glyph["h"]))
+        )
+    else:
+        chosen_size = max(8, int(font_size))
+
+    alpha, use_raqm = _render_text_alpha(new_text, font_path, chosen_size, is_ar) if font_path else (None, False)
+    if alpha is None:
+        return canvas
+
+    # Preserve source text height. Keep the new word's natural width at that
+    # height; only cap extreme expansion to protect neighboring words.
+    target_h = max(1, int(glyph["h"])) if glyph else max(1, h)
+    scale_h = target_h / float(max(1, alpha.height))
+    natural_w = max(1, int(round(alpha.width * scale_h)))
+
+    old_units = count_text_units(original_text)
+    new_units = count_text_units(new_text)
+    max_expand = 1.18 if new_units <= old_units else min(1.55, 1.08 + 0.07 * (new_units - old_units))
+    max_w = max(1, int(round(w * max_expand)))
+    target_w = min(natural_w, max_w)
+
+    alpha = alpha.resize(
+        (target_w, target_h),
+        Image.Resampling.LANCZOS
+    )
+
+    # Real source glyph anchor, not the coarse OCR box.
+    if glyph:
+        source_right = int(glyph["x"] + glyph["w"])
+        source_left = int(glyph["x"])
+        source_top = int(glyph["y"])
+    else:
+        source_right = x + w
+        source_left = x
+        source_top = y
+
+    if direction == "rtl" or is_ar:
+        paste_x = source_right - target_w
+    else:
+        paste_x = source_left
+    paste_y = source_top
+
+    paste_x = max(0, min(canvas.width - target_w, paste_x))
+    paste_y = max(0, min(canvas.height - target_h, paste_y))
+
+    # Source color takes priority for automatic matching. The UI color remains
+    # available as fallback if source analysis did not succeed.
+    color_hex = style.get("text_color") or text_color
+    color = parse_hex_color(color_hex)
+    opacity = int(style.get("opacity", 255))
+
+    rgba = Image.new("RGBA", (target_w, target_h), (*color, 0))
+    rgba.putalpha(alpha.point(lambda p: int(p * opacity / 255)))
+
+    blur_radius = float(style.get("blur_radius", 0.35))
+    if blur_radius > 0.01:
+        rgba = rgba.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+
+    layer = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+    layer.alpha_composite(rgba, (paste_x, paste_y))
+
+    return Image.alpha_composite(canvas.convert("RGBA"), layer).convert("RGB")
+
+
+def replace_text_professional(
+    img: Image.Image,
+    x: int,
+    y: int,
+    w: int,
+    h: int,
+    new_text: str,
+    original_text: str,
+    font_size: int,
+    text_color: str,
+    direction: str,
     font_weight: str
 ):
-    # new_text is rendered exactly as typed by the user.
-    canvas = img.copy()
-    draw = ImageDraw.Draw(canvas)
-
-    # Estimate local background/contrast so the replacement blends with
-    # scanned or slightly blurry documents rather than looking digitally sharp.
-    local_bg = estimate_background_rgb(img, x, y, w, h)
-
-    is_ar = has_arabic(new_text)
-    font_path = pick_font(font_weight == "bold", is_ar)
-
-    old_count = count_text_units(original_text)
-    new_count = count_text_units(new_text)
-
-    requested_size = max(8, int(font_size))
-
-    # Character-count ratio gives a good first estimate when replacing a short
-    # word with a much longer one. Actual pixel width below is still decisive.
-    ratio = old_count / float(max(1, new_count))
-    ratio_scale = min(1.0, max(0.70, ratio ** 0.5))
-    start_size = max(8, int(round(requested_size * ratio_scale)))
-
-    chosen_font = None
-    chosen_raqm = False
-    chosen_box = None
-    tw = th = 1
-
-    # Always fit inside the original OCR box. This prevents the replacement
-    # from running into the adjacent Arabic word.
-    for test_size in range(start_size, 7, -1):
-        font, use_raqm = make_font(font_path, test_size, is_ar)
-        box, test_w, test_h = text_metrics(
-            draw,
-            new_text,
-            font,
-            is_ar,
-            use_raqm
-        )
-
-        chosen_font = font
-        chosen_raqm = use_raqm
-        chosen_box = box
-        tw = test_w
-        th = test_h
-
-        if test_w <= max(1, int(w * 0.98)) and test_h <= max(1, int(h * 1.12)):
-            break
-
-    if chosen_font is None:
-        chosen_font, chosen_raqm = make_font(font_path, 8, is_ar)
-        chosen_box, tw, th = text_metrics(
-            draw,
-            new_text,
-            chosen_font,
-            is_ar,
-            chosen_raqm
-        )
-
-    # Preserve the original direction and anchor. Arabic is anchored to the
-    # right edge of the selected word box.
-    if direction == "rtl" or is_ar:
-        tx = int(round(x + w - tw))
-    else:
-        tx = int(round(x))
-
-    ty = int(round(y + max(0, (h - th) / 2.0) - chosen_box[1]))
-
-    tx = max(0, min(max(0, canvas.width - tw), tx))
-    ty = max(0, min(max(0, canvas.height - th), ty))
-
-    color = parse_hex_color(text_color)
-
-    # Draw onto a transparent layer so we can soften it to match source quality.
-    text_layer = Image.new("RGBA", canvas.size, (0,0,0,0))
-    text_draw = ImageDraw.Draw(text_layer)
-
-    if is_ar and chosen_raqm:
-        text_draw.text(
-            (tx + tw, ty),
-            new_text,
-            font=chosen_font,
-            fill=(*color, 255),
-            anchor="ra",
-            direction="rtl",
-            language="ar"
-        )
-    else:
-        render_text = shape_text(new_text) if is_ar else new_text
-        text_draw.text(
-            (tx, ty),
-            render_text,
-            font=chosen_font,
-            fill=(*color, 255)
-        )
-
-    # Slight optical softening; scanned/phone images rarely contain perfectly
-    # sharp digital glyph edges.
-    text_layer = text_layer.filter(ImageFilter.GaussianBlur(radius=0.35))
-    canvas = Image.alpha_composite(canvas.convert("RGBA"), text_layer).convert("RGB")
-
-    return canvas
+    style = _source_render_style(
+        img, x, y, w, h, original_text, font_weight
+    )
+    cleaned = erase_text_area(img, x, y, w, h)
+    result = draw_replacement(
+        cleaned,
+        x, y, w, h,
+        new_text,
+        original_text,
+        font_size,
+        text_color,
+        direction,
+        font_weight,
+        source_style=style
+    )
+    return result, style
 
 
 @app.get("/health")
@@ -880,7 +1159,8 @@ def health():
         "ocr_engine": "Tesseract Arabic+English word-level stable mode",
         "arabic_render": "RAQM + character-count sizing + box-safe RTL anchoring",
         "same_text_mode": "preserve-original-pixels",
-        "background_cleanup": "smooth-plane + Telea fallback",
+        "background_cleanup": "glyph-mask inpaint + local-plane blend",
+        "text_render": "source font-shape match + real glyph anchor + adaptive blur",
         "nonblocking_jobs": True,
         "lazy_ai_imports": True,
         "ocr_selection": "word-level boxes"
@@ -1056,10 +1336,9 @@ async def ocr_replace(
                 }
             )
 
-        cleaned = await asyncio.to_thread(erase_text_area, img, x, y, w, h)
-        result = await asyncio.to_thread(
-            draw_replacement,
-            cleaned,
+        result, style = await asyncio.to_thread(
+            replace_text_professional,
+            img,
             x, y, w, h,
             new_text,
             original_text,
@@ -1072,7 +1351,11 @@ async def ocr_replace(
         return Response(
             png_bytes(result),
             media_type="image/png",
-            headers={"Cache-Control": "no-store"}
+            headers={
+                "Cache-Control": "no-store",
+                "X-UNB-Render-Mode": "source-style-match",
+                "X-UNB-Font-Score": str(style.get("font_score", "na"))
+            }
         )
     except HTTPException:
         raise
