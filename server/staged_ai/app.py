@@ -1133,7 +1133,7 @@ def health():
         "lazy_ai_imports": True,
         "ocr_selection": "word-level boxes",
         "server_mode": "ocr-lite",
-        "heavy_ai_models": false
+        "heavy_ai_models": False
     }
 
 @app.post("/api/stage1/cut-first")
