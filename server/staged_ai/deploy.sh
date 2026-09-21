@@ -5,7 +5,7 @@ cd "$(dirname "$0")"
 
 mkdir -p /opt/unb-stage-ai/cache
 mkdir -p /opt/unb-stage-ai/rembg
-mkdir -p /opt/unb-stage-ai/paddlex
+mkdir -p /opt/unb-stage-ai/easyocr
 
 echo "Stopping older experimental AI containers to free RAM..."
 docker rm -f unb-background 2>/dev/null || true
@@ -26,7 +26,7 @@ docker run -d \
   -p 18083:8000 \
   -v /opt/unb-stage-ai/cache:/root/.cache \
   -v /opt/unb-stage-ai/rembg:/root/.u2net \
-  -v /opt/unb-stage-ai/paddlex:/root/.paddlex \
+  -v /opt/unb-stage-ai/easyocr:/root/.EasyOCR \
   unb-stage-ai:latest
 
 sleep 8
