@@ -8,6 +8,7 @@ import arabic_reshaper
 from bidi.algorithm import get_display
 import cv2
 import gc
+import asyncio
 import glob
 import numpy as np
 import pytesseract
@@ -762,14 +763,15 @@ def health():
         "ocr_engine": "EasyOCR Arabic+English + Tesseract fallback",
         "arabic_render": "RAQM + character-count sizing + box-safe RTL anchoring",
         "same_text_mode": "preserve-original-pixels",
-        "background_cleanup": "smooth-plane + Telea fallback"
+        "background_cleanup": "smooth-plane + Telea fallback",
+        "nonblocking_jobs": true
     }
 
 @app.post("/api/stage1/cut-first")
 async def stage1(file: UploadFile = File(...)):
     data = await file.read()
     try:
-        result = cutout_bytes(data)
+        result = await asyncio.to_thread(cutout_bytes, data)
         return Response(result, media_type="image/png", headers={"Cache-Control": "no-store"})
     except HTTPException:
         raise
@@ -791,7 +793,7 @@ async def stage2(
         else:
             mask = mask_image(data)
 
-        restored = run_lama(original, mask)
+        restored = await asyncio.to_thread(run_lama, original, mask)
         return Response(jpg_bytes(restored), media_type="image/jpeg", headers={"Cache-Control": "no-store"})
     except HTTPException:
         raise
@@ -804,7 +806,7 @@ async def stage2(
 async def stage3(file: UploadFile = File(...)):
     data = await file.read()
     try:
-        result = cutout_bytes(data)
+        result = await asyncio.to_thread(cutout_bytes, data)
         return Response(result, media_type="image/png", headers={"Cache-Control": "no-store"})
     except HTTPException:
         raise
@@ -877,7 +879,7 @@ async def ocr_detect(image: UploadFile = File(...)):
     data = await image.read()
     try:
         img = ensure_image(data)
-        blocks = detect_ocr_blocks(img)
+        blocks = await asyncio.to_thread(detect_ocr_blocks, img)
         return {
             "ok": True,
             "image_width": img.width,
@@ -930,8 +932,9 @@ async def ocr_replace(
                 }
             )
 
-        cleaned = erase_text_area(img, x, y, w, h)
-        result = draw_replacement(
+        cleaned = await asyncio.to_thread(erase_text_area, img, x, y, w, h)
+        result = await asyncio.to_thread(
+            draw_replacement,
             cleaned,
             x, y, w, h,
             new_text,
