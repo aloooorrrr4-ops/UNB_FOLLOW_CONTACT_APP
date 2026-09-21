@@ -19,7 +19,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
-RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch torchvision
+
+RUN pip install --no-cache-dir \
+    --index-url https://download.pytorch.org/whl/cpu \
+    torch torchvision
+
 RUN pip install --no-cache-dir \
     fastapi \
     uvicorn \
@@ -32,7 +36,7 @@ RUN pip install --no-cache-dir \
     simple-lama-inpainting \
     pytesseract \
     arabic-reshaper \
-    python-bidi \\
+    python-bidi \
     easyocr
 
 COPY app.py /app/app.py
