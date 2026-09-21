@@ -464,31 +464,82 @@ def text_metrics(draw, text: str, font, arabic: bool, use_raqm: bool):
 
     return box, max(1, box[2] - box[0]), max(1, box[3] - box[1])
 
-def erase_text_area(img: Image.Image, x: int, y: int, w: int, h: int):
-    arr = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+def estimate_background_rgb(img: Image.Image, x: int, y: int, w: int, h: int):
+    arr = np.array(img)
+    H, W = arr.shape[:2]
+    pad = max(3, int(max(w, h) * 0.10))
+
+    x1 = max(0, x - pad)
+    y1 = max(0, y - pad)
+    x2 = min(W, x + w + pad)
+    y2 = min(H, y + h + pad)
+
+    roi = arr[y1:y2, x1:x2]
+    if roi.size == 0:
+        return np.array([255,255,255], dtype=np.float32)
+
+    # Border is more likely to represent the real local background than the text.
+    border = np.concatenate([
+        roi[:max(1, pad//2)].reshape(-1,3),
+        roi[-max(1, pad//2):].reshape(-1,3),
+        roi[:, :max(1, pad//2)].reshape(-1,3),
+        roi[:, -max(1, pad//2):].reshape(-1,3)
+    ], axis=0)
+
+    return np.median(border, axis=0).astype(np.float32)
+
+def build_text_glyph_mask(img: Image.Image, x: int, y: int, w: int, h: int):
+    arr = np.array(img)
     H, W = arr.shape[:2]
 
-    # Keep horizontal padding very small so a selected word does not erase
-    # neighboring words on the same Arabic line.
-    pad_x = max(1, int(round(w * 0.01)))
-    pad_y = max(2, int(round(h * 0.08)))
+    x1 = max(0, x)
+    y1 = max(0, y)
+    x2 = min(W, x + w)
+    y2 = min(H, y + h)
 
-    x1 = max(0, x - pad_x)
-    y1 = max(0, y - pad_y)
-    x2 = min(W, x + w + pad_x)
-    y2 = min(H, y + h + pad_y)
+    roi = arr[y1:y2, x1:x2]
+    if roi.size == 0:
+        return None, (x1,y1,x2,y2)
 
-    mask = np.zeros((H, W), dtype=np.uint8)
-    cv2.rectangle(
-        mask,
-        (x1, y1),
-        (max(x1, x2 - 1), max(y1, y2 - 1)),
-        255,
-        -1
-    )
+    bg = estimate_background_rgb(img, x, y, w, h)
+    pix = roi.astype(np.float32)
+    dist = np.linalg.norm(pix - bg.reshape(1,1,3), axis=2)
 
-    restored = cv2.inpaint(arr, mask, 3, cv2.INPAINT_TELEA)
-    return Image.fromarray(cv2.cvtColor(restored, cv2.COLOR_BGR2RGB))
+    # Keep only pixels that differ enough from the local background.
+    # This targets the actual glyphs instead of erasing a whole rectangle.
+    base = max(16.0, float(np.percentile(dist, 72)))
+    mask = np.where(dist >= base, 255, 0).astype(np.uint8)
+
+    # Remove isolated noise and slightly expand the glyph strokes.
+    mask = cv2.medianBlur(mask, 3)
+    k = max(2, int(round(max(2, min(w,h) * 0.06))))
+    kernel = np.ones((k, k), np.uint8)
+    mask = cv2.dilate(mask, kernel, iterations=1)
+
+    # Keep the mask concentrated around the OCR box.
+    return mask, (x1,y1,x2,y2)
+
+def erase_text_area(img: Image.Image, x: int, y: int, w: int, h: int):
+    arr = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+    glyph_mask, box = build_text_glyph_mask(img, x, y, w, h)
+
+    if glyph_mask is None:
+        return img.copy()
+
+    x1,y1,x2,y2 = box
+    full_mask = np.zeros(arr.shape[:2], dtype=np.uint8)
+    full_mask[y1:y2, x1:x2] = glyph_mask
+
+    # A tiny blur on the mask edge avoids hard seams.
+    full_mask = cv2.GaussianBlur(full_mask, (0,0), sigmaX=0.8)
+    full_mask = np.where(full_mask > 18, 255, 0).astype(np.uint8)
+
+    restored = cv2.inpaint(arr, full_mask, 3, cv2.INPAINT_TELEA)
+    result = Image.fromarray(cv2.cvtColor(restored, cv2.COLOR_BGR2RGB))
+
+    # Blend only around the actual text pixels, preserving the rest exactly.
+    soft = Image.fromarray(full_mask).filter(ImageFilter.GaussianBlur(radius=1.0))
+    return Image.composite(result, img, soft)
 
 def draw_replacement(
     img: Image.Image,
@@ -506,6 +557,10 @@ def draw_replacement(
     # new_text is rendered exactly as typed by the user.
     canvas = img.copy()
     draw = ImageDraw.Draw(canvas)
+
+    # Estimate local background/contrast so the replacement blends with
+    # scanned or slightly blurry documents rather than looking digitally sharp.
+    local_bg = estimate_background_rgb(img, x, y, w, h)
 
     is_ar = has_arabic(new_text)
     font_path = pick_font(font_weight == "bold", is_ar)
@@ -571,24 +626,33 @@ def draw_replacement(
 
     color = parse_hex_color(text_color)
 
+    # Draw onto a transparent layer so we can soften it to match source quality.
+    text_layer = Image.new("RGBA", canvas.size, (0,0,0,0))
+    text_draw = ImageDraw.Draw(text_layer)
+
     if is_ar and chosen_raqm:
-        draw.text(
+        text_draw.text(
             (tx + tw, ty),
             new_text,
             font=chosen_font,
-            fill=color,
+            fill=(*color, 255),
             anchor="ra",
             direction="rtl",
             language="ar"
         )
     else:
         render_text = shape_text(new_text) if is_ar else new_text
-        draw.text(
+        text_draw.text(
             (tx, ty),
             render_text,
             font=chosen_font,
-            fill=color
+            fill=(*color, 255)
         )
+
+    # Slight optical softening; scanned/phone images rarely contain perfectly
+    # sharp digital glyph edges.
+    text_layer = text_layer.filter(ImageFilter.GaussianBlur(radius=0.35))
+    canvas = Image.alpha_composite(canvas.convert("RGBA"), text_layer).convert("RGB")
 
     return canvas
 
