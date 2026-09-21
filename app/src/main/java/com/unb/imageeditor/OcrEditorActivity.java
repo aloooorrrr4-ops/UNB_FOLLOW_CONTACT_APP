@@ -292,10 +292,11 @@ public class OcrEditorActivity extends Activity {
                 "النص الأصلي: " + block.optString("text") +
                 "\nاللغة: " + block.optString("language") +
                 " | الأرقام: " + block.optString("number_type") +
-                "\nالحجم: " + block.optInt("font_size") +
-                " | اللون: " + block.optString("text_color") +
+                "\nالحجم المكتشف: " + block.optInt("font_size") +
+                " | اللون المكتشف: " + block.optString("text_color") +
                 " | السماكة: " + block.optString("font_weight") +
-                "\nالثقة: " + Math.round(block.optDouble("confidence") * 100) + "%"
+                "\nالثقة: " + Math.round(block.optDouble("confidence") * 100) + "%" +
+                "\n\nمطابقة تلقائية مفعّلة: الخط + ارتفاع الحروف + اللون + الموضع + نعومة الحواف"
         );
         info.setTextSize(15);
         box.addView(info);
@@ -324,13 +325,13 @@ public class OcrEditorActivity extends Activity {
         EditText sizeInput = new EditText(this);
         sizeInput.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
         sizeInput.setText(String.valueOf(block.optInt("font_size", 24)));
-        sizeInput.setHint("حجم الخط");
+        sizeInput.setHint("حجم احتياطي — المطابقة التلقائية لها الأولوية");
         box.addView(sizeInput);
 
         EditText colorInput = new EditText(this);
         colorInput.setSingleLine(true);
         colorInput.setText(block.optString("text_color", "#000000"));
-        colorInput.setHint("#000000");
+        colorInput.setHint("لون احتياطي — المطابقة التلقائية لها الأولوية");
         box.addView(colorInput);
 
         new AlertDialog.Builder(this)
