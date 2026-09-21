@@ -14,6 +14,7 @@ import pytesseract
 from pytesseract import Output
 import easyocr
 import re
+import unicodedata
 
 app = FastAPI(title="UNB Staged AI Editor")
 
@@ -519,27 +520,121 @@ def build_text_glyph_mask(img: Image.Image, x: int, y: int, w: int, h: int):
     # Keep the mask concentrated around the OCR box.
     return mask, (x1,y1,x2,y2)
 
-def erase_text_area(img: Image.Image, x: int, y: int, w: int, h: int):
-    arr = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
-    glyph_mask, box = build_text_glyph_mask(img, x, y, w, h)
+def normalize_compare_text(text: str) -> str:
+    value = unicodedata.normalize("NFKC", text or "")
+    value = value.replace("\u200f", "").replace("\u200e", "")
+    value = re.sub(r"\s+", " ", value).strip()
+    return value
 
-    if glyph_mask is None:
+def _smooth_background_fill(arr_rgb: np.ndarray, x1: int, y1: int, x2: int, y2: int):
+    H, W = arr_rgb.shape[:2]
+    region_w = max(1, x2 - x1)
+    region_h = max(1, y2 - y1)
+
+    margin_x = max(4, int(round(region_w * 0.10)))
+    margin_y = max(4, int(round(region_h * 0.35)))
+
+    sx1 = max(0, x1 - margin_x)
+    sy1 = max(0, y1 - margin_y)
+    sx2 = min(W, x2 + margin_x)
+    sy2 = min(H, y2 + margin_y)
+
+    samples_xy = []
+    samples_rgb = []
+
+    def add_patch(px1, py1, px2, py2):
+        if px2 <= px1 or py2 <= py1:
+            return
+        patch = arr_rgb[py1:py2, px1:px2].astype(np.float32)
+        yy, xx = np.mgrid[py1:py2, px1:px2]
+        samples_xy.append(np.stack([
+            xx.reshape(-1),
+            yy.reshape(-1),
+            np.ones(xx.size, dtype=np.float32)
+        ], axis=1))
+        samples_rgb.append(patch.reshape(-1, 3))
+
+    add_patch(sx1, sy1, sx2, y1)
+    add_patch(sx1, y2, sx2, sy2)
+    add_patch(sx1, y1, x1, y2)
+    add_patch(x2, y1, sx2, y2)
+
+    if not samples_xy:
+        return None, 999.0
+
+    A = np.concatenate(samples_xy, axis=0)
+    B = np.concatenate(samples_rgb, axis=0)
+
+    if len(A) < 20:
+        return None, 999.0
+
+    # Robust two-pass plane fit. Nearby letters are treated as outliers.
+    coef, *_ = np.linalg.lstsq(A, B, rcond=None)
+    pred = A @ coef
+    resid = np.linalg.norm(B - pred, axis=1)
+
+    keep_threshold = max(10.0, float(np.percentile(resid, 65)))
+    keep = resid <= keep_threshold
+
+    if int(np.sum(keep)) >= 20:
+        coef, *_ = np.linalg.lstsq(A[keep], B[keep], rcond=None)
+        pred = A[keep] @ coef
+        residual = float(np.median(np.linalg.norm(B[keep] - pred, axis=1)))
+    else:
+        residual = float(np.median(resid))
+
+    yy, xx = np.mgrid[y1:y2, x1:x2]
+    target_A = np.stack([
+        xx.reshape(-1),
+        yy.reshape(-1),
+        np.ones(xx.size, dtype=np.float32)
+    ], axis=1)
+
+    fill = (target_A @ coef).reshape(y2 - y1, x2 - x1, 3)
+    fill = np.clip(fill, 0, 255).astype(np.uint8)
+    return fill, residual
+
+def erase_text_area(img: Image.Image, x: int, y: int, w: int, h: int):
+    rgb = np.array(img.convert("RGB"))
+    H, W = rgb.shape[:2]
+
+    # Tiny horizontal padding avoids touching neighboring Arabic words.
+    pad_x = max(1, int(round(w * 0.01)))
+    pad_y = max(2, int(round(h * 0.10)))
+
+    x1 = max(0, x - pad_x)
+    y1 = max(0, y - pad_y)
+    x2 = min(W, x + w + pad_x)
+    y2 = min(H, y + h + pad_y)
+
+    if x2 <= x1 or y2 <= y1:
         return img.copy()
 
-    x1,y1,x2,y2 = box
-    full_mask = np.zeros(arr.shape[:2], dtype=np.uint8)
-    full_mask[y1:y2, x1:x2] = glyph_mask
+    fill, residual = _smooth_background_fill(rgb, x1, y1, x2, y2)
 
-    # A tiny blur on the mask edge avoids hard seams.
-    full_mask = cv2.GaussianBlur(full_mask, (0,0), sigmaX=0.8)
-    full_mask = np.where(full_mask > 18, 255, 0).astype(np.uint8)
+    # Receipts/documents usually have a smooth or gently graded background.
+    # Plane reconstruction prevents the dirty halo that Telea creates there.
+    if fill is not None and residual <= 18.0:
+        restored = rgb.copy()
+        restored[y1:y2, x1:x2] = fill
 
-    restored = cv2.inpaint(arr, full_mask, 3, cv2.INPAINT_TELEA)
-    result = Image.fromarray(cv2.cvtColor(restored, cv2.COLOR_BGR2RGB))
+        mask = np.zeros((H, W), dtype=np.uint8)
+        cv2.rectangle(mask, (x1, y1), (x2 - 1, y2 - 1), 255, -1)
+        soft = cv2.GaussianBlur(mask, (0, 0), sigmaX=1.2).astype(np.float32) / 255.0
+        soft = soft[..., None]
 
-    # Blend only around the actual text pixels, preserving the rest exactly.
-    soft = Image.fromarray(full_mask).filter(ImageFilter.GaussianBlur(radius=1.0))
-    return Image.composite(result, img, soft)
+        blended = (
+            restored.astype(np.float32) * soft +
+            rgb.astype(np.float32) * (1.0 - soft)
+        )
+        return Image.fromarray(np.clip(blended, 0, 255).astype(np.uint8))
+
+    # Complex/textured area: fall back to OpenCV inpainting.
+    bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    mask = np.zeros((H, W), dtype=np.uint8)
+    cv2.rectangle(mask, (x1, y1), (x2 - 1, y2 - 1), 255, -1)
+    restored = cv2.inpaint(bgr, mask, 3, cv2.INPAINT_TELEA)
+    return Image.fromarray(cv2.cvtColor(restored, cv2.COLOR_BGR2RGB))
 
 def draw_replacement(
     img: Image.Image,
@@ -665,7 +760,9 @@ def health():
         "stages": 4,
         "features": ["cutout", "inpaint", "composite", "ocr_detect", "ocr_replace"],
         "ocr_engine": "EasyOCR Arabic+English + Tesseract fallback",
-        "arabic_render": "RAQM + character-count sizing + box-safe RTL anchoring"
+        "arabic_render": "RAQM + character-count sizing + box-safe RTL anchoring",
+        "same_text_mode": "preserve-original-pixels",
+        "background_cleanup": "smooth-plane + Telea fallback"
     }
 
 @app.post("/api/stage1/cut-first")
@@ -818,6 +915,20 @@ async def ocr_replace(
 
         if direction == "auto":
             direction = "rtl" if has_arabic(new_text) else "ltr"
+
+        # If the user replaces a word with the exact same word, preserve the
+        # original pixels. This is the only way to be literally identical in
+        # font, anti-aliasing, blur, color and compression without knowing the
+        # source font.
+        if original_text and normalize_compare_text(new_text) == normalize_compare_text(original_text):
+            return Response(
+                png_bytes(img),
+                media_type="image/png",
+                headers={
+                    "Cache-Control": "no-store",
+                    "X-UNB-Replace-Mode": "original-pixels"
+                }
+            )
 
         cleaned = erase_text_area(img, x, y, w, h)
         result = draw_replacement(
