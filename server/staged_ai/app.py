@@ -733,34 +733,31 @@ def _font_candidates(arabic: bool, bold: bool):
     paths = []
 
     if arabic:
-        # OCR "normal/bold" is only a rough hint. Compare BOTH weights because
-        # scanned Arabic often gets classified as normal even when the source
-        # glyphs are visibly heavy.
-        preferred = [
-            "*NotoSansArabic*Bold*.ttf",
-            "*NotoSansArabic*Regular*.ttf",
-            "*NotoKufiArabic*Bold*.ttf",
-            "*NotoKufiArabic*Regular*.ttf",
-            "*NotoNaskhArabic*Bold*.ttf",
-            "*NotoNaskhArabic*Regular*.ttf",
-            "*Naskh*Bold*.ttf",
-            "*Naskh*Regular*.ttf",
-            "*Arabic*Bold*.ttf",
-            "*Arabic*Regular*.ttf",
-        ]
         roots = [
             "/usr/share/fonts/truetype/noto/",
             "/usr/share/fonts/opentype/noto/",
             "/usr/share/fonts/truetype/",
+        ]
+        # Include all available Arabic weights/widths. Ordering is only a
+        # tiebreaker; visual scoring still chooses the actual best match.
+        preferred = [
+            "*NotoSansArabic*.ttf",
+            "*NotoSansArabicUI*.ttf",
+            "*NotoKufiArabic*.ttf",
+            "*NotoNaskhArabic*.ttf",
+            "*NotoNaskhArabicUI*.ttf",
+            "*Arabic*.ttf",
+            "*Naskh*.ttf",
         ]
         for root in roots:
             for pat in preferred:
                 paths.extend(glob.glob(root + pat))
                 paths.extend(glob.glob(root + "**/" + pat, recursive=True))
 
-    # Latin fallback candidates; keep both weights available for comparison.
-    paths.extend(glob.glob("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"))
-    paths.extend(glob.glob("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"))
+    if bold:
+        paths.extend(glob.glob("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"))
+    else:
+        paths.extend(glob.glob("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"))
 
     out = []
     seen = set()
@@ -768,7 +765,7 @@ def _font_candidates(arabic: bool, bold: bool):
         if path not in seen and os.path.isfile(path):
             seen.add(path)
             out.append(path)
-        if len(out) >= 24:
+        if len(out) >= 48:
             break
     return out
 
@@ -1087,8 +1084,11 @@ def _match_font_from_line(img: Image.Image, samples: list, font_weight: str):
                 b = rendered_norm.astype(np.float32) / 255.0
                 mse = float(np.mean((a - b) ** 2))
 
-                rdensity = float(np.mean(np.array(alpha) > 76))
+                alpha_arr = np.array(alpha)
+                rdensity = float(np.mean(alpha_arr > 76))
                 density_delta = abs(m["density"] - rdensity)
+                rstroke = _alpha_stroke_metric(alpha_arr)
+                stroke_delta = abs(m["stroke"] - rstroke) / max(1.0, m["stroke"])
 
                 source_aspect = glyph["w"] / float(max(1, glyph["h"]))
                 rendered_aspect = alpha.width / float(max(1, alpha.height))
@@ -1099,7 +1099,12 @@ def _match_font_from_line(img: Image.Image, samples: list, font_weight: str):
                 # Target word counts a little more, but neighbors stabilize the
                 # actual line font/weight/color.
                 weight = 1.30 if m["is_target"] else 1.0
-                score = weight * (mse + density_delta * 1.55 + aspect_delta * 0.24)
+                score = weight * (
+                    mse +
+                    density_delta * 1.35 +
+                    stroke_delta * 0.95 +
+                    aspect_delta * 0.22
+                )
                 scores.append(score)
 
                 scale = source_aspect / max(0.05, rendered_aspect)
@@ -1169,6 +1174,56 @@ def _match_alpha_density(alpha: Image.Image, target_density: float):
         delta = abs(density - float(target_density))
         if delta < best_delta:
             best_delta = delta
+            best = test
+
+    return Image.fromarray(best, mode="L")
+
+
+def _alpha_stroke_metric(arr: np.ndarray) -> float:
+    binary = np.where(arr > 76, 255, 0).astype(np.uint8)
+    if not np.any(binary):
+        return 0.0
+    dist = cv2.distanceTransform(binary, cv2.DIST_L2, 5)
+    vals = dist[dist > 0]
+    return float(np.median(vals)) if vals.size else 0.0
+
+
+def _match_alpha_stroke_and_density(alpha: Image.Image,
+                                    target_stroke: float,
+                                    target_density: float):
+    arr = np.array(alpha).astype(np.uint8)
+    if arr.size == 0:
+        return alpha
+
+    base_stroke = _alpha_stroke_metric(arr)
+    base_density = float(np.mean(arr > 76))
+
+    best = arr
+    best_score = (
+        abs(base_stroke - float(target_stroke)) * 1.8 +
+        abs(base_density - float(target_density)) * 5.0
+    )
+
+    # Positive values thicken, negative values thin. Up to 4 px is enough to
+    # emulate heavier weights such as ExtraBold/Black when only Bold is installed.
+    for op in range(-3, 5):
+        test = arr.copy()
+        if op > 0:
+            k = np.ones((op * 2 + 1, op * 2 + 1), np.uint8)
+            test = cv2.dilate(test, k, iterations=1)
+        elif op < 0:
+            r = abs(op)
+            k = np.ones((r * 2 + 1, r * 2 + 1), np.uint8)
+            test = cv2.erode(test, k, iterations=1)
+
+        stroke = _alpha_stroke_metric(test)
+        density = float(np.mean(test > 76))
+        score = (
+            abs(stroke - float(target_stroke)) * 1.8 +
+            abs(density - float(target_density)) * 5.0
+        )
+        if score < best_score:
+            best_score = score
             best = test
 
     return Image.fromarray(best, mode="L")
@@ -1396,8 +1451,13 @@ def draw_replacement(
     )
 
     target_density = float(style.get("target_density", 0.0))
-    if target_density > 0.01:
-        alpha = _match_alpha_density(alpha, target_density)
+    target_stroke = float(style.get("target_stroke", 0.0))
+    if target_stroke > 0.01 or target_density > 0.01:
+        alpha = _match_alpha_stroke_and_density(
+            alpha,
+            target_stroke if target_stroke > 0.01 else _alpha_stroke_metric(np.array(alpha)),
+            target_density if target_density > 0.01 else float(np.mean(np.array(alpha) > 76))
+        )
 
     # Real source glyph anchor, not the coarse OCR box.
     if glyph:
@@ -1497,8 +1557,8 @@ def health():
         "arabic_render": "RAQM + character-count sizing + box-safe RTL anchoring",
         "same_text_mode": "preserve-original-pixels",
         "background_cleanup": "glyph-mask inpaint + local-plane blend",
-        "text_render": "same-line calibration + neighbor-gap anchor + full-footprint background reconstruction",
-        "style_match_version": 4,
+        "text_render": "same-line calibration + stroke-thickness transfer + expanded Arabic font search",
+        "style_match_version": 5,
         "nonblocking_jobs": True,
         "lazy_ai_imports": True,
         "ocr_selection": "word-level boxes",
