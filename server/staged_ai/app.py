@@ -327,11 +327,11 @@ def detect_ocr_blocks_tesseract(img: Image.Image):
     data = pytesseract.image_to_data(
         img,
         lang="ara+eng",
-        config="--psm 6",
+        config="--psm 6 -c preserve_interword_spaces=1",
         output_type=Output.DICT
     )
 
-    groups = {}
+    blocks = []
     total = len(data.get("text", []))
 
     for i in range(total):
@@ -344,64 +344,65 @@ def detect_ocr_blocks_tesseract(img: Image.Image):
         except Exception:
             conf = -1.0
 
-        if conf < 25:
+        # Keep each OCR WORD as its own selectable block.
+        # Do not merge words into a full line.
+        if conf < 20:
             continue
 
-        key = (
-            int(data["block_num"][i]),
-            int(data["par_num"][i]),
-            int(data["line_num"][i])
-        )
+        x = int(data["left"][i])
+        y = int(data["top"][i])
+        w = max(1, int(data["width"][i]))
+        h = max(1, int(data["height"][i]))
 
-        item = {
-            "text": text,
-            "conf": conf,
-            "x": int(data["left"][i]),
-            "y": int(data["top"][i]),
-            "w": int(data["width"][i]),
-            "h": int(data["height"][i]),
-            "word_num": int(data["word_num"][i]),
-        }
-        groups.setdefault(key, []).append(item)
-
-    blocks = []
-    block_id = 1
-
-    for _, words in sorted(groups.items(), key=lambda kv: min((w["y"], w["x"]) for w in kv[1])):
-        words = sorted(words, key=lambda w: w["word_num"])
-        text = " ".join(w["text"] for w in words).strip()
-        if not text:
-            continue
-
-        x1 = min(w["x"] for w in words)
-        y1 = min(w["y"] for w in words)
-        x2 = max(w["x"] + w["w"] for w in words)
-        y2 = max(w["y"] + w["h"] for w in words)
-        w = max(1, x2 - x1)
-        h = max(1, y2 - y1)
+        # Small word-local padding only. This keeps replacement/cleanup away
+        # from neighboring words on the same line.
+        pad_x = max(1, int(round(w * 0.015)))
+        pad_y = max(1, int(round(h * 0.04)))
+        x1 = max(0, x - pad_x)
+        y1 = max(0, y - pad_y)
+        x2 = min(img.width, x + w + pad_x)
+        y2 = min(img.height, y + h + pad_y)
+        bw = max(1, x2 - x1)
+        bh = max(1, y2 - y1)
 
         language = detect_language(text)
         direction = "rtl" if has_arabic(text) else "ltr"
         number_type = detect_number_type(text)
-        text_color, bg_color, font_weight = color_info(img, x1, y1, w, h)
-        confidence = float(np.mean([v["conf"] for v in words])) / 100.0
-        font_size = max(10, int(round(h * 0.82)))
+
+        # Style is measured independently for this exact word.
+        text_color, bg_color, font_weight = color_info(img, x, y, w, h)
+        font_size = max(8, int(round(h * 0.98)))
 
         blocks.append({
-            "id": f"blk_{block_id:03d}",
+            "id": "",
             "text": text,
             "language": language,
             "number_type": number_type,
             "direction": direction,
-            "bbox": {"x": x1, "y": y1, "w": w, "h": h},
+            "bbox": {"x": x1, "y": y1, "w": bw, "h": bh},
+            "glyph_bbox": {"x": x, "y": y, "w": w, "h": h},
             "font_size": font_size,
             "font_weight": font_weight,
             "text_color": text_color,
             "bg_color": bg_color,
-            "confidence": round(max(0.0, min(1.0, confidence)), 3),
-            "engine": "tesseract"
+            "confidence": round(max(0.0, min(1.0, conf / 100.0)), 3),
+            "engine": "tesseract-word",
+            "block_num": int(data["block_num"][i]),
+            "par_num": int(data["par_num"][i]),
+            "line_num": int(data["line_num"][i]),
+            "word_num": int(data["word_num"][i])
         })
-        block_id += 1
+
+    # Visual reading order. Arabic words on the same line are returned
+    # individually; their boxes remain independent and tappable.
+    blocks.sort(key=lambda b: (
+        b["bbox"]["y"],
+        b["line_num"],
+        -b["bbox"]["x"] if b["direction"] == "rtl" else b["bbox"]["x"]
+    ))
+
+    for idx, block in enumerate(blocks, 1):
+        block["id"] = f"blk_{idx:03d}"
 
     return blocks
 
@@ -887,7 +888,7 @@ def health():
         "service": "UNB Staged AI Editor",
         "stages": 4,
         "features": ["cutout", "inpaint", "composite", "ocr_detect", "ocr_replace"],
-        "ocr_engine": "Tesseract Arabic+English stable mode",
+        "ocr_engine": "Tesseract Arabic+English word-level stable mode",
         "arabic_render": "RAQM + character-count sizing + box-safe RTL anchoring",
         "same_text_mode": "preserve-original-pixels",
         "background_cleanup": "smooth-plane + Telea fallback",
