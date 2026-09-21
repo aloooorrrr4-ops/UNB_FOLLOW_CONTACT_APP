@@ -913,80 +913,338 @@ def _match_source_font(img: Image.Image, x: int, y: int, w: int, h: int,
     return best["path"], best["size"], glyph, round(best["score"], 4)
 
 
-def _source_render_style(img: Image.Image, x: int, y: int, w: int, h: int,
-                         original_text: str, font_weight: str):
-    # Match font using the actual source word silhouette.
-    font_path, font_size, glyph, font_score = _match_source_font(
-        img, x, y, w, h, original_text, font_weight
+
+def _bbox_iou_dict(a: dict, b: dict) -> float:
+    ax1, ay1 = int(a["x"]), int(a["y"])
+    ax2, ay2 = ax1 + int(a["w"]), ay1 + int(a["h"])
+    bx1, by1 = int(b["x"]), int(b["y"])
+    bx2, by2 = bx1 + int(b["w"]), by1 + int(b["h"])
+
+    ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+    ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+    iw, ih = max(0, ix2 - ix1), max(0, iy2 - iy1)
+    inter = iw * ih
+    union = max(1, (ax2 - ax1) * (ay2 - ay1) + (bx2 - bx1) * (by2 - by1) - inter)
+    return inter / float(union)
+
+
+def _line_reference_samples(img: Image.Image, x: int, y: int, w: int, h: int,
+                            original_text: str, max_refs: int = 4):
+    selected = {"x": x, "y": y, "w": w, "h": h}
+    try:
+        blocks = detect_ocr_blocks_tesseract(img)
+    except Exception:
+        blocks = []
+
+    # Locate the OCR block corresponding to the selected word.
+    target = None
+    best_iou = 0.0
+    for block in blocks:
+        bbox = block.get("bbox") or {}
+        if not all(k in bbox for k in ("x", "y", "w", "h")):
+            continue
+        score = _bbox_iou_dict(selected, bbox)
+        if score > best_iou:
+            best_iou = score
+            target = block
+
+    samples = [{
+        "text": original_text,
+        "bbox": selected,
+        "is_target": True
+    }]
+
+    if target is None:
+        return samples
+
+    line_key = (
+        target.get("block_num"),
+        target.get("par_num"),
+        target.get("line_num")
     )
 
+    candidates = []
+    for block in blocks:
+        if block is target:
+            continue
+        if (
+            block.get("block_num"),
+            block.get("par_num"),
+            block.get("line_num")
+        ) != line_key:
+            continue
+
+        text = str(block.get("text") or "").strip()
+        if not text or not has_arabic(text):
+            continue
+
+        bbox = block.get("bbox") or {}
+        # Prefer similar-sized words close to the selected word.
+        cy = float(bbox.get("y", 0)) + float(bbox.get("h", 1)) / 2.0
+        sy = y + h / 2.0
+        height_ratio = float(bbox.get("h", 1)) / max(1.0, float(h))
+        if not (0.55 <= height_ratio <= 1.65):
+            continue
+
+        distance = abs(cy - sy) + abs(float(bbox.get("x", 0)) - x) * 0.04
+        candidates.append((distance, block))
+
+    candidates.sort(key=lambda t: t[0])
+    for _, block in candidates[:max_refs]:
+        samples.append({
+            "text": str(block.get("text") or ""),
+            "bbox": dict(block["bbox"]),
+            "is_target": False
+        })
+
+    return samples
+
+
+def _sample_word_mask_metrics(img: Image.Image, sample: dict):
+    bbox = sample["bbox"]
+    mask, _, glyph = _tight_word_mask(
+        img,
+        int(bbox["x"]), int(bbox["y"]), int(bbox["w"]), int(bbox["h"])
+    )
+    if mask is None or glyph is None:
+        return None
+
+    local = mask[
+        glyph["local_y"]:glyph["local_y"] + glyph["local_h"],
+        glyph["local_x"]:glyph["local_x"] + glyph["local_w"]
+    ]
+    if local.size == 0:
+        return None
+
+    binary = np.where(local > 0, 255, 0).astype(np.uint8)
+    norm = _normalized_mask(binary)
+    if norm is None:
+        return None
+
+    density = float(np.mean(binary > 0))
+    dist = cv2.distanceTransform(binary, cv2.DIST_L2, 5)
+    vals = dist[dist > 0]
+    stroke = float(np.median(vals)) if vals.size else 0.0
+
+    text_color, _, _ = color_info(
+        img,
+        int(bbox["x"]), int(bbox["y"]), int(bbox["w"]), int(bbox["h"])
+    )
+
+    return {
+        "text": sample["text"],
+        "bbox": bbox,
+        "glyph": glyph,
+        "mask": binary,
+        "norm": norm,
+        "density": density,
+        "stroke": stroke,
+        "text_color": text_color,
+        "is_target": bool(sample.get("is_target"))
+    }
+
+
+def _match_font_from_line(img: Image.Image, samples: list, font_weight: str):
+    measured = []
+    for sample in samples:
+        m = _sample_word_mask_metrics(img, sample)
+        if m is not None and str(m["text"]).strip():
+            measured.append(m)
+
+    if not measured:
+        return None
+
+    arabic = True
+    candidates = _font_candidates(arabic, font_weight == "bold")
+    fallback = pick_font(font_weight == "bold", arabic)
+    if fallback and fallback not in candidates:
+        candidates.append(fallback)
+
+    best = None
+
+    for path in candidates:
+        scores = []
+        width_scales = []
+
+        for m in measured:
+            try:
+                glyph = m["glyph"]
+                size = _font_size_for_height(
+                    path,
+                    m["text"],
+                    True,
+                    max(4, int(glyph["h"]))
+                )
+                alpha, _ = _render_text_alpha(m["text"], path, size, True)
+                if alpha is None:
+                    continue
+
+                rendered_norm = _normalized_mask(np.array(alpha))
+                if rendered_norm is None:
+                    continue
+
+                a = m["norm"].astype(np.float32) / 255.0
+                b = rendered_norm.astype(np.float32) / 255.0
+                mse = float(np.mean((a - b) ** 2))
+
+                rdensity = float(np.mean(np.array(alpha) > 76))
+                density_delta = abs(m["density"] - rdensity)
+
+                source_aspect = glyph["w"] / float(max(1, glyph["h"]))
+                rendered_aspect = alpha.width / float(max(1, alpha.height))
+                aspect_delta = abs(np.log(
+                    max(0.05, rendered_aspect) / max(0.05, source_aspect)
+                ))
+
+                # Target word counts a little more, but neighbors stabilize the
+                # actual line font/weight/color.
+                weight = 1.30 if m["is_target"] else 1.0
+                score = weight * (mse + density_delta * 1.55 + aspect_delta * 0.24)
+                scores.append(score)
+
+                scale = source_aspect / max(0.05, rendered_aspect)
+                width_scales.append(float(np.clip(scale, 0.72, 1.38)))
+            except Exception:
+                continue
+
+        if not scores:
+            continue
+
+        avg_score = float(np.mean(scores))
+        if best is None or avg_score < best["score"]:
+            best = {
+                "path": path,
+                "score": avg_score,
+                "width_scale": float(np.median(width_scales)) if width_scales else 1.0
+            }
+
+    if best is None:
+        return None
+
+    colors = []
+    densities = []
+    strokes = []
+    bottoms = []
+    for m in measured:
+        colors.append(parse_hex_color(m["text_color"]))
+        densities.append(m["density"])
+        strokes.append(m["stroke"])
+        g = m["glyph"]
+        bottoms.append(int(g["y"] + g["h"]))
+
+    color_arr = np.array(colors, dtype=np.float32)
+    median_color = tuple(int(v) for v in np.median(color_arr, axis=0))
+
+    return {
+        "font_path": best["path"],
+        "font_score": round(best["score"], 4),
+        "width_scale": round(best["width_scale"], 4),
+        "target_density": float(np.median(densities)),
+        "target_stroke": float(np.median(strokes)),
+        "line_color": rgb_to_hex(median_color),
+        "baseline_bottom": int(round(float(np.median(bottoms)))),
+        "reference_count": len(measured)
+    }
+
+
+def _match_alpha_density(alpha: Image.Image, target_density: float):
+    arr = np.array(alpha).astype(np.uint8)
+    if arr.size == 0:
+        return alpha
+
+    best = arr
+    best_delta = abs(float(np.mean(arr > 76)) - float(target_density))
+
+    for op in (-2, -1, 0, 1, 2):
+        test = arr.copy()
+        if op > 0:
+            k = np.ones((op * 2 + 1, op * 2 + 1), np.uint8)
+            test = cv2.dilate(test, k, iterations=1)
+        elif op < 0:
+            r = abs(op)
+            k = np.ones((r * 2 + 1, r * 2 + 1), np.uint8)
+            test = cv2.erode(test, k, iterations=1)
+
+        density = float(np.mean(test > 76))
+        delta = abs(density - float(target_density))
+        if delta < best_delta:
+            best_delta = delta
+            best = test
+
+    return Image.fromarray(best, mode="L")
+
+
+def _source_render_style(img: Image.Image, x: int, y: int, w: int, h: int,
+                         original_text: str, font_weight: str):
+    samples = _line_reference_samples(
+        img, x, y, w, h, original_text, max_refs=4
+    )
+    line_match = _match_font_from_line(img, samples, font_weight)
+
+    # Keep target-word glyph geometry for exact anchor/erase.
+    mask, _, glyph = _tight_word_mask(img, x, y, w, h)
     text_color, bg_color, detected_weight = color_info(img, x, y, w, h)
 
+    font_path = None
+    font_score = None
+    width_scale = 1.0
+    target_density = 0.0
+    target_stroke = 0.0
+    baseline_bottom = int((glyph["y"] + glyph["h"]) if glyph else (y + h))
+    reference_count = 1
+
+    if line_match:
+        font_path = line_match.get("font_path")
+        font_score = line_match.get("font_score")
+        width_scale = float(line_match.get("width_scale", 1.0))
+        target_density = float(line_match.get("target_density", 0.0))
+        target_stroke = float(line_match.get("target_stroke", 0.0))
+        baseline_bottom = int(line_match.get("baseline_bottom", baseline_bottom))
+        reference_count = int(line_match.get("reference_count", 1))
+        # Same-line words are usually the strongest color reference.
+        text_color = line_match.get("line_color") or text_color
+
+    if not font_path:
+        font_path, _, glyph2, font_score = _match_source_font(
+            img, x, y, w, h, original_text, font_weight
+        )
+        if glyph is None:
+            glyph = glyph2
+
+    if not font_path:
+        font_path = pick_font(font_weight == "bold", True)
+
+    # Source softness is measured locally; don't wash text out with low alpha.
     arr = np.array(img.convert("RGB"))
-    H, W = arr.shape[:2]
-    x1 = max(0, x)
-    y1 = max(0, y)
-    x2 = min(W, x + w)
-    y2 = min(H, y + h)
+    x1, y1 = max(0, x), max(0, y)
+    x2, y2 = min(img.width, x + w), min(img.height, y + h)
     roi = arr[y1:y2, x1:x2]
 
-    # Start almost sharp. The source examples are soft because the whole image
-    # is soft; excessive alpha reduction made replacement words look washed out.
-    blur_radius = 0.18
-    opacity = 255
-    stroke_px = 0.0
-    ink_density = 0.0
-
-    mask, _, tight = _tight_word_mask(img, x, y, w, h)
-    if mask is not None and tight is not None:
-        local = mask[
-            tight["local_y"]:tight["local_y"] + tight["local_h"],
-            tight["local_x"]:tight["local_x"] + tight["local_w"]
-        ]
-        if local.size:
-            binary = np.where(local > 0, 255, 0).astype(np.uint8)
-            ink_density = float(np.mean(binary > 0))
-            dist = cv2.distanceTransform(binary, cv2.DIST_L2, 5)
-            vals = dist[dist > 0]
-            if vals.size:
-                # Median half-stroke thickness in source raster.
-                stroke_px = float(np.median(vals))
-
+    blur_radius = 0.16
     if roi.size:
         gray = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
         sharpness = float(cv2.Laplacian(gray, cv2.CV_64F).var())
-        if sharpness < 18:
-            blur_radius = 0.45
-        elif sharpness < 35:
-            blur_radius = 0.32
-        elif sharpness < 70:
-            blur_radius = 0.22
-
-    # If the source glyph itself is visibly heavy, prefer bold rendering.
-    effective_weight = detected_weight or font_weight
-    if stroke_px >= 1.35 or ink_density >= 0.34:
-        effective_weight = "bold"
-
-    # Re-run font matching with the effective weight only when it changed.
-    if effective_weight != font_weight:
-        p2, s2, g2, score2 = _match_source_font(
-            img, x, y, w, h, original_text, effective_weight
-        )
-        if p2:
-            font_path, font_size, glyph, font_score = p2, s2, g2, score2
+        if sharpness < 16:
+            blur_radius = 0.38
+        elif sharpness < 32:
+            blur_radius = 0.28
+        elif sharpness < 65:
+            blur_radius = 0.20
 
     return {
         "font_path": font_path,
-        "font_size": max(6, int(font_size)),
         "glyph": glyph,
         "font_score": font_score,
         "text_color": text_color,
         "bg_color": bg_color,
-        "font_weight": effective_weight,
+        "font_weight": detected_weight or font_weight,
         "blur_radius": blur_radius,
-        "opacity": opacity,
-        "stroke_px": round(stroke_px, 3),
-        "ink_density": round(ink_density, 4),
+        "opacity": 255,
+        "width_scale": float(np.clip(width_scale, 0.72, 1.38)),
+        "target_density": target_density,
+        "target_stroke": target_stroke,
+        "baseline_bottom": baseline_bottom,
+        "reference_count": reference_count,
     }
 
 
@@ -1076,7 +1334,8 @@ def draw_replacement(
     # height; only cap extreme expansion to protect neighboring words.
     target_h = max(1, int(glyph["h"])) if glyph else max(1, h)
     scale_h = target_h / float(max(1, alpha.height))
-    natural_w = max(1, int(round(alpha.width * scale_h)))
+    width_scale = float(style.get("width_scale", 1.0))
+    natural_w = max(1, int(round(alpha.width * scale_h * width_scale)))
 
     old_units = count_text_units(original_text)
     new_units = count_text_units(new_text)
@@ -1088,6 +1347,10 @@ def draw_replacement(
         (target_w, target_h),
         Image.Resampling.LANCZOS
     )
+
+    target_density = float(style.get("target_density", 0.0))
+    if target_density > 0.01:
+        alpha = _match_alpha_density(alpha, target_density)
 
     # Real source glyph anchor, not the coarse OCR box.
     if glyph:
@@ -1106,7 +1369,13 @@ def draw_replacement(
 
     # Bottom alignment approximates a shared Arabic baseline much better than
     # top alignment when the replacement contains different ascenders/descenders.
-    paste_y = source_bottom - target_h
+    baseline_bottom = int(style.get("baseline_bottom", source_bottom))
+    # Keep the selected word near its original baseline; same-line references
+    # correct OCR boxes that are slightly high/low.
+    if abs(baseline_bottom - source_bottom) <= max(3, int(h * 0.35)):
+        paste_y = baseline_bottom - target_h
+    else:
+        paste_y = source_bottom - target_h
 
     paste_x = max(0, min(canvas.width - target_w, paste_x))
     paste_y = max(0, min(canvas.height - target_h, paste_y))
@@ -1115,9 +1384,6 @@ def draw_replacement(
     # available as fallback if source analysis did not succeed.
     color_hex = style.get("text_color") or text_color
     color = parse_hex_color(color_hex)
-    # Compensate very slightly for blur/antialiasing so perceived darkness
-    # remains close to the source word instead of turning gray.
-    color = tuple(max(0, int(v) - 6) for v in color)
     opacity = int(style.get("opacity", 255))
 
     rgba = Image.new("RGBA", (target_w, target_h), (*color, 0))
@@ -1175,8 +1441,8 @@ def health():
         "arabic_render": "RAQM + character-count sizing + box-safe RTL anchoring",
         "same_text_mode": "preserve-original-pixels",
         "background_cleanup": "glyph-mask inpaint + local-plane blend",
-        "text_render": "source font-shape v2 + stroke-density match + baseline anchor",
-        "style_match_version": 2,
+        "text_render": "same-line multiword font calibration + width/stroke/color/baseline transfer",
+        "style_match_version": 3,
         "nonblocking_jobs": True,
         "lazy_ai_imports": True,
         "ocr_selection": "word-level boxes",
