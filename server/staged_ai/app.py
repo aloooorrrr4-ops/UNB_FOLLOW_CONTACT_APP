@@ -12,14 +12,14 @@ import glob
 import numpy as np
 import pytesseract
 from pytesseract import Output
-from paddleocr import PaddleOCR
+import easyocr
 import re
 
 app = FastAPI(title="UNB Staged AI Editor")
 
 _session = None
 _lama = None
-_paddle_ocr = None
+_easy_ocr = None
 
 def get_session():
     global _session
@@ -33,21 +33,18 @@ def get_lama():
         _lama = SimpleLama()
     return _lama
 
-def get_paddle_ocr():
-    global _paddle_ocr
-    if _paddle_ocr is None:
-        _paddle_ocr = PaddleOCR(
-            lang="ar",
-            ocr_version="PP-OCRv5",
-            device="cpu",
-            text_detection_model_name="PP-OCRv5_mobile_det",
-            text_recognition_model_name="arabic_PP-OCRv5_mobile_rec",
-            use_doc_orientation_classify=False,
-            use_doc_unwarping=False,
-            use_textline_orientation=False,
-            text_recognition_batch_size=1
+def get_easy_ocr():
+    global _easy_ocr
+    if _easy_ocr is None:
+        _easy_ocr = easyocr.Reader(
+            ["ar", "en"],
+            gpu=False,
+            model_storage_directory="/root/.EasyOCR/model",
+            user_network_directory="/root/.EasyOCR/user_network",
+            download_enabled=True,
+            verbose=False
         )
-    return _paddle_ocr
+    return _easy_ocr
 
 def ensure_image(data: bytes) -> Image.Image:
     if not data:
@@ -240,88 +237,60 @@ def color_info(img: Image.Image, x: int, y: int, w: int, h: int):
         fg = np.median(selected, axis=0) if len(selected) else np.array([0, 0, 0])
         return rgb_to_hex(fg), rgb_to_hex(bg), "normal"
 
-def _result_json(res):
-    value = getattr(res, "json", None)
-    if callable(value):
-        value = value()
-    if value is None:
-        try:
-            value = dict(res)
-        except Exception:
-            value = None
-    if isinstance(value, dict) and "res" in value and isinstance(value["res"], dict):
-        value = value["res"]
-    return value if isinstance(value, dict) else {}
-
-def detect_ocr_blocks_paddle(img: Image.Image):
+def detect_ocr_blocks_easyocr(img: Image.Image):
     np_img = np.array(img)
-    result = get_paddle_ocr().predict(np_img)
+    results = get_easy_ocr().readtext(
+        np_img,
+        detail=1,
+        paragraph=False,
+        decoder="greedy",
+        batch_size=1,
+        workers=0
+    )
 
     blocks = []
     block_id = 1
 
-    for res in result:
-        payload = _result_json(res)
-        texts = payload.get("rec_texts", []) or []
-        scores = payload.get("rec_scores", []) or []
-        boxes = payload.get("rec_boxes", []) or []
+    for item in results:
+        if not item or len(item) < 3:
+            continue
 
-        try:
-            scores = scores.tolist()
-        except Exception:
-            pass
+        points, text, confidence = item[0], str(item[1] or "").strip(), float(item[2] or 0.0)
+        if not text or confidence < 0.30:
+            continue
 
-        try:
-            boxes = boxes.tolist()
-        except Exception:
-            pass
+        xs = [float(p[0]) for p in points]
+        ys = [float(p[1]) for p in points]
 
-        count = min(len(texts), len(scores), len(boxes))
+        x1 = max(0, int(round(min(xs))))
+        y1 = max(0, int(round(min(ys))))
+        x2 = min(img.width, int(round(max(xs))))
+        y2 = min(img.height, int(round(max(ys))))
 
-        for i in range(count):
-            text = str(texts[i] or "").strip()
-            if not text:
-                continue
+        w = max(1, x2 - x1)
+        h = max(1, y2 - y1)
 
-            try:
-                confidence = float(scores[i])
-            except Exception:
-                confidence = 0.0
+        language = detect_language(text)
+        direction = "rtl" if has_arabic(text) else "ltr"
+        number_type = detect_number_type(text)
+        text_color, bg_color, font_weight = color_info(img, x1, y1, w, h)
+        font_size = max(9, int(round(h * 0.80)))
 
-            if confidence < 0.35:
-                continue
-
-            box = boxes[i]
-            if box is None or len(box) < 4:
-                continue
-
-            x1, y1, x2, y2 = [int(round(float(v))) for v in box[:4]]
-            x = max(0, min(x1, x2))
-            y = max(0, min(y1, y2))
-            w = max(1, abs(x2 - x1))
-            h = max(1, abs(y2 - y1))
-
-            language = detect_language(text)
-            direction = "rtl" if has_arabic(text) else "ltr"
-            number_type = detect_number_type(text)
-            text_color, bg_color, font_weight = color_info(img, x, y, w, h)
-            font_size = max(9, int(round(h * 0.80)))
-
-            blocks.append({
-                "id": f"blk_{block_id:03d}",
-                "text": text,
-                "language": language,
-                "number_type": number_type,
-                "direction": direction,
-                "bbox": {"x": x, "y": y, "w": w, "h": h},
-                "font_size": font_size,
-                "font_weight": font_weight,
-                "text_color": text_color,
-                "bg_color": bg_color,
-                "confidence": round(max(0.0, min(1.0, confidence)), 3),
-                "engine": "paddleocr"
-            })
-            block_id += 1
+        blocks.append({
+            "id": f"blk_{block_id:03d}",
+            "text": text,
+            "language": language,
+            "number_type": number_type,
+            "direction": direction,
+            "bbox": {"x": x1, "y": y1, "w": w, "h": h},
+            "font_size": font_size,
+            "font_weight": font_weight,
+            "text_color": text_color,
+            "bg_color": bg_color,
+            "confidence": round(max(0.0, min(1.0, confidence)), 3),
+            "engine": "easyocr"
+        })
+        block_id += 1
 
     blocks.sort(key=lambda b: (b["bbox"]["y"], b["bbox"]["x"]))
     for i, block in enumerate(blocks, 1):
@@ -413,11 +382,11 @@ def detect_ocr_blocks_tesseract(img: Image.Image):
 
 def detect_ocr_blocks(img: Image.Image):
     try:
-        blocks = detect_ocr_blocks_paddle(img)
+        blocks = detect_ocr_blocks_easyocr(img)
         if blocks:
             return blocks
     except Exception as e:
-        print("PaddleOCR failed, falling back to Tesseract:", repr(e), flush=True)
+        print("EasyOCR failed, falling back to Tesseract:", repr(e), flush=True)
 
     return detect_ocr_blocks_tesseract(img)
 
@@ -521,7 +490,7 @@ def health():
         "service": "UNB Staged AI Editor",
         "stages": 4,
         "features": ["cutout", "inpaint", "composite", "ocr_detect", "ocr_replace"],
-        "ocr_engine": "PaddleOCR Arabic PP-OCRv5 mobile + Tesseract fallback"
+        "ocr_engine": "EasyOCR Arabic+English + Tesseract fallback"
     }
 
 @app.post("/api/stage1/cut-first")
