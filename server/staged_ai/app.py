@@ -1,7 +1,7 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import Response
 from rembg import remove, new_session
-from PIL import Image
+from PIL import Image, ImageFilter
 from io import BytesIO
 import cv2
 import gc
@@ -108,7 +108,7 @@ def run_lama(original: Image.Image, mask: Image.Image) -> Image.Image:
     restored_up = restored_small.resize(original.size, Image.Resampling.LANCZOS)
 
     # Keep original pixels outside the removed subject at full quality.
-    soft = mask.filter(__import__("PIL").ImageFilter.GaussianBlur(radius=3))
+    soft = mask.filter(ImageFilter.GaussianBlur(radius=3))
     return Image.composite(restored_up, original, soft)
 
 def png_bytes(img: Image.Image) -> bytes:
