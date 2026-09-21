@@ -357,7 +357,8 @@ public class MainActivity extends Activity {
                 byte[] first = readAll(getContentResolver().openInputStream(firstUri));
                 byte[] result = postMultipart(
                         serverBase + "/api/stage2/restore-background",
-                        new Part("file", "first.jpg", "image/jpeg", first)
+                        new Part("file", "first.jpg", "image/jpeg", first),
+                        new Part("cutout", "stage1.png", "image/png", stage1Png)
                 );
 
                 Bitmap bmp = decodeBitmap(result);
@@ -416,7 +417,8 @@ public class MainActivity extends Activity {
                         serverBase + "/api/stage4/composite",
                         new Part("target", "first.jpg", "image/jpeg", first),
                         new Part("background", "background.jpg", "image/jpeg", stage2Jpg),
-                        new Part("subject", "subject.png", "image/png", stage3Png)
+                        new Part("subject", "subject.png", "image/png", stage3Png),
+                        new Part("target_cutout", "stage1.png", "image/png", stage1Png)
                 );
 
                 Bitmap bmp = decodeBitmap(result);
