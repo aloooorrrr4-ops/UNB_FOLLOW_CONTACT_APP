@@ -154,7 +154,8 @@ public class MainActivity extends Activity {
         composer.addView(promptInput, inputParams);
 
         sendButton = new Button(this);
-        sendButton.setText("إرسال");\n        sendButton.setGravity(Gravity.CENTER);
+        sendButton.setText("إرسال");
+        sendButton.setGravity(Gravity.CENTER);
         sendButton.setTextColor(Color.WHITE);
         sendButton.setTextSize(14);
         sendButton.setAllCaps(false);
