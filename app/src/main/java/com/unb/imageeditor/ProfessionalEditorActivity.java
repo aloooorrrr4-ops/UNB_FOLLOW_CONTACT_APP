@@ -630,7 +630,11 @@ public class ProfessionalEditorActivity extends Activity {
     private JSONArray pointsJson(float[] points) {
         JSONArray array = new JSONArray();
         if (points != null) {
-            for (float point : points) array.put(point);
+            for (float point : points) {
+                try {
+                    array.put((double) point);
+                } catch (Exception ignored) {}
+            }
         }
         return array;
     }
