@@ -34,6 +34,7 @@ import org.json.JSONArray;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -41,6 +42,7 @@ import java.util.List;
 public class ProfessionalEditorActivity extends Activity {
 
     private static final int PICK_IMAGE = 4101;
+    private static final int CREATE_EXPORT = 4102;
 
     private final int BG = Color.rgb(20, 22, 26);
     private final int PANEL = Color.rgb(28, 31, 36);
@@ -79,6 +81,8 @@ public class ProfessionalEditorActivity extends Activity {
     private String foregroundColor = "#ffffff";
     private float cloneSourceX = Float.NaN;
     private float cloneSourceY = Float.NaN;
+    private byte[] pendingExportBytes;
+    private String pendingExportName = "export.png";
 
     private final List<String> history = new ArrayList<>();
     private boolean busy = false;
@@ -1008,6 +1012,24 @@ public class ProfessionalEditorActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+
+        if (requestCode == CREATE_EXPORT) {
+            if (resultCode == RESULT_OK && data != null && data.getData() != null &&
+                    pendingExportBytes != null) {
+                try (OutputStream out = getContentResolver().openOutputStream(data.getData())) {
+                    if (out == null) throw new Exception("تعذر فتح ملف الحفظ");
+                    out.write(pendingExportBytes);
+                    out.flush();
+                    toast("تم حفظ " + pendingExportName);
+                    setStatus("تم حفظ الملف في الهاتف");
+                } catch (Exception e) {
+                    toast("فشل الحفظ: " + e.getMessage());
+                }
+            }
+            pendingExportBytes = null;
+            return;
+        }
+
         if (requestCode != PICK_IMAGE || resultCode != RESULT_OK ||
                 data == null || data.getData() == null) return;
 
@@ -1116,8 +1138,48 @@ public class ProfessionalEditorActivity extends Activity {
             toast("لا يوجد مشروع للحفظ");
             return;
         }
-        toast("التصدير النهائي سيتم من محرك GIMP على السيرفر");
-        setStatus("المشروع جاهز للتصدير " + format.toUpperCase());
+        if (busy) return;
+
+        String fmt = format == null ? "png" : format.toLowerCase();
+        setBusy(true);
+        setStatus("جاري التصدير من GIMP بصيغة " + fmt.toUpperCase() + "...");
+
+        api.exportProject(projectId, fmt, new EditorApiClient.Callback<byte[]>() {
+            @Override
+            public void onSuccess(byte[] value) {
+                runOnUiThread(() -> {
+                    setBusy(false);
+                    pendingExportBytes = value;
+                    pendingExportName = "UNB_Pro_Editor_" + System.currentTimeMillis() + "." +
+                            ("jpeg".equals(fmt) ? "jpg" : fmt);
+
+                    String mime;
+                    switch (fmt) {
+                        case "jpg":
+                        case "jpeg": mime = "image/jpeg"; break;
+                        case "webp": mime = "image/webp"; break;
+                        case "tiff": mime = "image/tiff"; break;
+                        case "xcf": mime = "application/octet-stream"; break;
+                        default: mime = "image/png";
+                    }
+
+                    Intent save = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+                    save.addCategory(Intent.CATEGORY_OPENABLE);
+                    save.setType(mime);
+                    save.putExtra(Intent.EXTRA_TITLE, pendingExportName);
+                    startActivityForResult(save, CREATE_EXPORT);
+                });
+            }
+
+            @Override
+            public void onError(String message) {
+                runOnUiThread(() -> {
+                    setBusy(false);
+                    setStatus("فشل التصدير: " + shortText(message));
+                    toast("فشل التصدير");
+                });
+            }
+        });
     }
 
     private void pingServer() {
