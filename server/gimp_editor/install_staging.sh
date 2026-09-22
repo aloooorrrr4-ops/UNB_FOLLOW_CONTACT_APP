@@ -12,7 +12,7 @@ fi
 
 echo "[1/7] Installing OS packages..."
 apt-get update
-DEBIAN_FRONTEND=noninteractive apt-get install -y gimp python3 python3-venv python3-pip curl
+DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-venv python3-pip curl
 
 echo "[2/7] Verifying GIMP 3..."
 GIMP_VERSION="$(gimp --version 2>/dev/null || gimp-console --version 2>/dev/null || true)"
@@ -39,15 +39,19 @@ cp "$SOURCE_DIR/systemd/unb-gimp-scriptfu.service" /etc/systemd/system/
 cp "$SOURCE_DIR/systemd/unb-pro-editor-api.service" /etc/systemd/system/
 systemctl daemon-reload
 
-echo "[6/7] Starting services..."
+echo "[6/7] Replacing old editor service..."
+docker rm -f unb-stage-ai 2>/dev/null || true
+systemctl disable --now unb-pro-editor-api.service 2>/dev/null || true
+
+echo "Starting services..."
 systemctl enable --now unb-gimp-scriptfu.service
 sleep 3
 systemctl enable --now unb-pro-editor-api.service
 sleep 3
 
 echo "[7/7] Health check..."
-curl --fail --show-error --silent http://127.0.0.1:18085/health
+curl --fail --show-error --silent http://127.0.0.1:18083/health
 echo
-curl --fail --show-error --silent http://127.0.0.1:18085/api/editor/capabilities
+curl --fail --show-error --silent http://127.0.0.1:18083/api/editor/capabilities
 echo
-echo "UNB Pro Editor staging engine is listening on port 18085."
+echo "UNB Pro Editor engine replaced the old service and is listening on port 18083."
