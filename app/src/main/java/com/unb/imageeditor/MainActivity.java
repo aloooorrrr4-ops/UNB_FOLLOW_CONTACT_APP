@@ -1,6 +1,14 @@
 package com.unb.imageeditor;
 
 import android.app.Activity;
+import java.io.FileOutputStream;
+import java.io.FileInputStream;
+import java.io.File;
+import android.os.Build;
+import android.content.pm.PackageManager;
+import android.content.IntentFilter;
+import android.content.BroadcastReceiver;
+import android.Manifest;
 import android.content.ContentValues;
 import android.content.Intent;
 import android.graphics.Bitmap;
@@ -60,6 +68,26 @@ public class MainActivity extends Activity {
     private byte[] currentImage;
     private String currentFileName = "image.png";
     private boolean busy = false;
+    private boolean receiverRegistered = false;
+    private long shownResultModified = 0L;
+
+    private final BroadcastReceiver editReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (intent.getIntExtra(AiProcessService.EXTRA_STAGE, 0) != AiProcessService.CHAT_EDIT) {
+                return;
+            }
+
+            if (AiProcessService.ACTION_DONE.equals(intent.getAction())) {
+                loadFinishedChatResult(true);
+            } else if (AiProcessService.ACTION_FAILED.equals(intent.getAction())) {
+                String msg = intent.getStringExtra(AiProcessService.EXTRA_MESSAGE);
+                removeLastAssistantWaiting();
+                addAssistantText("تعذر تنفيذ الطلب:\n" + (msg == null ? "خطأ غير معروف" : cleanError(msg)));
+                setBusy(false);
+            }
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -177,6 +205,10 @@ public class MainActivity extends Activity {
         sendButton.setOnClickListener(v -> sendEdit());
 
         loadRemoteConfig();
+        registerEditReceiver();
+        requestNotificationPermission();
+        restoreWorkingImage();
+        loadFinishedChatResult(false);
 
         promptInput.setOnEditorActionListener((v, actionId, event) -> {
             if (promptInput.getText().toString().trim().length() > 0) {
@@ -185,6 +217,92 @@ public class MainActivity extends Activity {
             }
             return false;
         });
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        restoreWorkingImage();
+        loadFinishedChatResult(false);
+    }
+
+    private void registerEditReceiver() {
+        if (receiverRegistered) return;
+
+        IntentFilter filter = new IntentFilter();
+        filter.addAction(AiProcessService.ACTION_DONE);
+        filter.addAction(AiProcessService.ACTION_FAILED);
+
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(editReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+        } else {
+            registerReceiver(editReceiver, filter);
+        }
+        receiverRegistered = true;
+    }
+
+    private void requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= 33 &&
+                checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(
+                    new String[]{Manifest.permission.POST_NOTIFICATIONS},
+                    2001
+            );
+        }
+    }
+
+    private void restoreWorkingImage() {
+        if (currentImage != null && currentImage.length > 0) return;
+
+        File result = new File(getFilesDir(), AiProcessService.CHAT_RESULT);
+        File input = new File(getFilesDir(), AiProcessService.CHAT_INPUT);
+        File source = result.exists() && result.length() > 0 ? result : input;
+
+        if (!source.exists() || source.length() == 0) return;
+
+        try {
+            currentImage = readFileBytes(source);
+            currentFileName = source.getName();
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void loadFinishedChatResult(boolean fromBroadcast) {
+        File result = new File(getFilesDir(), AiProcessService.CHAT_RESULT);
+
+        if (!result.exists() || result.length() == 0) return;
+        if (result.lastModified() == shownResultModified) return;
+
+        try {
+            byte[] bytes = readFileBytes(result);
+            Bitmap test = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+            if (test == null) return;
+
+            currentImage = bytes;
+            currentFileName = "edited_" + System.currentTimeMillis() + ".png";
+            shownResultModified = result.lastModified();
+
+            if (fromBroadcast) {
+                removeLastAssistantWaiting();
+            }
+
+            addAssistantImage(bytes, "تم تنفيذ التعديل");
+            setBusy(false);
+            scrollBottom();
+
+        } catch (Exception e) {
+            if (fromBroadcast) {
+                removeLastAssistantWaiting();
+                addAssistantText("تمت المعالجة لكن تعذر فتح النتيجة:\n" + e.getMessage());
+                setBusy(false);
+            }
+        }
+    }
+
+    private byte[] readFileBytes(File file) throws Exception {
+        try (InputStream in = new FileInputStream(file)) {
+            return readStream(in);
+        }
     }
 
     private void loadRemoteConfig() {
@@ -281,49 +399,50 @@ public class MainActivity extends Activity {
             return;
         }
 
-        byte[] source = currentImage.clone();
-
         promptInput.setText("");
         hideKeyboard();
         addUserText(prompt);
         setBusy(true);
-        addAssistantText("جاري تنفيذ التعديل...");
+        addAssistantText("جاري تنفيذ التعديل... يمكنك الخروج من التطبيق وسيستمر العمل.");
 
-        executor.execute(() -> {
-            try {
-                HttpResult result = postChatEdit(source, currentFileName, prompt);
+        try {
+            File input = new File(getFilesDir(), AiProcessService.CHAT_INPUT);
+            File result = new File(getFilesDir(), AiProcessService.CHAT_RESULT);
 
-                if (result.code >= 200 && result.code < 300 && result.body.length > 0) {
-                    Bitmap test = BitmapFactory.decodeByteArray(result.body, 0, result.body.length);
-                    if (test == null) throw new Exception("الخادم لم يُرجع صورة صالحة");
-
-                    currentImage = result.body;
-                    currentFileName = "edited_" + System.currentTimeMillis() + ".png";
-
-                    main.post(() -> {
-                        removeLastAssistantWaiting();
-                        addAssistantImage(result.body, "تم تنفيذ التعديل");
-                        setBusy(false);
-                        scrollBottom();
-                    });
-                } else {
-                    String error = new String(result.body, StandardCharsets.UTF_8);
-                    main.post(() -> {
-                        removeLastAssistantWaiting();
-                        addAssistantText("تعذر تنفيذ الطلب:\n" + cleanError(error));
-                        setBusy(false);
-                        scrollBottom();
-                    });
-                }
-            } catch (Exception e) {
-                main.post(() -> {
-                    removeLastAssistantWaiting();
-                    addAssistantText("حدث خطأ في الاتصال بالخادم:\n" + e.getMessage());
-                    setBusy(false);
-                    scrollBottom();
-                });
+            try (FileOutputStream out = new FileOutputStream(input, false)) {
+                out.write(currentImage);
+                out.flush();
             }
-        });
+
+            if (result.exists()) {
+                result.delete();
+            }
+
+            shownResultModified = 0L;
+
+            Intent service = new Intent(this, AiProcessService.class);
+            service.putExtra(AiProcessService.EXTRA_STAGE, AiProcessService.CHAT_EDIT);
+            service.putExtra(AiProcessService.EXTRA_SERVER, serverBase);
+            service.putExtra(AiProcessService.EXTRA_CHAT_PATH, chatEditPath);
+            service.putExtra(AiProcessService.EXTRA_PROMPT, prompt);
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(service);
+            } else {
+                startService(service);
+            }
+
+            Toast.makeText(
+                    this,
+                    "بدأ التعديل — يمكنك الخروج من التطبيق وسيستمر التنفيذ",
+                    Toast.LENGTH_LONG
+            ).show();
+
+        } catch (Exception e) {
+            removeLastAssistantWaiting();
+            addAssistantText("تعذر بدء المعالجة:\n" + e.getMessage());
+            setBusy(false);
+        }
     }
 
     private HttpResult postChatEdit(byte[] image, String fileName, String prompt) throws Exception {
@@ -563,8 +682,12 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
-        super.onDestroy();
+        if (receiverRegistered) {
+            unregisterReceiver(editReceiver);
+            receiverRegistered = false;
+        }
         executor.shutdownNow();
+        super.onDestroy();
     }
 
     private static class HttpResult {
