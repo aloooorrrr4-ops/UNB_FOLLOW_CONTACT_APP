@@ -87,7 +87,7 @@ public class AiProcessService extends Service {
         working = true;
         startForeground(
                 NOTIFICATION_ID,
-                buildNotification(notificationText(stage))
+                buildNotification(notificationText(stage), stage)
         );
 
         new Thread(() -> {
@@ -402,8 +402,11 @@ public class AiProcessService extends Service {
         }
     }
 
-    private Notification buildNotification(String text) {
-        Intent open = new Intent(this, MainActivity.class);
+    private Notification buildNotification(String text, int stage) {
+        Class<?> destination = (stage == OCR_DETECT || stage == OCR_REPLACE)
+                ? OcrEditorActivity.class
+                : MainActivity.class;
+        Intent open = new Intent(this, destination);
         open.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
 
         PendingIntent pi = PendingIntent.getActivity(
