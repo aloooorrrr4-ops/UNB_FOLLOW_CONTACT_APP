@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "app_name": "محرر الصور الذكي",
+  "subtitle": "ارفع صورة، ثم اكتب التعديل كأنك تتحدث معي",
+  "server_base": "http://91.98.126.167:18083",
+  "chat_edit_path": "/api/chat/edit",
+  "maintenance": false,
+  "maintenance_message": "الخدمة تحت الصيانة حالياً",
+  "welcome_message": "أرسل صورة ثم اكتب التعديل المطلوب.",
+  "max_upload_mb": 15
+}
