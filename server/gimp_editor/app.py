@@ -126,6 +126,124 @@ def active_drawable(image_id: int) -> int:
     return int(match.group(1))
 
 
+def parse_vector_ids(raw: str) -> list[int]:
+    match = re.search(r"#\(([^)]*)\)", raw or "")
+    if not match:
+        return []
+    return [int(x) for x in re.findall(r"-?\d+", match.group(1))]
+
+
+def sf_float(script: str) -> float:
+    raw = sf.call(script).strip()
+    match = re.search(r"-?(?:\d+(?:\.\d*)?|\.\d+)", raw)
+    if not match:
+        raise ScriptFuError(f"Expected float from GIMP, got: {raw}")
+    return float(match.group(0))
+
+
+def requested_layer(image_id: int, params: dict[str, Any]) -> int:
+    layer_id = params.get("layer_id")
+    return int(layer_id) if layer_id is not None else active_drawable(image_id)
+
+
+def scriptfu_color(value: Any) -> str:
+    text = str(value or "#000000").strip()
+    if re.fullmatch(r"#[0-9a-fA-F]{6}", text):
+        return f"'({int(text[1:3], 16)} {int(text[3:5], 16)} {int(text[5:7], 16)})"
+    if re.fullmatch(r"[A-Za-z]+", text):
+        return f'"{sf_string(text)}"'
+    raise HTTPException(400, "اللون يجب أن يكون #RRGGBB أو اسم لون بسيط")
+
+
+def scriptfu_points(points: Any) -> tuple[str, int]:
+    if not isinstance(points, list) or len(points) < 4 or len(points) % 2 != 0:
+        raise HTTPException(400, "النقاط يجب أن تكون قائمة x,y وبها نقطتان على الأقل")
+    vals = []
+    for item in points:
+        vals.append(float(item))
+    return "(list->vector '(" + " ".join(f"{v:.3f}" for v in vals) + "))", len(vals)
+
+
+BLEND_MODES = {
+    "normal": "LAYER-MODE-NORMAL",
+    "multiply": "LAYER-MODE-MULTIPLY",
+    "screen": "LAYER-MODE-SCREEN",
+    "overlay": "LAYER-MODE-OVERLAY",
+    "difference": "LAYER-MODE-DIFFERENCE",
+    "darken": "LAYER-MODE-DARKEN-ONLY",
+    "lighten": "LAYER-MODE-LIGHTEN-ONLY",
+}
+
+
+GEGL_FILTERS = {
+    "gaussian_blur": ("gegl:gaussian-blur", {
+        "std-dev-x": ("float", 2.0, 0.0, 500.0),
+        "std-dev-y": ("float", 2.0, 0.0, 500.0),
+    }),
+    "unsharp_mask": ("gegl:unsharp-mask", {
+        "std-dev": ("float", 1.0, 0.0, 100.0),
+        "scale": ("float", 1.0, 0.0, 20.0),
+        "threshold": ("float", 0.0, 0.0, 1.0),
+    }),
+    "noise_reduction": ("gegl:noise-reduction", {
+        "iterations": ("int", 4, 1, 32),
+    }),
+    "bloom": ("gegl:bloom", {
+        "threshold": ("float", 0.8, 0.0, 1.0),
+        "softness": ("float", 0.5, 0.0, 1.0),
+        "radius": ("float", 10.0, 0.0, 500.0),
+        "strength": ("float", 1.0, 0.0, 20.0),
+    }),
+    "emboss": ("gegl:emboss", {
+        "azimuth": ("float", 30.0, 0.0, 360.0),
+        "elevation": ("float", 45.0, 0.0, 180.0),
+        "depth": ("int", 10, 1, 100),
+    }),
+    "edge": ("gegl:edge", {
+        "amount": ("float", 1.0, 0.0, 10.0),
+    }),
+    "oilify": ("gegl:oilify", {
+        "mask-radius": ("int", 4, 1, 64),
+    }),
+    "pixelize": ("gegl:pixelize", {
+        "size-x": ("int", 10, 1, 1000),
+        "size-y": ("int", 10, 1, 1000),
+    }),
+    "mosaic": ("gegl:mosaic", {
+        "tile-size": ("float", 15.0, 1.0, 500.0),
+        "tile-height": ("float", 4.0, 0.0, 100.0),
+    }),
+    "motion_blur": ("gegl:motion-blur-linear", {
+        "length": ("float", 10.0, 0.0, 1000.0),
+        "angle": ("float", 0.0, -360.0, 360.0),
+    }),
+    "color_temperature": ("gegl:color-temperature", {
+        "intended-temperature": ("float", 6500.0, 1000.0, 12000.0),
+        "actual-temperature": ("float", 6500.0, 1000.0, 12000.0),
+    }),
+}
+
+
+def layer_list(image_id: int) -> list[dict[str, Any]]:
+    ids = parse_vector_ids(sf.call(f"(gimp-image-get-layers {image_id})"))
+    layers: list[dict[str, Any]] = []
+    for layer_id in ids:
+        name = sf.call(f"(car (gimp-item-get-name {layer_id}))").strip().strip('"')
+        visible_raw = sf.call(f"(car (gimp-item-get-visible {layer_id}))").lower()
+        opacity = sf_float(f"(car (gimp-layer-get-opacity {layer_id}))")
+        width = sf_int(f"(car (gimp-item-get-width {layer_id}))")
+        height = sf_int(f"(car (gimp-item-get-height {layer_id}))")
+        layers.append({
+            "id": layer_id,
+            "name": name,
+            "visible": ("#t" in visible_raw or "true" in visible_raw),
+            "opacity": opacity,
+            "width": width,
+            "height": height,
+        })
+    return layers
+
+
 @dataclass
 class ProjectState:
     project_id: str
@@ -195,9 +313,11 @@ def operation_catalog() -> dict[str, list[str]]:
     return {
         "file": ["open", "save", "export"],
         "edit": ["undo", "redo"],
-        "selection": ["select_all", "select_none", "invert_selection", "feather", "grow", "shrink"],
+        "selection": ["select_all", "select_none", "invert_selection", "select_rectangle", "select_ellipse",
+                      "feather", "grow", "shrink"],
         "image": ["resize", "crop", "rotate", "flip_horizontal", "flip_vertical"],
-        "layers": ["add_layer", "delete_layer", "opacity", "blend_mode", "merge_visible", "flatten"],
+        "layers": ["add_layer", "delete_layer", "duplicate_layer", "rename_layer", "visibility",
+                   "opacity", "blend_mode", "merge_visible", "flatten"],
         "colors": ["brightness", "contrast", "hue_saturation", "levels", "curves", "color_balance",
                    "threshold", "posterize", "desaturate", "invert"],
         "paint": ["pencil", "paintbrush", "airbrush", "eraser", "fill", "stroke_selection"],
@@ -242,8 +362,14 @@ def capabilities():
             "rotate", "flip_horizontal", "flip_vertical",
             "brightness", "contrast", "saturation",
             "desaturate", "invert", "crop", "resize",
-            "select_all", "select_none", "invert_selection",
-            "feather", "grow", "shrink", "flatten"
+            "select_all", "select_none", "invert_selection", "select_rectangle", "select_ellipse",
+            "feather", "grow", "shrink", "flatten",
+            "add_layer", "delete_layer", "duplicate_layer", "rename_layer", "visibility",
+            "opacity", "blend_mode", "merge_visible",
+            "add_text", "edit_text", "font_size", "text_color",
+            "paintbrush", "pencil", "eraser", "fill", "stroke_selection",
+            "gaussian_blur", "unsharp_mask", "noise_reduction", "bloom", "emboss",
+            "edge", "oilify", "pixelize", "mosaic", "motion_blur", "color_temperature"
         ],
         "architecture": "allowlisted PDB bridge; no arbitrary remote script execution",
     }
@@ -308,17 +434,24 @@ def get_project(project_id: str):
     with state.lock:
         width = sf_int(f"(car (gimp-image-get-width {state.image_id}))")
         height = sf_int(f"(car (gimp-image-get-height {state.image_id}))")
-        layers_raw = sf.call(f"(gimp-image-get-layers {state.image_id})")
+        layers = layer_list(state.image_id)
         return {
             "ok": True,
             "project_id": project_id,
             "image_id": state.image_id,
             "width": width,
             "height": height,
-            "layers_raw": layers_raw,
+            "layers": layers,
             "undo_depth": len(state.undo),
             "redo_depth": len(state.redo),
         }
+
+
+@app.get("/api/editor/projects/{project_id}/layers")
+def get_layers(project_id: str):
+    state = project_or_404(project_id)
+    with state.lock:
+        return {"ok": True, "layers": layer_list(state.image_id)}
 
 
 @app.get("/api/editor/projects/{project_id}/preview")
@@ -409,6 +542,150 @@ def apply_operation_to_gimp(state: ProjectState, op: str, p: dict[str, Any]):
     elif op == "shrink":
         steps = max(0, int(p.get("steps", 1)))
         sf.call(f"(gimp-selection-shrink {img} {steps})")
+
+    elif op == "select_rectangle":
+        x = int(p.get("x", 0))
+        y = int(p.get("y", 0))
+        w = int(p.get("width", 0))
+        h = int(p.get("height", 0))
+        if w <= 0 or h <= 0:
+            raise HTTPException(400, "أبعاد التحديد غير صحيحة")
+        sf.call(f"(gimp-image-select-rectangle {img} CHANNEL-OP-REPLACE {x} {y} {w} {h})")
+
+    elif op == "select_ellipse":
+        x = int(p.get("x", 0))
+        y = int(p.get("y", 0))
+        w = int(p.get("width", 0))
+        h = int(p.get("height", 0))
+        if w <= 0 or h <= 0:
+            raise HTTPException(400, "أبعاد التحديد غير صحيحة")
+        sf.call(f"(gimp-image-select-ellipse {img} CHANNEL-OP-REPLACE {x} {y} {w} {h})")
+
+    elif op == "add_layer":
+        name = sf_string(str(p.get("name", "Layer")))
+        width = int(p.get("width") or sf_int(f"(car (gimp-image-get-width {img}))"))
+        height = int(p.get("height") or sf_int(f"(car (gimp-image-get-height {img}))"))
+        opacity = max(0.0, min(100.0, float(p.get("opacity", 100))))
+        mode_key = str(p.get("blend_mode", "normal")).lower()
+        mode = BLEND_MODES.get(mode_key)
+        if not mode:
+            raise HTTPException(400, "Blend mode غير مدعوم في هذه الدفعة")
+        layer_id = sf_int(
+            f'(car (gimp-layer-new {img} "{name}" {width} {height} RGBA-IMAGE {opacity:.3f} {mode}))'
+        )
+        sf.call(f"(gimp-image-insert-layer {img} {layer_id} 0 -1)")
+        if bool(p.get("fill_transparent", True)):
+            sf.call(f"(gimp-drawable-edit-fill {layer_id} FILL-TRANSPARENT)")
+
+    elif op == "delete_layer":
+        layer_id = requested_layer(img, p)
+        sf.call(f"(gimp-image-remove-layer {img} {layer_id})")
+
+    elif op == "duplicate_layer":
+        layer_id = requested_layer(img, p)
+        new_layer = sf_int(f"(car (gimp-layer-copy {layer_id} TRUE))")
+        sf.call(f"(gimp-image-insert-layer {img} {new_layer} 0 -1)")
+
+    elif op == "rename_layer":
+        layer_id = requested_layer(img, p)
+        name = sf_string(str(p.get("name", "Layer")))
+        sf.call(f'(gimp-item-set-name {layer_id} "{name}")')
+
+    elif op == "visibility":
+        layer_id = requested_layer(img, p)
+        visible = "TRUE" if bool(p.get("visible", True)) else "FALSE"
+        sf.call(f"(gimp-item-set-visible {layer_id} {visible})")
+
+    elif op == "opacity":
+        layer_id = requested_layer(img, p)
+        opacity = max(0.0, min(100.0, float(p.get("value", p.get("opacity", 100)))))
+        sf.call(f"(gimp-layer-set-opacity {layer_id} {opacity:.3f})")
+
+    elif op == "blend_mode":
+        layer_id = requested_layer(img, p)
+        mode_key = str(p.get("mode", "normal")).lower()
+        mode = BLEND_MODES.get(mode_key)
+        if not mode:
+            raise HTTPException(400, "Blend mode غير مدعوم في هذه الدفعة")
+        sf.call(f"(gimp-layer-set-mode {layer_id} {mode})")
+
+    elif op == "merge_visible":
+        sf.call(f"(gimp-image-merge-visible-layers {img} CLIP-TO-IMAGE)")
+
+    elif op == "add_text":
+        text = sf_string(str(p.get("text", "")))
+        if not text:
+            raise HTTPException(400, "النص فارغ")
+        x = int(p.get("x", 0))
+        y = int(p.get("y", 0))
+        size = max(4.0, min(1000.0, float(p.get("size", 32))))
+        font_query = sf_string(str(p.get("font", "Sans")))
+        font_id = sf_int(f'(vector-ref (car (gimp-fonts-get-list "{font_query}")) 0)')
+        layer_id = sf_int(
+            f'(car (gimp-text-font {img} 0 {x} {y} "{text}" {size:.3f} {font_id}))'
+        )
+        if "color" in p:
+            color = scriptfu_color(p.get("color"))
+            sf.call(f"(gimp-text-layer-set-color {layer_id} {color})")
+
+    elif op == "edit_text":
+        layer_id = requested_layer(img, p)
+        text = sf_string(str(p.get("text", "")))
+        sf.call(f'(gimp-text-layer-set-text {layer_id} "{text}")')
+
+    elif op == "font_size":
+        layer_id = requested_layer(img, p)
+        size = max(4.0, min(1000.0, float(p.get("size", 32))))
+        sf.call(f"(gimp-text-layer-set-font-size {layer_id} {size:.3f} UNIT-PIXEL)")
+
+    elif op == "text_color":
+        layer_id = requested_layer(img, p)
+        color = scriptfu_color(p.get("color"))
+        sf.call(f"(gimp-text-layer-set-color {layer_id} {color})")
+
+    elif op in {"paintbrush", "pencil", "eraser"}:
+        layer_id = requested_layer(img, p)
+        vector, count = scriptfu_points(p.get("points"))
+        size = max(1.0, min(2000.0, float(p.get("size", 20))))
+        opacity = max(0.0, min(100.0, float(p.get("opacity", 100))))
+        sf.call(f"(gimp-context-set-brush-size {size:.3f})")
+        sf.call(f"(gimp-context-set-opacity {opacity:.3f})")
+        if "color" in p:
+            sf.call(f"(gimp-context-set-foreground {scriptfu_color(p.get('color'))})")
+        if op == "paintbrush":
+            sf.call(f"(gimp-paintbrush {layer_id} 0 {count} {vector} 0 0)")
+        elif op == "pencil":
+            sf.call(f"(gimp-pencil {layer_id} {count} {vector})")
+        else:
+            sf.call(f"(gimp-eraser {layer_id} {count} {vector} HARDNESS-HARD 0)")
+
+    elif op == "fill":
+        layer_id = requested_layer(img, p)
+        sf.call(f"(gimp-context-set-foreground {scriptfu_color(p.get('color', '#000000'))})")
+        sf.call(f"(gimp-drawable-edit-fill {layer_id} FILL-FOREGROUND)")
+
+    elif op == "stroke_selection":
+        layer_id = requested_layer(img, p)
+        width = max(0.1, min(1000.0, float(p.get("width", 2))))
+        sf.call(f"(gimp-context-set-line-width {width:.3f})")
+        sf.call("(gimp-context-set-stroke-method STROKE-LINE)")
+        if "color" in p:
+            sf.call(f"(gimp-context-set-foreground {scriptfu_color(p.get('color'))})")
+        sf.call(f"(gimp-drawable-edit-stroke-selection {layer_id})")
+
+    elif op in GEGL_FILTERS:
+        layer_id = requested_layer(img, p)
+        gegl_name, schema = GEGL_FILTERS[op]
+        filter_id = sf_int(f'(car (gimp-drawable-filter-new {layer_id} "{gegl_name}" ""))')
+        config_parts = []
+        for key, spec in schema.items():
+            kind, default, low, high = spec
+            raw = p.get(key, default)
+            value = int(raw) if kind == "int" else float(raw)
+            value = max(low, min(high, value))
+            config_parts.append(f'"{key}"')
+            config_parts.append(str(value))
+        sf.call(f"(gimp-drawable-filter-configure {filter_id} {' '.join(config_parts)})")
 
     elif op == "flatten":
         sf.call(f"(gimp-image-flatten {img})")
