@@ -1664,7 +1664,7 @@ def health():
         "background_cleanup": "glyph-mask inpaint + local-plane blend",
         "text_render": "same-line point-size calibration + core-ink color + stroke transfer",
         "style_match_version": 6,
-        "output_mode": "permanent-demo-watermark",
+        "output_mode": "clean-working-image; permanent watermark on client export",
         "nonblocking_jobs": True,
         "lazy_ai_imports": True,
         "ocr_selection": "word-level boxes",
@@ -1743,7 +1743,7 @@ async def ocr_replace(
         # source font.
         if original_text and normalize_compare_text(new_text) == normalize_compare_text(original_text):
             return Response(
-                png_bytes(apply_permanent_demo_watermark(img)),
+                png_bytes(img),
                 media_type="image/png",
                 headers={
                     "Cache-Control": "no-store",
@@ -1762,8 +1762,6 @@ async def ocr_replace(
             direction,
             font_weight
         )
-
-        result = apply_permanent_demo_watermark(result)
 
         return Response(
             png_bytes(result),
