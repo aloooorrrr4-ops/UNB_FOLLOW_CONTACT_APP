@@ -96,7 +96,7 @@ public class ProfessionalEditorActivity extends Activity {
         getWindow().setNavigationBarColor(Color.rgb(14, 16, 19));
 
         SharedPreferences prefs = getSharedPreferences("editor_settings", MODE_PRIVATE);
-        String savedServer = prefs.getString("server_base", "http://91.98.126.167:18085");
+        String savedServer = prefs.getString("server_base", "http://91.98.126.167:18083");
         api = new EditorApiClient(savedServer);
         desktopLayout = isDesktopLayout();
 
