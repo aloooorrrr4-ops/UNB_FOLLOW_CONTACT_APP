@@ -97,6 +97,10 @@ public class ProfessionalEditorActivity extends Activity {
 
         SharedPreferences prefs = getSharedPreferences("editor_settings", MODE_PRIVATE);
         String savedServer = prefs.getString("server_base", "http://91.98.126.167:18083");
+        if ("http://91.98.126.167:18085".equals(savedServer)) {
+            savedServer = "http://91.98.126.167:18083";
+            prefs.edit().putString("server_base", savedServer).apply();
+        }
         api = new EditorApiClient(savedServer);
         desktopLayout = isDesktopLayout();
 
