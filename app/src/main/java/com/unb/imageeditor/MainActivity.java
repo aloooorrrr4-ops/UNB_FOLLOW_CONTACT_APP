@@ -75,6 +75,24 @@ public class MainActivity extends Activity {
     private boolean receiverRegistered = false;
     private long shownResultModified = 0L;
     private long shownTextModified = 0L;
+    private int pendingStage = 0;
+
+    private final Runnable resultWatcher = new Runnable() {
+        @Override
+        public void run() {
+            if (!busy || pendingStage == 0) return;
+
+            if (pendingStage == AiProcessService.CHAT_EXTRACT) {
+                loadFinishedTextResult(true);
+            } else if (pendingStage == AiProcessService.CHAT_EDIT) {
+                loadFinishedChatResult(true);
+            }
+
+            if (busy && pendingStage != 0) {
+                main.postDelayed(this, 1000);
+            }
+        }
+    };
 
     private final BroadcastReceiver editReceiver = new BroadcastReceiver() {
         @Override
@@ -290,7 +308,14 @@ public class MainActivity extends Activity {
         try {
             byte[] bytes = readFileBytes(result);
             Bitmap test = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
-            if (test == null) return;
+            if (test == null) {
+                if (fromBroadcast || busy) {
+                    removeLastAssistantWaiting();
+                    addAssistantText("تمت المعالجة لكن الخادم لم يرجع صورة صالحة.");
+                    setBusy(false);
+                }
+                return;
+            }
 
             currentImage = bytes;
             currentFileName = "edited_" + System.currentTimeMillis() + ".png";
@@ -559,9 +584,10 @@ public class MainActivity extends Activity {
             }
 
             Intent service = new Intent(this, AiProcessService.class);
+            pendingStage = extractMode ? AiProcessService.CHAT_EXTRACT : AiProcessService.CHAT_EDIT;
             service.putExtra(
                     AiProcessService.EXTRA_STAGE,
-                    extractMode ? AiProcessService.CHAT_EXTRACT : AiProcessService.CHAT_EDIT
+                    pendingStage
             );
             service.putExtra(AiProcessService.EXTRA_SERVER, serverBase);
 
@@ -575,6 +601,9 @@ public class MainActivity extends Activity {
             } else {
                 startService(service);
             }
+
+            main.removeCallbacks(resultWatcher);
+            main.postDelayed(resultWatcher, 1000);
 
             Toast.makeText(
                     this,
@@ -745,6 +774,10 @@ public class MainActivity extends Activity {
 
     private void setBusy(boolean value) {
         busy = value;
+        if (!value) {
+            pendingStage = 0;
+            main.removeCallbacks(resultWatcher);
+        }
         sendButton.setEnabled(!value);
         attachButton.setEnabled(!value);
         promptInput.setEnabled(!value);
@@ -832,6 +865,7 @@ public class MainActivity extends Activity {
             unregisterReceiver(editReceiver);
             receiverRegistered = false;
         }
+        main.removeCallbacks(resultWatcher);
         executor.shutdownNow();
         super.onDestroy();
     }
