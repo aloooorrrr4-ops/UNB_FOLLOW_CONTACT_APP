@@ -2,6 +2,10 @@ name: Deploy Pro Editor Server
 
 on:
   workflow_dispatch:
+  push:
+    branches: [ "main" ]
+    paths:
+      - ".github/workflows/deploy-pro-editor.yml"
 
 permissions:
   contents: read
@@ -20,6 +24,15 @@ jobs:
           python3 -m py_compile server/gimp_editor/app.py
           bash -n server/gimp_editor/start_gimp_scriptfu.sh
           bash -n server/gimp_editor/install_staging.sh
+
+      - name: Check SSH deployment credential
+        env:
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+        run: |
+          if [ -z "$SERVER_SSH_KEY" ]; then
+            echo "::error::GitHub secret SERVER_SSH_KEY is not configured."
+            exit 2
+          fi
 
       - name: Upload GIMP editor package
         uses: appleboy/scp-action@v1
