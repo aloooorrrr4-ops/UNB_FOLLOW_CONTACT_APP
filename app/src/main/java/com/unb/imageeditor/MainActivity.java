@@ -14,6 +14,7 @@ import android.os.Looper;
 import android.provider.MediaStore;
 import android.view.Gravity;
 import android.view.View;
+import android.view.WindowInsets;
 import android.view.inputmethod.InputMethodManager;
 import android.content.Context;
 import android.widget.Button;
@@ -65,6 +66,13 @@ public class MainActivity extends Activity {
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(Color.rgb(11, 13, 16));
 
+        root.setOnApplyWindowInsetsListener((v, insets) -> {
+            int bottom = Math.max(insets.getSystemWindowInsetBottom(), dp(8));
+            int top = Math.max(insets.getSystemWindowInsetTop(), 0);
+            v.setPadding(0, top, 0, bottom);
+            return insets;
+        });
+
         LinearLayout header = new LinearLayout(this);
         header.setOrientation(LinearLayout.VERTICAL);
         header.setPadding(dp(18), dp(18), dp(18), dp(12));
@@ -107,7 +115,7 @@ public class MainActivity extends Activity {
 
         LinearLayout composerWrap = new LinearLayout(this);
         composerWrap.setOrientation(LinearLayout.VERTICAL);
-        composerWrap.setPadding(dp(10), dp(8), dp(10), dp(12));
+        composerWrap.setPadding(dp(10), dp(8), dp(10), dp(10));
         composerWrap.setBackgroundColor(Color.rgb(16, 19, 23));
 
         progress = new ProgressBar(this);
@@ -146,7 +154,7 @@ public class MainActivity extends Activity {
         composer.addView(promptInput, inputParams);
 
         sendButton = new Button(this);
-        sendButton.setText("إرسال");
+        sendButton.setText("إرسال");\n        sendButton.setGravity(Gravity.CENTER);
         sendButton.setTextColor(Color.WHITE);
         sendButton.setTextSize(14);
         sendButton.setAllCaps(false);
