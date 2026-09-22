@@ -1,11 +1,11 @@
 {
   "version": 1,
   "app_name": "محرر الصور الذكي",
-  "subtitle": "ارفع صورة، ثم اكتب التعديل كأنك تتحدث معي",
+  "subtitle": "استخرج النصوص ثم عدّلها كلمة مقابل كلمة",
   "server_base": "http://91.98.126.167:18083",
   "chat_edit_path": "/api/chat/edit",
   "maintenance": false,
   "maintenance_message": "الخدمة تحت الصيانة حالياً",
-  "welcome_message": "أرسل صورة ثم اكتب التعديل المطلوب.",
+  "welcome_message": "ارفع صورة ثم قل: استخرج النصوص. بعدها أرسل كل سطر بهذا الشكل: النص الأصلي = النص الجديد",
   "max_upload_mb": 15
 }
