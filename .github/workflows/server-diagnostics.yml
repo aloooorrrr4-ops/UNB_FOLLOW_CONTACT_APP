@@ -5,88 +5,31 @@ on:
     branches: [ "main" ]
     paths:
       - ".github/workflows/server-diagnostics.yml"
-      - "diagnostics/**"
+      - "server/gimp_editor/**"
   workflow_dispatch:
 
 jobs:
   diagnose:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
-      - name: Health and API diagnostics
+      - name: Professional editor endpoint
         shell: bash
         run: |
           set +e
           BASE="http://91.98.126.167:18083"
 
-          echo "=== TCP / HEALTH ==="
-          date -u
+          echo "=== HEALTH ==="
           curl -v --connect-timeout 10 --max-time 20 "$BASE/health" 2>&1
           echo
           echo "HEALTH_RC=$?"
 
           echo
-          echo "=== PRO EDITOR 18085 ==="
-          curl -v --connect-timeout 10 --max-time 20 "http://91.98.126.167:18085/health" 2>&1
+          echo "=== CAPABILITIES ==="
+          curl -v --connect-timeout 10 --max-time 20 "$BASE/api/editor/capabilities" 2>&1
           echo
-          echo "PRO_EDITOR_18085_RC=$?"
+          echo "CAPABILITIES_RC=$?"
 
           echo
-          echo "=== CHAT PLAN ==="
-          curl -v --connect-timeout 10 --max-time 20             -F 'prompt=بدل اختبار جيمب إلى محمد فاضل'             "$BASE/api/chat/plan" 2>&1
-          echo
-          echo "PLAN_RC=$?"
-
-          echo
-          echo "=== CREATE TEST PNG ==="
-          python3 - <<'PY'
-          import struct,zlib
-          w,h=64,64
-          raw=b''.join(b'\x00'+b'\xf2\xf2\xf2'*w for _ in range(h))
-          def chunk(t,d):
-              import zlib,struct
-              return struct.pack(">I",len(d))+t+d+struct.pack(">I",zlib.crc32(t+d)&0xffffffff)
-          png=b'\x89PNG\r\n\x1a\n'
-          png+=chunk(b'IHDR',struct.pack(">IIBBBBB",w,h,8,2,0,0,0))
-          png+=chunk(b'IDAT',zlib.compress(raw))
-          png+=chunk(b'IEND',b'')
-          open('/tmp/test.png','wb').write(png)
-          print(len(png))
-          PY
-
-          echo
-          echo "=== OCR DETECT ==="
-          curl -v --connect-timeout 10 --max-time 120             -F "image=@/tmp/test.png"             "$BASE/api/ocr/detect" 2>&1
-          echo
-          echo "OCR_RC=$?"
-
-          echo
-          echo "=== CHAT EDIT ==="
-          curl -v --connect-timeout 10 --max-time 180             -F "image=@/tmp/test.png"             -F 'prompt=بدل اختبار جيمب إلى محمد فاضل'             "$BASE/api/chat/edit" 2>&1
-          echo
-          echo "CHAT_RC=$?"
-
-          echo
-          echo "=== LARGE PNG TEST ==="
-          python3 - <<'PY'
-          import os,struct,zlib
-          w,h=1200,800
-          raw=bytearray()
-          for y in range(h):
-              raw.append(0)
-              raw.extend(os.urandom(w*3))
-          def chunk(t,d):
-              return struct.pack(">I",len(d))+t+d+struct.pack(">I",zlib.crc32(t+d)&0xffffffff)
-          png=b'\x89PNG\r\n\x1a\n'
-          png+=chunk(b'IHDR',struct.pack(">IIBBBBB",w,h,8,2,0,0,0))
-          png+=chunk(b'IDAT',zlib.compress(bytes(raw),1))
-          png+=chunk(b'IEND',b'')
-          open('/tmp/large.png','wb').write(png)
-          print("LARGE_BYTES",len(png))
-          PY
-
-          curl -v --connect-timeout 10 --max-time 180 \
-            -F "image=@/tmp/large.png" \
-            "$BASE/api/ocr/detect" 2>&1
-          echo
-          echo "LARGE_OCR_RC=$?"
+          echo "=== EXPECTED SERVICE ==="
+          echo "UNB Pro Editor API on :18083"
