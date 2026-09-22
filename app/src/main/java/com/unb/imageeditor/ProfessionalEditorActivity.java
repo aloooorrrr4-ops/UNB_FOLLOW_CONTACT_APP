@@ -17,6 +17,7 @@ import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.WindowInsets;
 import android.widget.Button;
 import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
@@ -60,6 +61,10 @@ public class ProfessionalEditorActivity extends Activity {
     private LinearLayout historyList;
     private Button activeToolButton;
     private String activeTool = "move";
+    private boolean desktopLayout = false;
+    private View phoneInspectorPanel;
+    private ScrollView inspectorBodyScroll;
+    private boolean phoneInspectorExpanded = false;
 
     private final List<String> history = new ArrayList<>();
     private boolean busy = false;
@@ -75,14 +80,20 @@ public class ProfessionalEditorActivity extends Activity {
 
         LinearLayout root = column();
         root.setBackgroundColor(BG);
+        root.setOnApplyWindowInsetsListener((v, insets) -> {
+            int top = Math.max(0, insets.getSystemWindowInsetTop());
+            int bottom = Math.max(0, insets.getSystemWindowInsetBottom());
+            v.setPadding(0, top, 0, bottom);
+            return insets;
+        });
 
         root.addView(buildMenuBar());
         root.addView(divider());
         root.addView(buildQuickBar());
         root.addView(divider());
 
-        boolean desktop = isDesktopLayout();
-        View workspace = desktop ? buildDesktopWorkspace() : buildPhoneWorkspace();
+        desktopLayout = isDesktopLayout();
+        View workspace = desktopLayout ? buildDesktopWorkspace() : buildPhoneWorkspace();
         root.addView(workspace, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
@@ -105,14 +116,16 @@ public class ProfessionalEditorActivity extends Activity {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(6), dp(4), dp(6), dp(4));
+        row.setPadding(dp(desktopLayout ? 6 : 2), dp(desktopLayout ? 4 : 2),
+                dp(desktopLayout ? 6 : 2), dp(desktopLayout ? 4 : 2));
+        row.setLayoutDirection(View.LAYOUT_DIRECTION_RTL);
 
         String[] menus = {"ملف", "تعديل", "تحديد", "عرض", "صورة", "طبقة", "ألوان", "أدوات", "فلاتر", "نوافذ"};
         for (String name : menus) {
-            Button b = flatButton(name, 13);
+            Button b = flatButton(name, desktopLayout ? 13 : 12);
             b.setOnClickListener(v -> showMenuGroup(name));
             row.addView(b, new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, dp(38)));
+                    ViewGroup.LayoutParams.WRAP_CONTENT, dp(desktopLayout ? 38 : 34)));
         }
 
         scroller.addView(row);
@@ -127,7 +140,9 @@ public class ProfessionalEditorActivity extends Activity {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(6), dp(5), dp(6), dp(5));
+        row.setPadding(dp(desktopLayout ? 6 : 3), dp(desktopLayout ? 5 : 3),
+                dp(desktopLayout ? 6 : 3), dp(desktopLayout ? 5 : 3));
+        row.setLayoutDirection(View.LAYOUT_DIRECTION_RTL);
 
         row.addView(actionButton("فتح", v -> chooseImage()));
         row.addView(actionButton("حفظ", v -> exportProject("png")));
@@ -171,21 +186,23 @@ public class ProfessionalEditorActivity extends Activity {
 
         LinearLayout middle = new LinearLayout(this);
         middle.setOrientation(LinearLayout.HORIZONTAL);
-        middle.addView(buildToolRail(), new LinearLayout.LayoutParams(dp(74),
-                ViewGroup.LayoutParams.MATCH_PARENT));
-        middle.addView(dividerVertical());
 
         canvas = createCanvas();
         middle.addView(canvas, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.MATCH_PARENT, 1f));
 
+        middle.addView(dividerVertical());
+        middle.addView(buildToolRail(), new LinearLayout.LayoutParams(dp(60),
+                ViewGroup.LayoutParams.MATCH_PARENT));
+
         root.addView(middle, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
         root.addView(divider());
-        View inspector = buildInspector();
-        root.addView(inspector, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(218)));
+        phoneInspectorPanel = buildInspector();
+        root.addView(phoneInspectorPanel, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
+        setPhoneInspectorExpanded(false);
         return root;
     }
 
@@ -217,11 +234,13 @@ public class ProfessionalEditorActivity extends Activity {
         scroll.setBackgroundColor(PANEL);
 
         LinearLayout rail = column();
-        rail.setPadding(dp(6), dp(7), dp(6), dp(8));
+        int railPad = desktopLayout ? 6 : 4;
+        rail.setPadding(dp(railPad), dp(desktopLayout ? 7 : 5),
+                dp(railPad), dp(desktopLayout ? 8 : 5));
 
         addTool(rail, "move", "تحريك");
         addTool(rail, "select", "تحديد");
-        addTool(rail, "free_select", "حر");
+        addTool(rail, "free_select", "لاسو");
         addTool(rail, "crop", "قص");
         addTool(rail, "transform", "تحويل");
         addTool(rail, "perspective", "منظور");
@@ -245,7 +264,7 @@ public class ProfessionalEditorActivity extends Activity {
     private void addTool(LinearLayout rail, String id, String label) {
         Button b = new Button(this);
         b.setText(label);
-        b.setTextSize(11);
+        b.setTextSize(desktopLayout ? 11 : 10);
         b.setTextColor(TEXT);
         b.setAllCaps(false);
         b.setGravity(Gravity.CENTER);
@@ -254,8 +273,8 @@ public class ProfessionalEditorActivity extends Activity {
         b.setTag(id);
 
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(48));
-        lp.bottomMargin = dp(5);
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(desktopLayout ? 48 : 42));
+        lp.bottomMargin = dp(desktopLayout ? 5 : 4);
         rail.addView(b, lp);
 
         b.setOnClickListener(v -> {
@@ -282,13 +301,19 @@ public class ProfessionalEditorActivity extends Activity {
         Button props = tabButton("خصائص");
         Button layers = tabButton("طبقات");
         Button hist = tabButton("السجل");
+        Button collapse = tabButton("⌄");
 
-        tabs.addView(props, new LinearLayout.LayoutParams(0, dp(40), 1f));
-        tabs.addView(layers, new LinearLayout.LayoutParams(0, dp(40), 1f));
-        tabs.addView(hist, new LinearLayout.LayoutParams(0, dp(40), 1f));
+        int tabHeight = desktopLayout ? 40 : 36;
+        tabs.addView(props, new LinearLayout.LayoutParams(0, dp(tabHeight), 1f));
+        tabs.addView(layers, new LinearLayout.LayoutParams(0, dp(tabHeight), 1f));
+        tabs.addView(hist, new LinearLayout.LayoutParams(0, dp(tabHeight), 1f));
+        if (!desktopLayout) {
+            tabs.addView(collapse, new LinearLayout.LayoutParams(dp(44), dp(tabHeight)));
+        }
         panel.addView(tabs);
 
         ScrollView bodyScroll = new ScrollView(this);
+        inspectorBodyScroll = bodyScroll;
         LinearLayout body = column();
         body.setPadding(dp(12), dp(8), dp(12), dp(12));
         bodyScroll.addView(body);
@@ -303,12 +328,39 @@ public class ProfessionalEditorActivity extends Activity {
         body.addView(layerList);
         body.addView(historyList);
 
-        props.setOnClickListener(v -> showInspector("properties"));
-        layers.setOnClickListener(v -> showInspector("layers"));
-        hist.setOnClickListener(v -> showInspector("history"));
+        props.setOnClickListener(v -> {
+            showInspector("properties");
+            setPhoneInspectorExpanded(true);
+        });
+        layers.setOnClickListener(v -> {
+            showInspector("layers");
+            setPhoneInspectorExpanded(true);
+        });
+        hist.setOnClickListener(v -> {
+            showInspector("history");
+            setPhoneInspectorExpanded(true);
+        });
+        collapse.setOnClickListener(v -> setPhoneInspectorExpanded(false));
 
         showInspector("properties");
+        if (!desktopLayout) bodyScroll.setVisibility(View.GONE);
         return panel;
+    }
+
+    private void setPhoneInspectorExpanded(boolean expanded) {
+        if (desktopLayout || phoneInspectorPanel == null) return;
+        phoneInspectorExpanded = expanded;
+
+        ViewGroup.LayoutParams raw = phoneInspectorPanel.getLayoutParams();
+        if (raw instanceof LinearLayout.LayoutParams) {
+            LinearLayout.LayoutParams lp = (LinearLayout.LayoutParams) raw;
+            lp.height = dp(expanded ? 188 : 48);
+            phoneInspectorPanel.setLayoutParams(lp);
+        }
+
+        if (inspectorBodyScroll != null) {
+            inspectorBodyScroll.setVisibility(expanded ? View.VISIBLE : View.GONE);
+        }
     }
 
     private void showInspector(String tab) {
@@ -459,7 +511,7 @@ public class ProfessionalEditorActivity extends Activity {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(10), dp(3), dp(10), dp(3));
+        row.setPadding(dp(10), dp(desktopLayout ? 3 : 1), dp(10), dp(desktopLayout ? 3 : 1));
         row.setBackgroundColor(Color.rgb(16, 18, 21));
 
         statusText = label("جاهز", 12, MUTED, false);
@@ -467,9 +519,10 @@ public class ProfessionalEditorActivity extends Activity {
         zoomText = label("100%", 12, TEXT, true);
         zoomText.setGravity(Gravity.END);
 
-        row.addView(statusText, new LinearLayout.LayoutParams(0, dp(28), 1.4f));
-        row.addView(projectText, new LinearLayout.LayoutParams(0, dp(28), 1f));
-        row.addView(zoomText, new LinearLayout.LayoutParams(dp(70), dp(28)));
+        int statusHeight = desktopLayout ? 28 : 24;
+        row.addView(statusText, new LinearLayout.LayoutParams(0, dp(statusHeight), 1.4f));
+        row.addView(projectText, new LinearLayout.LayoutParams(0, dp(statusHeight), 1f));
+        row.addView(zoomText, new LinearLayout.LayoutParams(dp(64), dp(statusHeight)));
         return row;
     }
 
@@ -623,6 +676,7 @@ public class ProfessionalEditorActivity extends Activity {
                 break;
             case "طبقة":
                 showInspector("layers");
+                setPhoneInspectorExpanded(true);
                 toast("طبقة جديدة • Mask • Group • Merge • Blend");
                 break;
             case "ألوان":
@@ -635,6 +689,7 @@ public class ProfessionalEditorActivity extends Activity {
                 toast("Blur • Enhance • Distort • Noise • Edge • Render • GEGL");
                 break;
             case "نوافذ":
+                setPhoneInspectorExpanded(true);
                 toast("Layers • Channels • Paths • Brushes • Fonts • History");
                 break;
             default:
@@ -730,11 +785,11 @@ public class ProfessionalEditorActivity extends Activity {
     }
 
     private Button actionButton(String text, View.OnClickListener listener) {
-        Button b = flatButton(text, 12);
+        Button b = flatButton(text, desktopLayout ? 12 : 11);
         b.setBackground(rounded(PANEL_2, 8));
         b.setOnClickListener(listener);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, dp(40));
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(desktopLayout ? 40 : 36));
         lp.leftMargin = dp(3);
         lp.rightMargin = dp(3);
         b.setLayoutParams(lp);
@@ -747,7 +802,7 @@ public class ProfessionalEditorActivity extends Activity {
         b.setTextSize(size);
         b.setTextColor(TEXT);
         b.setAllCaps(false);
-        b.setPadding(dp(11), 0, dp(11), 0);
+        b.setPadding(dp(desktopLayout ? 11 : 8), 0, dp(desktopLayout ? 11 : 8), 0);
         b.setBackgroundColor(Color.TRANSPARENT);
         return b;
     }
