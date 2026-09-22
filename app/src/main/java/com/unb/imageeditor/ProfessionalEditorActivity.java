@@ -238,6 +238,12 @@ public class ProfessionalEditorActivity extends Activity {
                 lastImageTapY = imageY;
                 if ("color_picker".equals(activeTool)) {
                     setStatus("التقاط لون عند " + Math.round(imageX) + ", " + Math.round(imageY));
+                } else if ("fuzzy_select".equals(activeTool) && projectId != null) {
+                    applyRemote("select_contiguous", jsonOf(
+                            "x", imageX, "y", imageY, "threshold", 0.15));
+                } else if ("color_select".equals(activeTool) && projectId != null) {
+                    applyRemote("select_color", jsonOf(
+                            "color", foregroundColor, "threshold", 0.15));
                 } else if ("text".equals(activeTool) && projectId != null) {
                     showAddTextDialog(imageX, imageY);
                 }
@@ -264,6 +270,8 @@ public class ProfessionalEditorActivity extends Activity {
         addTool(rail, "move", "تحريك");
         addTool(rail, "select", "تحديد");
         addTool(rail, "free_select", "لاسو");
+        addTool(rail, "fuzzy_select", "سحري");
+        addTool(rail, "color_select", "حسب لون");
         addTool(rail, "crop", "قص");
         addTool(rail, "transform", "تحويل");
         addTool(rail, "perspective", "منظور");
@@ -525,6 +533,16 @@ public class ProfessionalEditorActivity extends Activity {
             return;
         }
 
+        if ("free_select".equals(activeTool)) {
+            if (points.length < 6) {
+                canvas.clearStrokePreview();
+                setStatus("ارسم ثلاث نقاط على الأقل للتحديد الحر");
+                return;
+            }
+            applyRemote("select_polygon", jsonOf("points", pointsJson(points)));
+            return;
+        }
+
         if ("gradient".equals(activeTool)) {
             if (points.length < 4) {
                 canvas.clearStrokePreview();
@@ -685,7 +703,9 @@ public class ProfessionalEditorActivity extends Activity {
         switch (id) {
             case "move": return "اسحب لتحريك المشهد. قرّب بإصبعين أو عجلة الماوس.";
             case "select": return "تحديد مستطيل مع إضافة/طرح/تقاطع التحديد.";
-            case "free_select": return "تحديد حر ومسارات متعددة النقاط.";
+            case "free_select": return "ارسم حول المنطقة؛ عند رفع إصبعك يُغلق التحديد تلقائياً.";
+            case "fuzzy_select": return "المس نقطة لتحديد المنطقة المتصلة ذات اللون المتشابه.";
+            case "color_select": return "المس الصورة لتحديد اللون الحالي في كامل الطبقة.";
             case "color_picker": return "المس الصورة لاختيار اللون من البكسل.";
             case "zoom": return "تكبير وتصغير مع الحفاظ على مركز المؤشر.";
             default: return "خيارات الأداة ستظهر هنا حسب الأداة النشطة.";
