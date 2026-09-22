@@ -13,22 +13,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Professional editor endpoint
+      - name: Verify professional editor endpoint
         shell: bash
         run: |
-          set +e
+          set -euo pipefail
           BASE="http://91.98.126.167:18083"
 
           echo "=== HEALTH ==="
-          curl -v --connect-timeout 10 --max-time 20 "$BASE/health" 2>&1
-          echo
-          echo "HEALTH_RC=$?"
+          HEALTH="$(curl --fail --show-error --silent "$BASE/health")"
+          echo "$HEALTH"
 
           echo
           echo "=== CAPABILITIES ==="
-          curl -v --connect-timeout 10 --max-time 20 "$BASE/api/editor/capabilities" 2>&1
-          echo
-          echo "CAPABILITIES_RC=$?"
+          CAPS="$(curl --fail --show-error --silent "$BASE/api/editor/capabilities")"
+          echo "$CAPS"
 
           echo
           echo "=== EXPECTED SERVICE ==="
