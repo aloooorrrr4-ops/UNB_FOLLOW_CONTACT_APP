@@ -74,6 +74,11 @@ public class ProfessionalEditorActivity extends Activity {
     private boolean phoneInspectorExpanded = false;
     private float lastImageTapX = 0f;
     private float lastImageTapY = 0f;
+    private int brushSize = 45;
+    private int brushOpacity = 100;
+    private String foregroundColor = "#ffffff";
+    private float cloneSourceX = Float.NaN;
+    private float cloneSourceY = Float.NaN;
 
     private final List<String> history = new ArrayList<>();
     private boolean busy = false;
@@ -236,6 +241,11 @@ public class ProfessionalEditorActivity extends Activity {
                 } else if ("text".equals(activeTool) && projectId != null) {
                     showAddTextDialog(imageX, imageY);
                 }
+            }
+
+            @Override
+            public void onStrokeCompleted(float[] imagePoints) {
+                handleCanvasStroke(imagePoints);
             }
         });
         return v;
@@ -419,17 +429,31 @@ public class ProfessionalEditorActivity extends Activity {
             source.setBackground(rounded(ACCENT, 9));
         }
         activeTool = id;
+        if (canvas != null) {
+            canvas.setInteractionMode(id);
+            canvas.setStrokePreview(brushSize, parseColorSafe(foregroundColor));
+        }
         if (toolOptions == null) return;
 
         toolOptions.removeAllViews();
         toolTitle = label("أداة: " + label, 17, TEXT, true);
         toolOptions.addView(toolTitle);
 
-        if (Arrays.asList("brush", "pencil", "eraser", "clone", "heal", "smudge").contains(id)) {
-            addSlider(toolOptions, "الحجم", 1, 300, 45, null);
-            addSlider(toolOptions, "العتامة", 0, 100, 100, null);
+        if (Arrays.asList("brush", "pencil", "eraser", "clone", "heal", "smudge", "dodge_burn").contains(id)) {
+            addSlider(toolOptions, "الحجم", 1, 300, brushSize, value -> {
+                brushSize = value;
+                if (canvas != null) canvas.setStrokePreview(brushSize, parseColorSafe(foregroundColor));
+            });
+            addSlider(toolOptions, "العتامة", 0, 100, brushOpacity, value -> brushOpacity = value);
             addSlider(toolOptions, "الصلابة", 0, 100, 70, null);
             addSlider(toolOptions, "التباعد", 1, 200, 20, null);
+            if ("clone".equals(id) || "heal".equals(id)) {
+                toolOptions.addView(actionButton("إعادة تحديد المصدر", v -> {
+                    cloneSourceX = Float.NaN;
+                    cloneSourceY = Float.NaN;
+                    setStatus("اسحب/المس نقطة المصدر أولاً ثم ارسم في المكان المطلوب");
+                }));
+            }
         } else if ("text".equals(id)) {
             addSlider(toolOptions, "حجم الخط", 6, 300, 42, null);
             addSlider(toolOptions, "تباعد الحروف", 0, 100, 0, null);
@@ -463,6 +487,138 @@ public class ProfessionalEditorActivity extends Activity {
                 value -> applyRemote("contrast", json("value", value)));
         addSlider(toolOptions, "التشبع", -100, 100, 0,
                 value -> applyRemote("saturation", json("value", value)));
+    }
+
+    private void handleCanvasStroke(float[] points) {
+        if (canvas == null || points == null || points.length < 2) return;
+
+        if (projectId == null) {
+            canvas.clearStrokePreview();
+            toast("افتح صورة أولاً");
+            return;
+        }
+
+        if (busy) {
+            canvas.clearStrokePreview();
+            setStatus("انتظر انتهاء العملية الحالية");
+            return;
+        }
+
+        lastImageTapX = points[points.length - 2];
+        lastImageTapY = points[points.length - 1];
+
+        if ("select".equals(activeTool)) {
+            if (points.length < 4) {
+                canvas.clearStrokePreview();
+                return;
+            }
+            float x0 = points[0];
+            float y0 = points[1];
+            float x1 = points[points.length - 2];
+            float y1 = points[points.length - 1];
+            int x = Math.round(Math.min(x0, x1));
+            int y = Math.round(Math.min(y0, y1));
+            int w = Math.max(1, Math.round(Math.abs(x1 - x0)));
+            int h = Math.max(1, Math.round(Math.abs(y1 - y0)));
+            applyRemote("select_rectangle", jsonOf(
+                    "x", x, "y", y, "width", w, "height", h));
+            return;
+        }
+
+        if ("gradient".equals(activeTool)) {
+            if (points.length < 4) {
+                canvas.clearStrokePreview();
+                return;
+            }
+            applyRemote("gradient", jsonOf(
+                    "x1", points[0],
+                    "y1", points[1],
+                    "x2", points[points.length - 2],
+                    "y2", points[points.length - 1],
+                    "type", "linear",
+                    "foreground", foregroundColor,
+                    "background", "#000000"
+            ));
+            return;
+        }
+
+        if ("clone".equals(activeTool) || "heal".equals(activeTool)) {
+            if (Float.isNaN(cloneSourceX) || Float.isNaN(cloneSourceY)) {
+                cloneSourceX = points[0];
+                cloneSourceY = points[1];
+                canvas.clearStrokePreview();
+                setStatus("تم تحديد المصدر عند X " + Math.round(cloneSourceX) +
+                        " Y " + Math.round(cloneSourceY) + " — ارسم الآن على الهدف");
+                return;
+            }
+
+            applyRemote(activeTool, jsonOf(
+                    "source_x", cloneSourceX,
+                    "source_y", cloneSourceY,
+                    "points", pointsJson(points),
+                    "size", brushSize,
+                    "opacity", brushOpacity
+            ));
+            return;
+        }
+
+        if ("brush".equals(activeTool)) {
+            applyRemote("paintbrush", jsonOf(
+                    "points", pointsJson(points),
+                    "size", brushSize,
+                    "opacity", brushOpacity,
+                    "color", foregroundColor
+            ));
+            return;
+        }
+
+        if ("pencil".equals(activeTool) || "eraser".equals(activeTool)) {
+            applyRemote(activeTool, jsonOf(
+                    "points", pointsJson(points),
+                    "size", brushSize,
+                    "opacity", brushOpacity,
+                    "color", foregroundColor
+            ));
+            return;
+        }
+
+        if ("smudge".equals(activeTool)) {
+            applyRemote("smudge", jsonOf(
+                    "points", pointsJson(points),
+                    "size", brushSize,
+                    "pressure", brushOpacity
+            ));
+            return;
+        }
+
+        if ("dodge_burn".equals(activeTool)) {
+            applyRemote("dodge_burn", jsonOf(
+                    "points", pointsJson(points),
+                    "size", brushSize,
+                    "exposure", brushOpacity,
+                    "type", "dodge",
+                    "range", "midtones"
+            ));
+            return;
+        }
+
+        canvas.clearStrokePreview();
+    }
+
+    private JSONArray pointsJson(float[] points) {
+        JSONArray array = new JSONArray();
+        if (points != null) {
+            for (float point : points) array.put(point);
+        }
+        return array;
+    }
+
+    private int parseColorSafe(String color) {
+        try {
+            return Color.parseColor(color);
+        } catch (Exception ignored) {
+            return Color.WHITE;
+        }
     }
 
     private void showAddTextDialog(float x, float y) {
@@ -900,6 +1056,7 @@ public class ProfessionalEditorActivity extends Activity {
                     @Override
                     public void onError(String message) {
                         runOnUiThread(() -> {
+                            if (canvas != null) canvas.clearStrokePreview();
                             setBusy(false);
                             setStatus("فشل: " + shortText(message));
                         });
