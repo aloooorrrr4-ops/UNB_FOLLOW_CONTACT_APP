@@ -339,32 +339,44 @@ public class ProfessionalEditorActivity extends Activity {
         LinearLayout panel = column();
         panel.setBackgroundColor(PANEL);
 
-        HorizontalScrollView tabScroll = new HorizontalScrollView(this);
-        tabScroll.setHorizontalScrollBarEnabled(false);
         LinearLayout tabs = new LinearLayout(this);
         tabs.setOrientation(LinearLayout.HORIZONTAL);
-        tabs.setPadding(dp(5), dp(5), dp(5), dp(2));
+        tabs.setGravity(Gravity.CENTER_VERTICAL);
+        tabs.setPadding(dp(desktopLayout ? 5 : 2), dp(desktopLayout ? 5 : 3),
+                dp(desktopLayout ? 5 : 2), dp(2));
 
         Button props = tabButton("خصائص");
         Button layers = tabButton("طبقات");
         Button channels = tabButton("قنوات");
         Button paths = tabButton("مسارات");
         Button resources = tabButton("موارد");
-        Button hist = tabButton("السجل");
+        Button hist = tabButton("سجل");
         Button collapse = tabButton("⌄");
 
         int tabHeight = desktopLayout ? 40 : 36;
         Button[] mainTabs = {props, layers, channels, paths, resources, hist};
-        for (Button tab : mainTabs) {
-            tabs.addView(tab, new LinearLayout.LayoutParams(
-                    desktopLayout ? dp(72) : dp(68), dp(tabHeight)));
+
+        if (desktopLayout) {
+            HorizontalScrollView tabScroll = new HorizontalScrollView(this);
+            tabScroll.setHorizontalScrollBarEnabled(false);
+            for (Button tab : mainTabs) {
+                tabs.addView(tab, new LinearLayout.LayoutParams(dp(72), dp(tabHeight)));
+            }
+            tabScroll.addView(tabs);
+            panel.addView(tabScroll, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(tabHeight + 8)));
+        } else {
+            for (Button tab : mainTabs) {
+                tab.setTextSize(9.5f);
+                tab.setPadding(dp(2), 0, dp(2), 0);
+                tabs.addView(tab, new LinearLayout.LayoutParams(0, dp(tabHeight), 1f));
+            }
+            collapse.setTextSize(12);
+            collapse.setPadding(0, 0, 0, 0);
+            tabs.addView(collapse, new LinearLayout.LayoutParams(dp(32), dp(tabHeight)));
+            panel.addView(tabs, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(tabHeight + 8)));
         }
-        if (!desktopLayout) {
-            tabs.addView(collapse, new LinearLayout.LayoutParams(dp(44), dp(tabHeight)));
-        }
-        tabScroll.addView(tabs);
-        panel.addView(tabScroll, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(tabHeight + 8)));
 
         ScrollView bodyScroll = new ScrollView(this);
         inspectorBodyScroll = bodyScroll;
@@ -1179,7 +1191,12 @@ public class ProfessionalEditorActivity extends Activity {
                 public void onError(String message) {
                     runOnUiThread(() -> {
                         setBusy(false);
-                        setStatus("الصورة محليًا — السيرفر: " + shortText(message));
+                        if (message != null && message.contains("404")) {
+                            setStatus("الصورة مفتوحة محليًا — السيرفر ما زال على المحرك القديم");
+                            if (projectText != null) projectText.setText("بانتظار تحديث المحرك");
+                        } else {
+                            setStatus("الصورة محليًا — السيرفر: " + shortText(message));
+                        }
                         addHistory("فتح محلي " + sourceName);
                         refreshLayers();
                     });
@@ -1304,12 +1321,43 @@ public class ProfessionalEditorActivity extends Activity {
         api.health(new EditorApiClient.Callback<JSONObject>() {
             @Override
             public void onSuccess(JSONObject value) {
-                runOnUiThread(() -> setStatus("السيرفر متصل"));
+                String service = value.optString("service", "");
+                api.getJson("/api/editor/capabilities", new EditorApiClient.Callback<JSONObject>() {
+                    @Override
+                    public void onSuccess(JSONObject capabilities) {
+                        runOnUiThread(() -> {
+                            setStatus("محرك UNB Pro Editor متصل");
+                            if (projectText != null && projectId == null) {
+                                projectText.setText("السيرفر جاهز");
+                            }
+                        });
+                    }
+
+                    @Override
+                    public void onError(String message) {
+                        runOnUiThread(() -> {
+                            if ("UNB GIMP API".equalsIgnoreCase(service) ||
+                                    (message != null && message.contains("404"))) {
+                                setStatus("السيرفر متصل — محرك GIMP القديم ما زال يعمل");
+                                if (projectText != null && projectId == null) {
+                                    projectText.setText("بانتظار تحديث المحرك");
+                                }
+                            } else {
+                                setStatus("السيرفر متصل لكن واجهة المحرر غير جاهزة");
+                            }
+                        });
+                    }
+                });
             }
 
             @Override
             public void onError(String message) {
-                runOnUiThread(() -> setStatus("واجهة جاهزة — السيرفر غير متصل بالمحرر الجديد بعد"));
+                runOnUiThread(() -> {
+                    setStatus("واجهة جاهزة — تعذر الاتصال بالسيرفر");
+                    if (projectText != null && projectId == null) {
+                        projectText.setText("بدون اتصال");
+                    }
+                });
             }
         });
     }
