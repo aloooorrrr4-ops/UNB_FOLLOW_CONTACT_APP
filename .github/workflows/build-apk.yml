@@ -25,13 +25,6 @@ jobs:
         shell: bash
         run: |
           set +e
-          echo "=== 18083 OLD GIMP API ==="
-          curl -v --connect-timeout 8 --max-time 15 http://91.98.126.167:18083/health 2>&1
-          echo "RC_18083=$?"
-          echo
-          echo "=== 18085 NEW PRO EDITOR ==="
-          curl -v --connect-timeout 8 --max-time 15 http://91.98.126.167:18085/health 2>&1
-          echo "RC_18085=$?"
 
       - name: Set up Java
         uses: actions/setup-java@v5
