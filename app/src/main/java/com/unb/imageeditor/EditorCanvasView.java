@@ -28,7 +28,7 @@ public class EditorCanvasView extends View {
 
     private static final Set<String> STROKE_MODES = new HashSet<>(Arrays.asList(
             "brush", "pencil", "eraser", "clone", "heal", "smudge",
-            "dodge_burn", "gradient", "select", "free_select"
+            "dodge_burn", "gradient", "select", "free_select", "crop"
     ));
 
     private final Paint checkerA = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -267,13 +267,13 @@ public class EditorCanvasView extends View {
 
         float[] first = imageToScreen(strokePoints.get(0), strokePoints.get(1));
 
-        if ("gradient".equals(interactionMode) || "select".equals(interactionMode)) {
+        if ("gradient".equals(interactionMode) || "select".equals(interactionMode) || "crop".equals(interactionMode)) {
             if (strokePoints.size() < 4) return;
             float[] last = imageToScreen(
                     strokePoints.get(strokePoints.size() - 2),
                     strokePoints.get(strokePoints.size() - 1));
 
-            if ("select".equals(interactionMode)) {
+            if ("select".equals(interactionMode) || "crop".equals(interactionMode)) {
                 strokePaint.setStrokeWidth(dp(1.5f));
                 strokePaint.setColor(Color.argb(230, 255, 255, 255));
                 float left = Math.min(first[0], last[0]);
