@@ -1,0 +1,18 @@
+[Unit]
+Description=UNB Pro Editor FastAPI
+After=network.target unb-gimp-scriptfu.service
+Requires=unb-gimp-scriptfu.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/unb-pro-editor/gimp_editor
+Environment=UNB_EDITOR_DATA=/var/lib/unb-pro-editor
+Environment=UNB_GIMP_HOST=127.0.0.1
+Environment=UNB_GIMP_PORT=10008
+ExecStart=/opt/unb-pro-editor/gimp_editor/.venv/bin/uvicorn app:app --host 0.0.0.0 --port 18085
+Restart=always
+RestartSec=3
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target
