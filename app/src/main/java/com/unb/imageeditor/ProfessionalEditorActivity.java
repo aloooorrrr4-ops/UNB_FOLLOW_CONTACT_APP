@@ -39,11 +39,15 @@ import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class ProfessionalEditorActivity extends Activity {
 
     private static final int PICK_IMAGE = 4101;
     private static final int CREATE_EXPORT = 4102;
+    private static final long MAX_LOCAL_IMAGE_BYTES = 80L * 1024L * 1024L;
+    private static final int PREVIEW_MAX_DIMENSION = 2048;
 
     private final int BG = Color.rgb(20, 22, 26);
     private final int PANEL = Color.rgb(28, 31, 36);
@@ -86,6 +90,7 @@ public class ProfessionalEditorActivity extends Activity {
     private String pendingExportName = "export.png";
 
     private final List<String> history = new ArrayList<>();
+    private final ExecutorService ioExecutor = Executors.newSingleThreadExecutor();
     private boolean busy = false;
 
     @Override
@@ -102,6 +107,7 @@ public class ProfessionalEditorActivity extends Activity {
             prefs.edit().putString("server_base", savedServer).apply();
         }
         api = new EditorApiClient(savedServer);
+        api.setApiKey(prefs.getString("editor_api_key", ""));
         desktopLayout = isDesktopLayout();
 
         LinearLayout root = column();
