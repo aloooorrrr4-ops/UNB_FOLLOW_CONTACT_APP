@@ -34,6 +34,7 @@ public class EditorApiClient {
 
     private final ExecutorService executor = Executors.newFixedThreadPool(2);
     private String serverBase;
+    private String apiKey = "";
 
     public EditorApiClient(String serverBase) {
         this.serverBase = trimSlash(serverBase);
@@ -45,6 +46,14 @@ public class EditorApiClient {
 
     public String getServerBase() {
         return serverBase;
+    }
+
+    public void setApiKey(String apiKey) {
+        this.apiKey = apiKey == null ? "" : apiKey.trim();
+    }
+
+    public String getApiKey() {
+        return apiKey;
     }
 
     public void health(Callback<JSONObject> cb) {
@@ -169,6 +178,21 @@ public class EditorApiClient {
         getJson("/api/editor/resources/" + encode(kind), cb);
     }
 
+    public void closeProject(String projectId, Callback<JSONObject> cb) {
+        executor.execute(() -> {
+            HttpURLConnection conn = null;
+            try {
+                conn = open("/api/editor/projects/" + encode(projectId), "DELETE");
+                ensureOk(conn);
+                cb.onSuccess(new JSONObject(readText(conn.getInputStream())));
+            } catch (Exception e) {
+                cb.onError(clean(e));
+            } finally {
+                if (conn != null) conn.disconnect();
+            }
+        });
+    }
+
     public void exportProject(String projectId, String format, Callback<byte[]> cb) {
         executor.execute(() -> {
             try {
@@ -189,6 +213,9 @@ public class EditorApiClient {
         conn.setConnectTimeout(15000);
         conn.setReadTimeout(60000);
         conn.setUseCaches(false);
+        if (!apiKey.isEmpty()) {
+            conn.setRequestProperty("X-UNB-Editor-Key", apiKey);
+        }
         try {
             ensureOk(conn);
             return readBytes(conn.getInputStream());
@@ -211,6 +238,9 @@ public class EditorApiClient {
         conn.setRequestMethod(method);
         conn.setUseCaches(false);
         conn.setRequestProperty("Accept", "application/json, image/*");
+        if (!apiKey.isEmpty()) {
+            conn.setRequestProperty("X-UNB-Editor-Key", apiKey);
+        }
         return conn;
     }
 
