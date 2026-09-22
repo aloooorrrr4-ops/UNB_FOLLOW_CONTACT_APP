@@ -1065,26 +1065,32 @@ public class ProfessionalEditorActivity extends Activity {
     }
 
     private void showServerDialog() {
-        EditText input = new EditText(this);
-        input.setSingleLine(true);
-        input.setText(api.getServerBase());
-        input.setHint("http://IP:PORT");
-        input.setTextColor(TEXT);
-        input.setHintTextColor(MUTED);
+        LinearLayout box = column();
+        box.setPadding(dp(18), dp(6), dp(18), 0);
 
-        new AlertDialog.Builder(this)
-                .setTitle("عنوان سيرفر GIMP")
-                .setMessage("يمكن تغييره بدون إعادة بناء التطبيق.")
-                .setView(input)
-                .setNegativeButton("إلغاء", null)
-                .setNeutralButton("اختبار", null)
-                .setPositiveButton("حفظ", null)
-                .create();
+        EditText serverInput = new EditText(this);
+        serverInput.setSingleLine(true);
+        serverInput.setText(api.getServerBase());
+        serverInput.setHint("http://IP:PORT");
+        serverInput.setTextColor(TEXT);
+        serverInput.setHintTextColor(MUTED);
+
+        EditText keyInput = new EditText(this);
+        keyInput.setSingleLine(true);
+        keyInput.setText(api.getApiKey());
+        keyInput.setHint("API Key");
+        keyInput.setTextColor(TEXT);
+        keyInput.setHintTextColor(MUTED);
+        keyInput.setInputType(InputType.TYPE_CLASS_TEXT |
+                InputType.TYPE_TEXT_VARIATION_PASSWORD);
+
+        box.addView(serverInput);
+        box.addView(keyInput);
 
         AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle("عنوان سيرفر GIMP")
-                .setMessage("يمكن تغييره بدون إعادة بناء التطبيق.")
-                .setView(input)
+                .setTitle("اتصال محرر GIMP")
+                .setMessage("العنوان والمفتاح يُحفظان محليًا في الجهاز.")
+                .setView(box)
                 .setNegativeButton("إلغاء", null)
                 .setNeutralButton("اختبار", null)
                 .setPositiveButton("حفظ", null)
@@ -1092,41 +1098,70 @@ public class ProfessionalEditorActivity extends Activity {
 
         dialog.setOnShowListener(ignored -> {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
-                String value = input.getText().toString().trim();
+                String value = serverInput.getText().toString().trim();
+                String key = keyInput.getText().toString().trim();
                 if (value.isEmpty()) {
-                    input.setError("أدخل عنوان السيرفر");
+                    serverInput.setError("أدخل عنوان السيرفر");
                     return;
                 }
                 api.setServerBase(value);
+                api.setApiKey(key);
                 getSharedPreferences("editor_settings", MODE_PRIVATE)
-                        .edit().putString("server_base", api.getServerBase()).apply();
+                        .edit()
+                        .putString("server_base", api.getServerBase())
+                        .putString("editor_api_key", key)
+                        .apply();
                 dialog.dismiss();
-                setStatus("تم حفظ السيرفر — جاري الاختبار...");
+                setStatus("تم حفظ الاتصال — جاري الاختبار...");
                 pingServer();
             });
 
             dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> {
-                String value = input.getText().toString().trim();
+                String value = serverInput.getText().toString().trim();
+                String key = keyInput.getText().toString().trim();
                 if (value.isEmpty()) {
-                    input.setError("أدخل عنوان السيرفر");
+                    serverInput.setError("أدخل عنوان السيرفر");
                     return;
                 }
-                String old = api.getServerBase();
-                api.setServerBase(value);
+
+                EditorApiClient probe = new EditorApiClient(value);
+                probe.setApiKey(key);
                 setStatus("جاري اختبار " + value);
-                api.health(new EditorApiClient.Callback<JSONObject>() {
+
+                probe.health(new EditorApiClient.Callback<JSONObject>() {
                     @Override
-                    public void onSuccess(JSONObject response) {
-                        runOnUiThread(() -> {
-                            setStatus("السيرفر يعمل: " + value);
-                            toast("الاتصال ناجح");
+                    public void onSuccess(JSONObject health) {
+                        if (!health.optBoolean("gimp_scriptfu", false)) {
+                            runOnUiThread(() -> {
+                                setStatus("الخادم متصل لكن محرك GIMP غير جاهز");
+                                toast("GIMP Script-Fu غير متصل");
+                            });
+                            return;
+                        }
+
+                        probe.getJson("/api/editor/capabilities",
+                                new EditorApiClient.Callback<JSONObject>() {
+                            @Override
+                            public void onSuccess(JSONObject response) {
+                                runOnUiThread(() -> {
+                                    setStatus("اختبار ناجح — الإعدادات لم تُحفظ بعد");
+                                    toast("الاتصال والمحرك يعملان");
+                                });
+                            }
+
+                            @Override
+                            public void onError(String message) {
+                                runOnUiThread(() -> {
+                                    setStatus("فشل المصادقة/واجهة المحرر: " + shortText(message));
+                                    toast("فشل اختبار المحرر");
+                                });
+                            }
                         });
                     }
 
                     @Override
                     public void onError(String message) {
                         runOnUiThread(() -> {
-                            api.setServerBase(old);
                             setStatus("فشل الاتصال: " + shortText(message));
                             toast("السيرفر غير متصل");
                         });
