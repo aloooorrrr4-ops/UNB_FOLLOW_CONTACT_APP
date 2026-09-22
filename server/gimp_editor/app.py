@@ -382,6 +382,8 @@ def operation_catalog() -> dict[str, list[str]]:
         "file": ["open", "save", "export"],
         "edit": ["undo", "redo"],
         "selection": ["select_all", "select_none", "invert_selection", "select_rectangle", "select_ellipse",
+                      "select_polygon", "select_contiguous", "select_color", "select_item",
+                      "border", "sharpen_selection", "translate_selection",
                       "feather", "grow", "shrink"],
         "image": ["resize", "crop", "rotate", "flip_horizontal", "flip_vertical",
                   "translate_layer", "scale_layer", "rotate_layer", "perspective_layer", "transform_2d"],
@@ -433,6 +435,8 @@ def capabilities():
             "brightness", "contrast", "saturation",
             "desaturate", "invert", "crop", "resize",
             "select_all", "select_none", "invert_selection", "select_rectangle", "select_ellipse",
+            "select_polygon", "select_contiguous", "select_color", "select_item",
+            "border", "sharpen_selection", "translate_selection",
             "feather", "grow", "shrink", "flatten",
             "add_layer", "delete_layer", "duplicate_layer", "rename_layer", "visibility",
             "opacity", "blend_mode", "merge_visible",
@@ -905,6 +909,42 @@ def apply_operation_to_gimp(state: ProjectState, op: str, p: dict[str, Any]):
             f"(gimp-drawable-edit-gradient-fill {layer_id} {gradient_type} 0 "
             f"FALSE 3 0.2 TRUE {x1:.5f} {y1:.5f} {x2:.5f} {y2:.5f})"
         )
+
+    elif op == "select_polygon":
+        vector, count = scriptfu_points(p.get("points"))
+        if count < 6:
+            raise HTTPException(400, "التحديد الحر يحتاج ثلاث نقاط على الأقل")
+        sf.call(f"(gimp-image-select-polygon {img} CHANNEL-OP-REPLACE {count} {vector})")
+
+    elif op == "select_contiguous":
+        layer_id = requested_layer(img, p)
+        x = float(p.get("x", 0))
+        y = float(p.get("y", 0))
+        threshold = max(0.0, min(1.0, float(p.get("threshold", 0.15))))
+        sf.call(f"(gimp-context-set-sample-threshold {threshold:.5f})")
+        sf.call(f"(gimp-image-select-contiguous-color {img} CHANNEL-OP-REPLACE {layer_id} {x:.5f} {y:.5f})")
+
+    elif op == "select_color":
+        layer_id = requested_layer(img, p)
+        threshold = max(0.0, min(1.0, float(p.get("threshold", 0.15))))
+        sf.call(f"(gimp-context-set-sample-threshold {threshold:.5f})")
+        sf.call(f"(gimp-image-select-color {img} CHANNEL-OP-REPLACE {layer_id} {scriptfu_color(p.get('color', '#ffffff'))})")
+
+    elif op == "select_item":
+        item_id = int(p.get("item_id", requested_layer(img, p)))
+        sf.call(f"(gimp-image-select-item {img} CHANNEL-OP-REPLACE {item_id})")
+
+    elif op == "border":
+        radius = max(1, int(p.get("radius", 1)))
+        sf.call(f"(gimp-selection-border {img} {radius})")
+
+    elif op == "sharpen_selection":
+        sf.call(f"(gimp-selection-sharpen {img})")
+
+    elif op == "translate_selection":
+        dx = int(p.get("x", 0))
+        dy = int(p.get("y", 0))
+        sf.call(f"(gimp-selection-translate {img} {dx} {dy})")
 
     elif op == "select_rectangle":
         x = int(p.get("x", 0))
