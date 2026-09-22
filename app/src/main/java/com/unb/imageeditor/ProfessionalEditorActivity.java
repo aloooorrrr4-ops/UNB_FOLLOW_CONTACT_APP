@@ -1,6 +1,7 @@
 package com.unb.imageeditor;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Context;
 import android.content.Intent;
 import android.content.res.Configuration;
@@ -19,12 +20,14 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.text.InputType;
 
 import org.json.JSONObject;
 import org.json.JSONArray;
@@ -69,6 +72,8 @@ public class ProfessionalEditorActivity extends Activity {
     private View phoneInspectorPanel;
     private ScrollView inspectorBodyScroll;
     private boolean phoneInspectorExpanded = false;
+    private float lastImageTapX = 0f;
+    private float lastImageTapY = 0f;
 
     private final List<String> history = new ArrayList<>();
     private boolean busy = false;
@@ -224,8 +229,12 @@ public class ProfessionalEditorActivity extends Activity {
 
             @Override
             public void onTapImage(float imageX, float imageY) {
+                lastImageTapX = imageX;
+                lastImageTapY = imageY;
                 if ("color_picker".equals(activeTool)) {
                     setStatus("التقاط لون عند " + Math.round(imageX) + ", " + Math.round(imageY));
+                } else if ("text".equals(activeTool) && projectId != null) {
+                    showAddTextDialog(imageX, imageY);
                 }
             }
         });
@@ -425,8 +434,13 @@ public class ProfessionalEditorActivity extends Activity {
             addSlider(toolOptions, "حجم الخط", 6, 300, 42, null);
             addSlider(toolOptions, "تباعد الحروف", 0, 100, 0, null);
             addSlider(toolOptions, "تباعد الأسطر", 0, 150, 20, null);
-            toolOptions.addView(actionButton("اختيار الخط", v -> toast("لوحة الخطوط")));
-            toolOptions.addView(actionButton("RTL / LTR", v -> toast("اتجاه النص")));
+            toolOptions.addView(actionButton("+ إضافة نص", v ->
+                    showAddTextDialog(lastImageTapX, lastImageTapY)));
+            toolOptions.addView(actionButton("الخطوط", v -> {
+                openInspectorTab("resources");
+                loadResources("fonts");
+            }));
+            toolOptions.addView(actionButton("RTL / LTR", v -> toast("اتجاه النص ضمن الدفعة القادمة")));
         } else if ("crop".equals(id) || "transform".equals(id) || "perspective".equals(id)) {
             toolOptions.addView(actionButton("تطبيق", v -> toast("يتم ربط أبعاد التحويل بالـ Canvas")));
             toolOptions.addView(actionButton("إلغاء", v -> setStatus("تم إلغاء التحويل")));
@@ -449,6 +463,66 @@ public class ProfessionalEditorActivity extends Activity {
                 value -> applyRemote("contrast", json("value", value)));
         addSlider(toolOptions, "التشبع", -100, 100, 0,
                 value -> applyRemote("saturation", json("value", value)));
+    }
+
+    private void showAddTextDialog(float x, float y) {
+        if (projectId == null) {
+            toast("افتح صورة أولاً");
+            return;
+        }
+
+        LinearLayout box = column();
+        box.setPadding(dp(18), dp(8), dp(18), 0);
+
+        EditText textInput = new EditText(this);
+        textInput.setHint("اكتب النص");
+        textInput.setTextColor(TEXT);
+        textInput.setHintTextColor(MUTED);
+        textInput.setInputType(InputType.TYPE_CLASS_TEXT |
+                InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        textInput.setMinLines(2);
+        box.addView(textInput);
+
+        EditText sizeInput = new EditText(this);
+        sizeInput.setHint("حجم الخط");
+        sizeInput.setText("42");
+        sizeInput.setTextColor(TEXT);
+        sizeInput.setHintTextColor(MUTED);
+        sizeInput.setInputType(InputType.TYPE_CLASS_NUMBER |
+                InputType.TYPE_NUMBER_FLAG_DECIMAL);
+        box.addView(sizeInput);
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("إضافة نص")
+                .setView(box)
+                .setNegativeButton("إلغاء", null)
+                .setPositiveButton("إضافة", null)
+                .create();
+
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+                .setOnClickListener(v -> {
+                    String value = textInput.getText().toString();
+                    if (value.trim().isEmpty()) {
+                        textInput.setError("اكتب النص");
+                        return;
+                    }
+
+                    double size = 42;
+                    try {
+                        size = Double.parseDouble(sizeInput.getText().toString());
+                    } catch (Exception ignoredSize) {}
+
+                    dialog.dismiss();
+                    applyRemote("add_text", jsonOf(
+                            "text", value,
+                            "x", Math.round(x),
+                            "y", Math.round(y),
+                            "size", size,
+                            "font", "Sans",
+                            "color", "#ffffff"
+                    ));
+                }));
+        dialog.show();
     }
 
     private String toolHelp(String id) {
