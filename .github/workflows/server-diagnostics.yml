@@ -26,6 +26,12 @@ jobs:
           echo "HEALTH_RC=$?"
 
           echo
+          echo "=== PRO EDITOR 18085 ==="
+          curl -v --connect-timeout 10 --max-time 20 "http://91.98.126.167:18085/health" 2>&1
+          echo
+          echo "PRO_EDITOR_18085_RC=$?"
+
+          echo
           echo "=== CHAT PLAN ==="
           curl -v --connect-timeout 10 --max-time 20             -F 'prompt=بدل اختبار جيمب إلى محمد فاضل'             "$BASE/api/chat/plan" 2>&1
           echo
