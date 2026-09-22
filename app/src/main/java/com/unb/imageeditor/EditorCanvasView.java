@@ -28,7 +28,7 @@ public class EditorCanvasView extends View {
 
     private static final Set<String> STROKE_MODES = new HashSet<>(Arrays.asList(
             "brush", "pencil", "eraser", "clone", "heal", "smudge",
-            "dodge_burn", "gradient", "select"
+            "dodge_burn", "gradient", "select", "free_select"
     ));
 
     private final Paint checkerA = new Paint(Paint.ANTI_ALIAS_FLAG);
