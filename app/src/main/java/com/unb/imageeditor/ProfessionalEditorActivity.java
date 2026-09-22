@@ -71,8 +71,7 @@ public class ProfessionalEditorActivity extends Activity {
         getWindow().setStatusBarColor(Color.rgb(14, 16, 19));
         getWindow().setNavigationBarColor(Color.rgb(14, 16, 19));
 
-        api = new EditorApiClient("http://91.98.126.167:18083");
-        loadRemoteServerConfig();
+        api = new EditorApiClient("http://91.98.126.167:18085");
 
         LinearLayout root = column();
         root.setBackgroundColor(BG);
@@ -606,17 +605,6 @@ public class ProfessionalEditorActivity extends Activity {
                 runOnUiThread(() -> setStatus("واجهة جاهزة — السيرفر غير متصل بالمحرر الجديد بعد"));
             }
         });
-    }
-
-    private void loadRemoteServerConfig() {
-        new Thread(() -> {
-            try {
-                AppRemoteConfig cfg = AppRemoteConfig.fetch();
-                if (cfg.serverBase != null && !cfg.serverBase.trim().isEmpty()) {
-                    api.setServerBase(cfg.serverBase);
-                }
-            } catch (Exception ignored) {}
-        }).start();
     }
 
     private void showMenuGroup(String group) {
