@@ -169,6 +169,20 @@ public class EditorApiClient {
         getJson("/api/editor/resources/" + encode(kind), cb);
     }
 
+    public void exportProject(String projectId, String format, Callback<byte[]> cb) {
+        executor.execute(() -> {
+            try {
+                String safeFormat = format == null ? "png" : format.toLowerCase().replaceAll("[^a-z0-9]", "");
+                if (safeFormat.isEmpty()) safeFormat = "png";
+                byte[] data = downloadBytes("/api/editor/projects/" + encode(projectId) +
+                        "/export?format=" + safeFormat);
+                cb.onSuccess(data);
+            } catch (Exception e) {
+                cb.onError(clean(e));
+            }
+        });
+    }
+
     public byte[] downloadBytes(String relativeOrAbsolute) throws Exception {
         String target = absoluteUrl(relativeOrAbsolute);
         HttpURLConnection conn = (HttpURLConnection) new URL(target).openConnection();
