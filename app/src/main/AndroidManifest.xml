@@ -6,7 +6,7 @@
 
     <application
         android:allowBackup="true"
-        android:label="UNB Image Editor"
+        android:label="UNB AI Image"
         android:supportsRtl="true"
         android:theme="@style/AppTheme"
         android:usesCleartextTraffic="true">
