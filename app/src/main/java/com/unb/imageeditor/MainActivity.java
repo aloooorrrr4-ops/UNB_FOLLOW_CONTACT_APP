@@ -39,7 +39,11 @@ import java.util.concurrent.Executors;
 public class MainActivity extends Activity {
 
     private static final int PICK_IMAGE = 1001;
-    private static final String SERVER = "http://91.98.126.167:18083";
+    private String serverBase = "http://91.98.126.167:18083";
+    private String chatEditPath = "/api/chat/edit";
+    private boolean maintenance = false;
+    private String maintenanceMessage = "الخدمة تحت الصيانة حالياً";
+    private int maxUploadMb = 15;
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -50,6 +54,8 @@ public class MainActivity extends Activity {
     private Button sendButton;
     private ImageButton attachButton;
     private ProgressBar progress;
+    private TextView titleView;
+    private TextView subtitleView;
 
     private byte[] currentImage;
     private String currentFileName = "image.png";
@@ -77,15 +83,15 @@ public class MainActivity extends Activity {
         header.setOrientation(LinearLayout.VERTICAL);
         header.setPadding(dp(18), dp(18), dp(18), dp(12));
 
-        TextView title = text("محرر الصور الذكي", 23, Color.WHITE);
-        title.setTypeface(null, android.graphics.Typeface.BOLD);
-        title.setGravity(Gravity.RIGHT);
-        header.addView(title);
+        titleView = text("محرر الصور الذكي", 23, Color.WHITE);
+        titleView.setTypeface(null, android.graphics.Typeface.BOLD);
+        titleView.setGravity(Gravity.RIGHT);
+        header.addView(titleView);
 
-        TextView subtitle = text("ارفع صورة، ثم اكتب التعديل كأنك تتحدث معي", 14, Color.rgb(164, 171, 181));
-        subtitle.setGravity(Gravity.RIGHT);
-        subtitle.setPadding(0, dp(4), 0, 0);
-        header.addView(subtitle);
+        subtitleView = text("ارفع صورة، ثم اكتب التعديل كأنك تتحدث معي", 14, Color.rgb(164, 171, 181));
+        subtitleView.setGravity(Gravity.RIGHT);
+        subtitleView.setPadding(0, dp(4), 0, 0);
+        header.addView(subtitleView);
 
         root.addView(header, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
@@ -170,12 +176,42 @@ public class MainActivity extends Activity {
         attachButton.setOnClickListener(v -> chooseImage());
         sendButton.setOnClickListener(v -> sendEdit());
 
+        loadRemoteConfig();
+
         promptInput.setOnEditorActionListener((v, actionId, event) -> {
             if (promptInput.getText().toString().trim().length() > 0) {
                 sendEdit();
                 return true;
             }
             return false;
+        });
+    }
+
+    private void loadRemoteConfig() {
+        executor.execute(() -> {
+            try {
+                AppRemoteConfig cfg = AppRemoteConfig.fetch();
+
+                serverBase = cfg.serverBase;
+                chatEditPath = cfg.chatEditPath;
+                maintenance = cfg.maintenance;
+                maintenanceMessage = cfg.maintenanceMessage;
+                maxUploadMb = cfg.maxUploadMb;
+
+                main.post(() -> {
+                    titleView.setText(cfg.appName);
+                    subtitleView.setText(cfg.subtitle);
+
+                    if (cfg.maintenance) {
+                        addAssistantText(cfg.maintenanceMessage);
+                        sendButton.setEnabled(false);
+                    } else {
+                        sendButton.setEnabled(true);
+                    }
+                });
+            } catch (Exception ignored) {
+                // Keep built-in defaults when remote control config is unavailable.
+            }
         });
     }
 
@@ -222,6 +258,12 @@ public class MainActivity extends Activity {
     private void sendEdit() {
         if (busy) return;
 
+        if (maintenance) {
+            Toast.makeText(this, maintenanceMessage, Toast.LENGTH_LONG).show();
+            addAssistantText(maintenanceMessage);
+            return;
+        }
+
         String prompt = promptInput.getText().toString().trim();
 
         if (currentImage == null || currentImage.length == 0) {
@@ -231,6 +273,11 @@ public class MainActivity extends Activity {
 
         if (prompt.isEmpty()) {
             Toast.makeText(this, "اكتب التعديل المطلوب", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        if (currentImage.length > maxUploadMb * 1024L * 1024L) {
+            Toast.makeText(this, "حجم الصورة أكبر من الحد المسموح: " + maxUploadMb + " MB", Toast.LENGTH_LONG).show();
             return;
         }
 
@@ -281,7 +328,7 @@ public class MainActivity extends Activity {
 
     private HttpResult postChatEdit(byte[] image, String fileName, String prompt) throws Exception {
         String boundary = "----UNB" + System.currentTimeMillis();
-        HttpURLConnection conn = (HttpURLConnection) new URL(SERVER + "/api/chat/edit").openConnection();
+        HttpURLConnection conn = (HttpURLConnection) new URL(serverBase + chatEditPath).openConnection();
 
         conn.setConnectTimeout(30000);
         conn.setReadTimeout(240000);
