@@ -27,6 +27,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import org.json.JSONObject;
+import org.json.JSONArray;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
@@ -58,6 +59,9 @@ public class ProfessionalEditorActivity extends Activity {
     private TextView toolTitle;
     private LinearLayout toolOptions;
     private LinearLayout layerList;
+    private LinearLayout channelList;
+    private LinearLayout pathList;
+    private LinearLayout resourceList;
     private LinearLayout historyList;
     private Button activeToolButton;
     private String activeTool = "move";
@@ -77,6 +81,7 @@ public class ProfessionalEditorActivity extends Activity {
         getWindow().setNavigationBarColor(Color.rgb(14, 16, 19));
 
         api = new EditorApiClient("http://91.98.126.167:18085");
+        desktopLayout = isDesktopLayout();
 
         LinearLayout root = column();
         root.setBackgroundColor(BG);
@@ -92,7 +97,6 @@ public class ProfessionalEditorActivity extends Activity {
         root.addView(buildQuickBar());
         root.addView(divider());
 
-        desktopLayout = isDesktopLayout();
         View workspace = desktopLayout ? buildDesktopWorkspace() : buildPhoneWorkspace();
         root.addView(workspace, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
@@ -294,23 +298,32 @@ public class ProfessionalEditorActivity extends Activity {
         LinearLayout panel = column();
         panel.setBackgroundColor(PANEL);
 
+        HorizontalScrollView tabScroll = new HorizontalScrollView(this);
+        tabScroll.setHorizontalScrollBarEnabled(false);
         LinearLayout tabs = new LinearLayout(this);
         tabs.setOrientation(LinearLayout.HORIZONTAL);
         tabs.setPadding(dp(5), dp(5), dp(5), dp(2));
 
         Button props = tabButton("خصائص");
         Button layers = tabButton("طبقات");
+        Button channels = tabButton("قنوات");
+        Button paths = tabButton("مسارات");
+        Button resources = tabButton("موارد");
         Button hist = tabButton("السجل");
         Button collapse = tabButton("⌄");
 
         int tabHeight = desktopLayout ? 40 : 36;
-        tabs.addView(props, new LinearLayout.LayoutParams(0, dp(tabHeight), 1f));
-        tabs.addView(layers, new LinearLayout.LayoutParams(0, dp(tabHeight), 1f));
-        tabs.addView(hist, new LinearLayout.LayoutParams(0, dp(tabHeight), 1f));
+        Button[] mainTabs = {props, layers, channels, paths, resources, hist};
+        for (Button tab : mainTabs) {
+            tabs.addView(tab, new LinearLayout.LayoutParams(
+                    desktopLayout ? dp(72) : dp(68), dp(tabHeight)));
+        }
         if (!desktopLayout) {
             tabs.addView(collapse, new LinearLayout.LayoutParams(dp(44), dp(tabHeight)));
         }
-        panel.addView(tabs);
+        tabScroll.addView(tabs);
+        panel.addView(tabScroll, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(tabHeight + 8)));
 
         ScrollView bodyScroll = new ScrollView(this);
         inspectorBodyScroll = bodyScroll;
@@ -322,29 +335,46 @@ public class ProfessionalEditorActivity extends Activity {
 
         toolOptions = column();
         layerList = column();
+        channelList = column();
+        pathList = column();
+        resourceList = column();
         historyList = column();
 
         body.addView(toolOptions);
         body.addView(layerList);
+        body.addView(channelList);
+        body.addView(pathList);
+        body.addView(resourceList);
         body.addView(historyList);
 
-        props.setOnClickListener(v -> {
-            showInspector("properties");
-            setPhoneInspectorExpanded(true);
-        });
+        props.setOnClickListener(v -> openInspectorTab("properties"));
         layers.setOnClickListener(v -> {
-            showInspector("layers");
-            setPhoneInspectorExpanded(true);
+            openInspectorTab("layers");
+            refreshLayers();
         });
-        hist.setOnClickListener(v -> {
-            showInspector("history");
-            setPhoneInspectorExpanded(true);
+        channels.setOnClickListener(v -> {
+            openInspectorTab("channels");
+            refreshChannels();
         });
+        paths.setOnClickListener(v -> {
+            openInspectorTab("paths");
+            refreshPaths();
+        });
+        resources.setOnClickListener(v -> {
+            openInspectorTab("resources");
+            loadResources("fonts");
+        });
+        hist.setOnClickListener(v -> openInspectorTab("history"));
         collapse.setOnClickListener(v -> setPhoneInspectorExpanded(false));
 
         showInspector("properties");
         if (!desktopLayout) bodyScroll.setVisibility(View.GONE);
         return panel;
+    }
+
+    private void openInspectorTab(String tab) {
+        showInspector(tab);
+        setPhoneInspectorExpanded(true);
     }
 
     private void setPhoneInspectorExpanded(boolean expanded) {
@@ -367,6 +397,9 @@ public class ProfessionalEditorActivity extends Activity {
         if (toolOptions == null) return;
         toolOptions.setVisibility("properties".equals(tab) ? View.VISIBLE : View.GONE);
         layerList.setVisibility("layers".equals(tab) ? View.VISIBLE : View.GONE);
+        channelList.setVisibility("channels".equals(tab) ? View.VISIBLE : View.GONE);
+        pathList.setVisibility("paths".equals(tab) ? View.VISIBLE : View.GONE);
+        resourceList.setVisibility("resources".equals(tab) ? View.VISIBLE : View.GONE);
         historyList.setVisibility("history".equals(tab) ? View.VISIBLE : View.GONE);
     }
 
@@ -475,23 +508,211 @@ public class ProfessionalEditorActivity extends Activity {
 
         LinearLayout actions = new LinearLayout(this);
         actions.setOrientation(LinearLayout.HORIZONTAL);
-        actions.addView(actionButton("+ طبقة", v -> toast("إضافة طبقة")), new LinearLayout.LayoutParams(0, dp(44), 1f));
-        actions.addView(actionButton("+ مجموعة", v -> toast("إضافة مجموعة")), new LinearLayout.LayoutParams(0, dp(44), 1f));
+        actions.addView(actionButton("+ طبقة", v ->
+                applyRemote("add_layer", jsonOf("name", "Layer"))),
+                new LinearLayout.LayoutParams(0, dp(44), 1f));
+        actions.addView(actionButton("+ مجموعة", v ->
+                applyRemote("add_group", jsonOf("name", "Group"))),
+                new LinearLayout.LayoutParams(0, dp(44), 1f));
+        actions.addView(actionButton("+ قناع", v ->
+                applyRemote("add_mask", jsonOf("type", "white"))),
+                new LinearLayout.LayoutParams(0, dp(44), 1f));
         layerList.addView(actions);
 
-        LinearLayout item = new LinearLayout(this);
-        item.setOrientation(LinearLayout.HORIZONTAL);
-        item.setGravity(Gravity.CENTER_VERTICAL);
-        item.setPadding(dp(8), dp(8), dp(8), dp(8));
-        item.setBackground(rounded(Color.rgb(44, 49, 57), 8));
+        if (projectId == null) {
+            layerList.addView(label("افتح صورة لعرض الطبقات", 13, MUTED, false));
+            return;
+        }
 
-        TextView eye = label("◉", 16, TEXT, false);
-        TextView name = label(projectId == null ? "لا يوجد مشروع" : "الصورة الأساسية", 14, TEXT, false);
-        item.addView(eye, new LinearLayout.LayoutParams(dp(34), dp(38)));
-        item.addView(name, new LinearLayout.LayoutParams(0, dp(38), 1f));
-        layerList.addView(item);
+        api.getProjectSection(projectId, "layers", new EditorApiClient.Callback<JSONObject>() {
+            @Override
+            public void onSuccess(JSONObject value) {
+                runOnUiThread(() -> renderLayers(value.optJSONArray("layers")));
+            }
 
-        layerList.addView(label("Opacity 100%   •   Normal", 12, MUTED, false));
+            @Override
+            public void onError(String message) {
+                runOnUiThread(() -> layerList.addView(
+                        label("تعذر قراءة الطبقات: " + shortText(message), 12, MUTED, false)));
+            }
+        });
+    }
+
+    private void renderLayers(JSONArray items) {
+        if (layerList == null || items == null) return;
+        while (layerList.getChildCount() > 2) layerList.removeViewAt(2);
+
+        for (int i = 0; i < items.length(); i++) {
+            JSONObject item = items.optJSONObject(i);
+            if (item == null) continue;
+
+            int id = item.optInt("id");
+            String nameText = item.optString("name", "Layer");
+            boolean visible = item.optBoolean("visible", true);
+            boolean group = item.optBoolean("is_group", false);
+            double opacity = item.optDouble("opacity", 100.0);
+            JSONObject mask = item.optJSONObject("mask");
+
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(dp(7), dp(5), dp(7), dp(5));
+            row.setBackground(rounded(Color.rgb(44, 49, 57), 8));
+
+            Button eye = flatButton(visible ? "◉" : "○", 14);
+            eye.setOnClickListener(v -> applyRemote("visibility",
+                    jsonOf("layer_id", id, "visible", !visible)));
+
+            String prefix = group ? "▣ " : "▤ ";
+            TextView name = label(prefix + nameText, 13, TEXT, false);
+            TextView meta = label(Math.round(opacity) + "%" + (mask == null ? "" : "  M"), 11, MUTED, false);
+            meta.setGravity(Gravity.END);
+
+            row.addView(eye, new LinearLayout.LayoutParams(dp(42), dp(36)));
+            row.addView(name, new LinearLayout.LayoutParams(0, dp(36), 1f));
+            row.addView(meta, new LinearLayout.LayoutParams(dp(76), dp(36)));
+
+            row.setOnLongClickListener(v -> {
+                toast("Layer #" + id + " • " + nameText);
+                return true;
+            });
+
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            lp.bottomMargin = dp(5);
+            layerList.addView(row, lp);
+        }
+    }
+
+    private void refreshChannels() {
+        if (channelList == null) return;
+        channelList.removeAllViews();
+        channelList.addView(label("القنوات Channels", 17, TEXT, true));
+        channelList.addView(actionButton("+ قناة", v ->
+                applyRemote("add_channel", jsonOf("name", "Channel", "color", "#000000", "opacity", 50))));
+
+        if (projectId == null) {
+            channelList.addView(label("افتح مشروعًا لعرض القنوات", 13, MUTED, false));
+            return;
+        }
+
+        api.getProjectSection(projectId, "channels", new EditorApiClient.Callback<JSONObject>() {
+            @Override
+            public void onSuccess(JSONObject value) {
+                runOnUiThread(() -> {
+                    JSONArray items = value.optJSONArray("channels");
+                    if (items == null) return;
+                    for (int i = 0; i < items.length(); i++) {
+                        JSONObject item = items.optJSONObject(i);
+                        if (item == null) continue;
+                        int id = item.optInt("id");
+                        boolean visible = item.optBoolean("visible", false);
+                        String n = item.optString("name", "Channel");
+                        Button row = actionButton((visible ? "◉ " : "○ ") + n, v ->
+                                applyRemote("channel_visibility",
+                                        jsonOf("channel_id", id, "visible", !visible)));
+                        channelList.addView(row);
+                    }
+                });
+            }
+
+            @Override
+            public void onError(String message) {
+                runOnUiThread(() -> channelList.addView(
+                        label("تعذر قراءة القنوات: " + shortText(message), 12, MUTED, false)));
+            }
+        });
+    }
+
+    private void refreshPaths() {
+        if (pathList == null) return;
+        pathList.removeAllViews();
+        pathList.addView(label("المسارات Paths", 17, TEXT, true));
+        pathList.addView(actionButton("+ مسار", v ->
+                applyRemote("add_path", jsonOf("name", "Path"))));
+
+        if (projectId == null) {
+            pathList.addView(label("افتح مشروعًا لعرض المسارات", 13, MUTED, false));
+            return;
+        }
+
+        api.getProjectSection(projectId, "paths", new EditorApiClient.Callback<JSONObject>() {
+            @Override
+            public void onSuccess(JSONObject value) {
+                runOnUiThread(() -> {
+                    JSONArray items = value.optJSONArray("paths");
+                    if (items == null) return;
+                    for (int i = 0; i < items.length(); i++) {
+                        JSONObject item = items.optJSONObject(i);
+                        if (item == null) continue;
+                        int id = item.optInt("id");
+                        boolean visible = item.optBoolean("visible", false);
+                        String n = item.optString("name", "Path");
+                        Button row = actionButton((visible ? "◉ " : "○ ") + n, v ->
+                                applyRemote("path_visibility",
+                                        jsonOf("path_id", id, "visible", !visible)));
+                        pathList.addView(row);
+                    }
+                });
+            }
+
+            @Override
+            public void onError(String message) {
+                runOnUiThread(() -> pathList.addView(
+                        label("تعذر قراءة المسارات: " + shortText(message), 12, MUTED, false)));
+            }
+        });
+    }
+
+    private void loadResources(String kind) {
+        if (resourceList == null) return;
+        resourceList.removeAllViews();
+        resourceList.addView(label("موارد GIMP", 17, TEXT, true));
+
+        HorizontalScrollView picker = new HorizontalScrollView(this);
+        LinearLayout buttons = new LinearLayout(this);
+        buttons.setOrientation(LinearLayout.HORIZONTAL);
+        buttons.addView(actionButton("الخطوط", v -> loadResources("fonts")));
+        buttons.addView(actionButton("الفرش", v -> loadResources("brushes")));
+        buttons.addView(actionButton("التدرجات", v -> loadResources("gradients")));
+        buttons.addView(actionButton("النقوش", v -> loadResources("patterns")));
+        buttons.addView(actionButton("الألوان", v -> loadResources("palettes")));
+        picker.addView(buttons);
+        resourceList.addView(picker);
+
+        api.getResources(kind, new EditorApiClient.Callback<JSONObject>() {
+            @Override
+            public void onSuccess(JSONObject value) {
+                runOnUiThread(() -> {
+                    JSONArray items = value.optJSONArray("items");
+                    if (items == null) return;
+                    int limit = Math.min(items.length(), 80);
+                    for (int i = 0; i < limit; i++) {
+                        JSONObject item = items.optJSONObject(i);
+                        if (item == null) continue;
+                        TextView row = label(item.optString("name", "Resource"), 12, TEXT, false);
+                        row.setPadding(dp(4), dp(6), dp(4), dp(6));
+                        resourceList.addView(row);
+                    }
+                    if (items.length() > limit) {
+                        resourceList.addView(label("+" + (items.length() - limit) +
+                                " مورد إضافي", 11, MUTED, false));
+                    }
+                });
+            }
+
+            @Override
+            public void onError(String message) {
+                runOnUiThread(() -> resourceList.addView(
+                        label("تعذر قراءة الموارد: " + shortText(message), 12, MUTED, false)));
+            }
+        });
+    }
+
+    private void refreshRemotePanels() {
+        refreshLayers();
+        refreshChannels();
+        refreshPaths();
     }
 
     private void addHistory(String item) {
@@ -560,7 +781,7 @@ public class ProfessionalEditorActivity extends Activity {
                         setBusy(false);
                         setStatus("المشروع متصل بالسيرفر");
                         addHistory("فتح " + sourceName);
-                        refreshLayers();
+                        refreshRemotePanels();
                     });
                 }
 
@@ -598,6 +819,7 @@ public class ProfessionalEditorActivity extends Activity {
                             setBusy(false);
                             setStatus("تم " + operation);
                             addHistory(operation);
+                            refreshRemotePanels();
                         });
                     }
 
@@ -624,6 +846,7 @@ public class ProfessionalEditorActivity extends Activity {
                     setBusy(false);
                     setStatus("تم " + action);
                     addHistory(action);
+                    refreshRemotePanels();
                 });
             }
 
@@ -689,7 +912,7 @@ public class ProfessionalEditorActivity extends Activity {
                 toast("Blur • Enhance • Distort • Noise • Edge • Render • GEGL");
                 break;
             case "نوافذ":
-                setPhoneInspectorExpanded(true);
+                openInspectorTab("layers");
                 toast("Layers • Channels • Paths • Brushes • Fonts • History");
                 break;
             default:
@@ -752,6 +975,17 @@ public class ProfessionalEditorActivity extends Activity {
     private JSONObject json(String key, Object value) {
         JSONObject o = new JSONObject();
         try { o.put(key, value); } catch (Exception ignored) {}
+        return o;
+    }
+
+    private JSONObject jsonOf(Object... pairs) {
+        JSONObject o = new JSONObject();
+        if (pairs == null) return o;
+        try {
+            for (int i = 0; i + 1 < pairs.length; i += 2) {
+                o.put(String.valueOf(pairs[i]), pairs[i + 1]);
+            }
+        } catch (Exception ignored) {}
         return o;
     }
 
