@@ -1180,32 +1180,32 @@ def operation(project_id: str, request: OperationRequest):
     state = project_or_404(project_id)
     op = request.operation.strip().lower()
 
-    with state.lock:
+    with engine_lock, state.lock:
+        push_undo(state)
         try:
-            push_undo(state)
             apply_operation_to_gimp(state, op, request.params)
             preview_url = render_preview(state)
-            return {
-                "ok": True,
-                "project_id": project_id,
-                "operation": op,
-                "preview_url": preview_url,
-                "undo_depth": len(state.undo),
-                "redo_depth": len(state.redo),
-                "engine": "GIMP-PDB",
-            }
         except HTTPException:
-            if state.undo:
-                failed_current = state.image_id
-                state.image_id = state.undo.pop()
-                delete_gimp_image(failed_current)
+            failed_current = state.image_id
+            state.image_id = state.undo.pop()
+            delete_gimp_image(failed_current)
             raise
         except Exception as exc:
-            if state.undo:
-                failed_current = state.image_id
-                state.image_id = state.undo.pop()
-                delete_gimp_image(failed_current)
+            failed_current = state.image_id
+            state.image_id = state.undo.pop()
+            delete_gimp_image(failed_current)
             raise HTTPException(500, f"GIMP operation failed: {exc}")
+
+        clear_stack(state.redo)
+        return {
+            "ok": True,
+            "project_id": project_id,
+            "operation": op,
+            "preview_url": preview_url,
+            "undo_depth": len(state.undo),
+            "redo_depth": len(state.redo),
+            "engine": "GIMP-PDB",
+        }
 
 
 @app.post("/api/editor/projects/{project_id}/undo")
