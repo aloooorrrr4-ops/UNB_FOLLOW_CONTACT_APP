@@ -70,7 +70,10 @@ public class OcrOverlayImageView extends ImageView {
     public void selectBlock(String id) {
         selectedIndex = -1;
 
-        for (int i = 0; i < blocks.size(); i++) {
+        // Keep the preview clean. Show only the text currently selected from
+        // the list instead of covering the whole image with OCR rectangles.
+        if (selectedIndex < 0 || selectedIndex >= blocks.size()) return;
+        for (int i = selectedIndex; i <= selectedIndex; i++) {
             if (id.equals(blocks.get(i).optString("id"))) {
                 selectedIndex = i;
                 break;
@@ -100,7 +103,7 @@ public class OcrOverlayImageView extends ImageView {
             );
 
             matrix.mapRect(rect);
-            canvas.drawRect(rect, i == selectedIndex ? selectedPaint : boxPaint);
+            canvas.drawRoundRect(rect, dp(7), dp(7), selectedPaint);
         }
     }
 
