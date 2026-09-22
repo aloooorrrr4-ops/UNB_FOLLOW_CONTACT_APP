@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-BASE="${1:-http://127.0.0.1:18085}"
+BASE="${1:-http://127.0.0.1:18083}"
 
 echo "=== health ==="
 curl --fail --show-error --silent "$BASE/health"
