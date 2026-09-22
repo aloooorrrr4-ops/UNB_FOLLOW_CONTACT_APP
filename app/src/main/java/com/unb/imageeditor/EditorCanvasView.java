@@ -367,6 +367,13 @@ public class EditorCanvasView extends View {
             return;
         }
 
+        if (strokePoints.size() == 2) {
+            float x = strokePoints.get(0);
+            float y = strokePoints.get(1);
+            strokePoints.add(x + 0.01f);
+            strokePoints.add(y + 0.01f);
+        }
+
         float[] points = new float[strokePoints.size()];
         for (int i = 0; i < strokePoints.size(); i++) points[i] = strokePoints.get(i);
         listener.onStrokeCompleted(points);
