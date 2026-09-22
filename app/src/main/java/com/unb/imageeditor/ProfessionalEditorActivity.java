@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -94,7 +95,9 @@ public class ProfessionalEditorActivity extends Activity {
         getWindow().setStatusBarColor(Color.rgb(14, 16, 19));
         getWindow().setNavigationBarColor(Color.rgb(14, 16, 19));
 
-        api = new EditorApiClient("http://91.98.126.167:18085");
+        SharedPreferences prefs = getSharedPreferences("editor_settings", MODE_PRIVATE);
+        String savedServer = prefs.getString("server_base", "http://91.98.126.167:18085");
+        api = new EditorApiClient(savedServer);
         desktopLayout = isDesktopLayout();
 
         LinearLayout root = column();
@@ -164,6 +167,7 @@ public class ProfessionalEditorActivity extends Activity {
 
         row.addView(actionButton("فتح", v -> chooseImage()));
         row.addView(actionButton("حفظ", v -> exportProject("png")));
+        row.addView(actionButton("سيرفر", v -> showServerDialog()));
         row.addView(verticalDivider());
         row.addView(actionButton("↶ تراجع", v -> remoteHistory("undo")));
         row.addView(actionButton("↷ إعادة", v -> remoteHistory("redo")));
@@ -1036,6 +1040,79 @@ public class ProfessionalEditorActivity extends Activity {
         row.addView(projectText, new LinearLayout.LayoutParams(0, dp(statusHeight), 1f));
         row.addView(zoomText, new LinearLayout.LayoutParams(dp(64), dp(statusHeight)));
         return row;
+    }
+
+    private void showServerDialog() {
+        EditText input = new EditText(this);
+        input.setSingleLine(true);
+        input.setText(api.getServerBase());
+        input.setHint("http://IP:PORT");
+        input.setTextColor(TEXT);
+        input.setHintTextColor(MUTED);
+
+        new AlertDialog.Builder(this)
+                .setTitle("عنوان سيرفر GIMP")
+                .setMessage("يمكن تغييره بدون إعادة بناء التطبيق.")
+                .setView(input)
+                .setNegativeButton("إلغاء", null)
+                .setNeutralButton("اختبار", null)
+                .setPositiveButton("حفظ", null)
+                .create();
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("عنوان سيرفر GIMP")
+                .setMessage("يمكن تغييره بدون إعادة بناء التطبيق.")
+                .setView(input)
+                .setNegativeButton("إلغاء", null)
+                .setNeutralButton("اختبار", null)
+                .setPositiveButton("حفظ", null)
+                .create();
+
+        dialog.setOnShowListener(ignored -> {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+                String value = input.getText().toString().trim();
+                if (value.isEmpty()) {
+                    input.setError("أدخل عنوان السيرفر");
+                    return;
+                }
+                api.setServerBase(value);
+                getSharedPreferences("editor_settings", MODE_PRIVATE)
+                        .edit().putString("server_base", api.getServerBase()).apply();
+                dialog.dismiss();
+                setStatus("تم حفظ السيرفر — جاري الاختبار...");
+                pingServer();
+            });
+
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> {
+                String value = input.getText().toString().trim();
+                if (value.isEmpty()) {
+                    input.setError("أدخل عنوان السيرفر");
+                    return;
+                }
+                String old = api.getServerBase();
+                api.setServerBase(value);
+                setStatus("جاري اختبار " + value);
+                api.health(new EditorApiClient.Callback<JSONObject>() {
+                    @Override
+                    public void onSuccess(JSONObject response) {
+                        runOnUiThread(() -> {
+                            setStatus("السيرفر يعمل: " + value);
+                            toast("الاتصال ناجح");
+                        });
+                    }
+
+                    @Override
+                    public void onError(String message) {
+                        runOnUiThread(() -> {
+                            api.setServerBase(old);
+                            setStatus("فشل الاتصال: " + shortText(message));
+                            toast("السيرفر غير متصل");
+                        });
+                    }
+                });
+            });
+        });
+        dialog.show();
     }
 
     private void chooseImage() {
