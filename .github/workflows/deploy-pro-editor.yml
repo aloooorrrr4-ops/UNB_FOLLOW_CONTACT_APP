@@ -1,0 +1,54 @@
+name: Deploy Pro Editor Server
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate package
+        run: |
+          python3 -m py_compile server/gimp_editor/app.py
+          bash -n server/gimp_editor/start_gimp_scriptfu.sh
+          bash -n server/gimp_editor/install_staging.sh
+
+      - name: Upload GIMP editor package
+        uses: appleboy/scp-action@v1
+        with:
+          host: 91.98.126.167
+          username: root
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          source: "server/gimp_editor"
+          target: "/tmp/unb-pro-editor-deploy"
+          overwrite: true
+
+      - name: Install and replace old service
+        uses: appleboy/ssh-action@v1
+        with:
+          host: 91.98.126.167
+          username: root
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          command_timeout: 12m
+          script: |
+            set -e
+            cd /tmp/unb-pro-editor-deploy/server/gimp_editor
+            chmod +x install_staging.sh start_gimp_scriptfu.sh diagnose.sh
+            ./install_staging.sh
+
+      - name: Verify production endpoint
+        run: |
+          set -e
+          sleep 3
+          curl --fail --show-error --silent http://91.98.126.167:18083/health
+          echo
+          curl --fail --show-error --silent http://91.98.126.167:18083/api/editor/capabilities
+          echo
