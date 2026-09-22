@@ -20,11 +20,15 @@ jobs:
         run: |
           python3 -m py_compile server/gimp_editor/app.py
           bash -n server/gimp_editor/start_gimp_scriptfu.sh
+          bash -n server/gimp_editor/install_staging.sh
 
-      - name: Probe GIMP server ports
+      - name: Probe current GIMP endpoint
         shell: bash
         run: |
           set +e
+          echo "=== 18083 CURRENT EDITOR ENDPOINT ==="
+          curl -v --connect-timeout 8 --max-time 15 http://91.98.126.167:18083/health 2>&1
+          echo "RC_18083=$?"
 
       - name: Set up Java
         uses: actions/setup-java@v5
