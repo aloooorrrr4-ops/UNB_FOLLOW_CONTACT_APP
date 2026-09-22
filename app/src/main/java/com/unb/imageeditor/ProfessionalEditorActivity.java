@@ -1448,6 +1448,18 @@ public class ProfessionalEditorActivity extends Activity {
             @Override
             public void onSuccess(JSONObject value) {
                 String service = value.optString("service", "");
+                boolean gimpReady = value.optBoolean("gimp_scriptfu", false);
+
+                if (!gimpReady && !"UNB GIMP API".equalsIgnoreCase(service)) {
+                    runOnUiThread(() -> {
+                        setStatus("السيرفر متصل لكن محرك GIMP غير جاهز");
+                        if (projectText != null && projectId == null) {
+                            projectText.setText("GIMP غير جاهز");
+                        }
+                    });
+                    return;
+                }
+
                 api.getJson("/api/editor/capabilities", new EditorApiClient.Callback<JSONObject>() {
                     @Override
                     public void onSuccess(JSONObject capabilities) {
@@ -1462,7 +1474,12 @@ public class ProfessionalEditorActivity extends Activity {
                     @Override
                     public void onError(String message) {
                         runOnUiThread(() -> {
-                            if ("UNB GIMP API".equalsIgnoreCase(service) ||
+                            if (message != null && message.contains("401")) {
+                                setStatus("السيرفر جاهز — أدخل API Key من زر سيرفر");
+                                if (projectText != null && projectId == null) {
+                                    projectText.setText("مصادقة مطلوبة");
+                                }
+                            } else if ("UNB GIMP API".equalsIgnoreCase(service) ||
                                     (message != null && message.contains("404"))) {
                                 setStatus("السيرفر متصل — محرك GIMP القديم ما زال يعمل");
                                 if (projectText != null && projectId == null) {
@@ -1739,6 +1756,20 @@ public class ProfessionalEditorActivity extends Activity {
                     }
                 })
                 .show();
+    }
+
+    @Override
+    protected void onDestroy() {
+        String closingProject = projectId;
+        projectId = null;
+        if (isFinishing() && closingProject != null && api != null) {
+            api.closeProject(closingProject, new EditorApiClient.Callback<JSONObject>() {
+                @Override public void onSuccess(JSONObject value) {}
+                @Override public void onError(String message) {}
+            });
+        }
+        ioExecutor.shutdownNow();
+        super.onDestroy();
     }
 
     @Override
