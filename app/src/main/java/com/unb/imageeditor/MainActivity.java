@@ -10,6 +10,10 @@ import android.content.IntentFilter;
 import android.content.BroadcastReceiver;
 import android.Manifest;
 import android.content.ContentValues;
+import org.json.JSONObject;
+import org.json.JSONArray;
+import android.content.ClipboardManager;
+import android.content.ClipData;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -70,16 +74,24 @@ public class MainActivity extends Activity {
     private boolean busy = false;
     private boolean receiverRegistered = false;
     private long shownResultModified = 0L;
+    private long shownTextModified = 0L;
 
     private final BroadcastReceiver editReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
-            if (intent.getIntExtra(AiProcessService.EXTRA_STAGE, 0) != AiProcessService.CHAT_EDIT) {
+            int stage = intent.getIntExtra(AiProcessService.EXTRA_STAGE, 0);
+
+            if (stage != AiProcessService.CHAT_EDIT &&
+                    stage != AiProcessService.CHAT_EXTRACT) {
                 return;
             }
 
             if (AiProcessService.ACTION_DONE.equals(intent.getAction())) {
-                loadFinishedChatResult(true);
+                if (stage == AiProcessService.CHAT_EXTRACT) {
+                    loadFinishedTextResult(true);
+                } else {
+                    loadFinishedChatResult(true);
+                }
             } else if (AiProcessService.ACTION_FAILED.equals(intent.getAction())) {
                 String msg = intent.getStringExtra(AiProcessService.EXTRA_MESSAGE);
                 removeLastAssistantWaiting();
@@ -145,7 +157,7 @@ public class MainActivity extends Activity {
         );
         root.addView(scroll, scrollParams);
 
-        addAssistantText("أرسل صورة ثم اكتب ما تريد تعديله. مثال:\n«بدل اختبار جيمب إلى محمد فاضل»");
+        addAssistantText("أرسل صورة ثم قل: «استخرج النصوص».\nبعدها أرسل التعديلات كلمة مقابل كلمة، مثل:\nعامل = مهندس");
 
         LinearLayout composerWrap = new LinearLayout(this);
         composerWrap.setOrientation(LinearLayout.VERTICAL);
@@ -209,6 +221,7 @@ public class MainActivity extends Activity {
         requestNotificationPermission();
         restoreWorkingImage();
         loadFinishedChatResult(false);
+        loadFinishedTextResult(false);
 
         promptInput.setOnEditorActionListener((v, actionId, event) -> {
             if (promptInput.getText().toString().trim().length() > 0) {
@@ -224,6 +237,7 @@ public class MainActivity extends Activity {
         super.onResume();
         restoreWorkingImage();
         loadFinishedChatResult(false);
+        loadFinishedTextResult(false);
     }
 
     private void registerEditReceiver() {
@@ -303,6 +317,121 @@ public class MainActivity extends Activity {
         try (InputStream in = new FileInputStream(file)) {
             return readStream(in);
         }
+    }
+
+    private void loadFinishedTextResult(boolean fromBroadcast) {
+        File result = new File(getFilesDir(), AiProcessService.CHAT_TEXT_RESULT);
+
+        if (!result.exists() || result.length() == 0) return;
+        if (result.lastModified() == shownTextModified) return;
+
+        try {
+            String json = new String(readFileBytes(result), StandardCharsets.UTF_8);
+            JSONObject root = new JSONObject(json);
+            JSONArray items = root.optJSONArray("items");
+
+            if (fromBroadcast) {
+                removeLastAssistantWaiting();
+            }
+
+            if (items == null || items.length() == 0) {
+                addAssistantText("لم أجد نصوصاً واضحة داخل الصورة.");
+                shownTextModified = result.lastModified();
+                setBusy(false);
+                return;
+            }
+
+            StringBuilder display = new StringBuilder();
+            StringBuilder template = new StringBuilder();
+
+            display.append("النصوص المستخرجة — اضغط مطولاً للنسخ:\n\n");
+
+            for (int i = 0; i < items.length(); i++) {
+                JSONObject item = items.optJSONObject(i);
+                if (item == null) continue;
+
+                String original = item.optString("original_text", "").trim();
+                if (original.isEmpty()) continue;
+
+                display.append(i + 1)
+                        .append(") الأصلي: ")
+                        .append(original)
+                        .append("\n   البديل: ")
+                        .append("\n\n");
+
+                template.append(original).append(" = ").append("\n");
+            }
+
+            display.append("أرسل التعديل بهذا الشكل:\n")
+                    .append(template);
+
+            addExtractedTextsCard(display.toString(), template.toString());
+            shownTextModified = result.lastModified();
+            setBusy(false);
+            scrollBottom();
+
+        } catch (Exception e) {
+            if (fromBroadcast) {
+                removeLastAssistantWaiting();
+                addAssistantText("تعذر قراءة النصوص المستخرجة:\n" + e.getMessage());
+                setBusy(false);
+            }
+        }
+    }
+
+    private void addExtractedTextsCard(String displayText, String template) {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.LEFT);
+        row.setPadding(0, dp(5), 0, dp(5));
+
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(12), dp(12), dp(12), dp(12));
+        card.setBackground(bubble(Color.rgb(35, 39, 45), 18));
+
+        TextView tv = text(displayText, 15, Color.WHITE);
+        tv.setGravity(Gravity.RIGHT);
+        tv.setTextDirection(View.TEXT_DIRECTION_RTL);
+        tv.setTextIsSelectable(true);
+        tv.setPadding(dp(4), dp(4), dp(4), dp(8));
+        card.addView(tv);
+
+        Button copy = new Button(this);
+        copy.setText("نسخ قالب التعديل");
+        copy.setTextColor(Color.WHITE);
+        copy.setAllCaps(false);
+        copy.setBackground(bubble(Color.rgb(60, 66, 75), 14));
+        card.addView(copy, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(44)
+        ));
+
+        copy.setOnClickListener(v -> {
+            ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+            if (cm != null) {
+                cm.setPrimaryClip(ClipData.newPlainText("UNB OCR", template));
+                Toast.makeText(this, "تم نسخ النصوص. اكتب البديل بعد علامة =", Toast.LENGTH_LONG).show();
+            }
+        });
+
+        LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(
+                (int) (getResources().getDisplayMetrics().widthPixels * 0.88f),
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        );
+        row.addView(card, rp);
+        messages.addView(row);
+    }
+
+    private boolean isExtractPrompt(String prompt) {
+        if (prompt == null) return false;
+        String p = prompt.trim();
+        return p.contains("استخرج النصوص") ||
+                p.contains("استخراج النصوص") ||
+                p.contains("استخرج الكلام") ||
+                p.contains("هات النصوص") ||
+                p.contains("اعرض النصوص") ||
+                p.contains("طلع النصوص") ||
+                p.contains("النصوص القابلة للتعديل") ||
+                p.contains("النصوص القابله للتعديل");
     }
 
     private void loadRemoteConfig() {
@@ -399,32 +528,47 @@ public class MainActivity extends Activity {
             return;
         }
 
+        boolean extractMode = isExtractPrompt(prompt);
+
         promptInput.setText("");
         hideKeyboard();
         addUserText(prompt);
         setBusy(true);
-        addAssistantText("جاري تنفيذ التعديل... يمكنك الخروج من التطبيق وسيستمر العمل.");
+        addAssistantText(
+                extractMode
+                        ? "جاري استخراج النصوص..."
+                        : "جاري تنفيذ التعديل... يمكنك الخروج من التطبيق وسيستمر العمل."
+        );
 
         try {
             File input = new File(getFilesDir(), AiProcessService.CHAT_INPUT);
-            File result = new File(getFilesDir(), AiProcessService.CHAT_RESULT);
+            File imageResult = new File(getFilesDir(), AiProcessService.CHAT_RESULT);
+            File textResult = new File(getFilesDir(), AiProcessService.CHAT_TEXT_RESULT);
 
             try (FileOutputStream out = new FileOutputStream(input, false)) {
                 out.write(currentImage);
                 out.flush();
             }
 
-            if (result.exists()) {
-                result.delete();
+            if (extractMode) {
+                if (textResult.exists()) textResult.delete();
+                shownTextModified = 0L;
+            } else {
+                if (imageResult.exists()) imageResult.delete();
+                shownResultModified = 0L;
             }
 
-            shownResultModified = 0L;
-
             Intent service = new Intent(this, AiProcessService.class);
-            service.putExtra(AiProcessService.EXTRA_STAGE, AiProcessService.CHAT_EDIT);
+            service.putExtra(
+                    AiProcessService.EXTRA_STAGE,
+                    extractMode ? AiProcessService.CHAT_EXTRACT : AiProcessService.CHAT_EDIT
+            );
             service.putExtra(AiProcessService.EXTRA_SERVER, serverBase);
-            service.putExtra(AiProcessService.EXTRA_CHAT_PATH, chatEditPath);
-            service.putExtra(AiProcessService.EXTRA_PROMPT, prompt);
+
+            if (!extractMode) {
+                service.putExtra(AiProcessService.EXTRA_CHAT_PATH, chatEditPath);
+                service.putExtra(AiProcessService.EXTRA_PROMPT, prompt);
+            }
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 startForegroundService(service);
@@ -434,7 +578,9 @@ public class MainActivity extends Activity {
 
             Toast.makeText(
                     this,
-                    "بدأ التعديل — يمكنك الخروج من التطبيق وسيستمر التنفيذ",
+                    extractMode
+                            ? "بدأ استخراج النصوص"
+                            : "بدأ التعديل — يمكنك الخروج من التطبيق وسيستمر التنفيذ",
                     Toast.LENGTH_LONG
             ).show();
 
