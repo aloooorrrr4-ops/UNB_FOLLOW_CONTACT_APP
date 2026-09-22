@@ -233,6 +233,12 @@ def layer_list(image_id: int) -> list[dict[str, Any]]:
         opacity = sf_float(f"(car (gimp-layer-get-opacity {layer_id}))")
         width = sf_int(f"(car (gimp-item-get-width {layer_id}))")
         height = sf_int(f"(car (gimp-item-get-height {layer_id}))")
+        group_raw = sf.call(f"(car (gimp-item-is-group-layer {layer_id}))").lower()
+        parent_id = 0
+        try:
+            parent_id = sf_int(f"(car (gimp-item-get-parent {layer_id}))")
+        except Exception:
+            parent_id = 0
         layers.append({
             "id": layer_id,
             "name": name,
@@ -240,8 +246,70 @@ def layer_list(image_id: int) -> list[dict[str, Any]]:
             "opacity": opacity,
             "width": width,
             "height": height,
+            "is_group": ("#t" in group_raw or "true" in group_raw),
+            "parent_id": parent_id,
+            "mask": mask_info(layer_id),
         })
     return layers
+
+
+
+def resource_list(proc_name: str, filter_text: str = "") -> list[dict[str, Any]]:
+    filt = sf_string(filter_text)
+    raw = sf.call(f'({proc_name} "{filt}")')
+    ids = parse_vector_ids(raw)
+    out: list[dict[str, Any]] = []
+    for resource_id in ids:
+        try:
+            name = sf.call(f"(car (gimp-resource-get-name {resource_id}))").strip().strip('"')
+        except Exception:
+            name = str(resource_id)
+        out.append({"id": resource_id, "name": name})
+    return out
+
+
+def channel_list(image_id: int) -> list[dict[str, Any]]:
+    ids = parse_vector_ids(sf.call(f"(gimp-image-get-channels {image_id})"))
+    out: list[dict[str, Any]] = []
+    for channel_id in ids:
+        name = sf.call(f"(car (gimp-item-get-name {channel_id}))").strip().strip('"')
+        visible_raw = sf.call(f"(car (gimp-item-get-visible {channel_id}))").lower()
+        opacity = sf_float(f"(car (gimp-channel-get-opacity {channel_id}))")
+        out.append({
+            "id": channel_id,
+            "name": name,
+            "visible": ("#t" in visible_raw or "true" in visible_raw),
+            "opacity": opacity,
+        })
+    return out
+
+
+def path_list(image_id: int) -> list[dict[str, Any]]:
+    ids = parse_vector_ids(sf.call(f"(gimp-image-get-paths {image_id})"))
+    out: list[dict[str, Any]] = []
+    for path_id in ids:
+        name = sf.call(f"(car (gimp-item-get-name {path_id}))").strip().strip('"')
+        visible_raw = sf.call(f"(car (gimp-item-get-visible {path_id}))").lower()
+        out.append({
+            "id": path_id,
+            "name": name,
+            "visible": ("#t" in visible_raw or "true" in visible_raw),
+        })
+    return out
+
+
+def mask_info(layer_id: int) -> dict[str, Any] | None:
+    try:
+        mask_id = sf_int(f"(car (gimp-layer-get-mask {layer_id}))")
+    except Exception:
+        return None
+    if mask_id <= 0:
+        return None
+    return {
+        "id": mask_id,
+        "name": sf.call(f"(car (gimp-item-get-name {mask_id}))").strip().strip('"'),
+        "visible": True,
+    }
 
 
 @dataclass
@@ -326,7 +394,7 @@ def operation_catalog() -> dict[str, list[str]]:
                     "edge", "oilify", "pixelize", "mosaic", "motion_blur", "drop_shadow",
                     "color_temperature", "gegl"],
         "resources": ["brushes", "fonts", "gradients", "patterns", "palettes"],
-        "advanced": ["channels", "paths", "masks", "guides", "groups"]
+        "advanced": ["channels", "paths", "masks", "guides", "groups", "resources"]
     }
 
 
@@ -369,7 +437,11 @@ def capabilities():
             "add_text", "edit_text", "font_size", "text_color",
             "paintbrush", "pencil", "eraser", "fill", "stroke_selection",
             "gaussian_blur", "unsharp_mask", "noise_reduction", "bloom", "emboss",
-            "edge", "oilify", "pixelize", "mosaic", "motion_blur", "color_temperature"
+            "edge", "oilify", "pixelize", "mosaic", "motion_blur", "color_temperature",
+            "add_group", "move_to_group", "add_mask", "remove_mask", "apply_mask",
+            "add_channel", "delete_channel", "channel_visibility", "channel_opacity",
+            "add_path", "delete_path", "path_visibility", "text_to_path",
+            "levels", "curves", "threshold", "posterize", "color_balance", "equalize"
         ],
         "architecture": "allowlisted PDB bridge; no arbitrary remote script execution",
     }
@@ -452,6 +524,37 @@ def get_layers(project_id: str):
     state = project_or_404(project_id)
     with state.lock:
         return {"ok": True, "layers": layer_list(state.image_id)}
+
+
+@app.get("/api/editor/projects/{project_id}/channels")
+def get_channels(project_id: str):
+    state = project_or_404(project_id)
+    with state.lock:
+        return {"ok": True, "channels": channel_list(state.image_id)}
+
+
+@app.get("/api/editor/projects/{project_id}/paths")
+def get_paths(project_id: str):
+    state = project_or_404(project_id)
+    with state.lock:
+        return {"ok": True, "paths": path_list(state.image_id)}
+
+
+@app.get("/api/editor/resources/{kind}")
+def get_resources(kind: str, q: str = ""):
+    proc = {
+        "fonts": "gimp-fonts-get-list",
+        "brushes": "gimp-brushes-get-list",
+        "gradients": "gimp-gradients-get-list",
+        "patterns": "gimp-patterns-get-list",
+        "palettes": "gimp-palettes-get-list",
+    }.get(kind.lower())
+    if not proc:
+        raise HTTPException(404, "نوع المورد غير معروف")
+    try:
+        return {"ok": True, "kind": kind.lower(), "items": resource_list(proc, q)}
+    except Exception as exc:
+        raise HTTPException(500, f"تعذر قراءة موارد GIMP: {exc}")
 
 
 @app.get("/api/editor/projects/{project_id}/preview")
@@ -542,6 +645,141 @@ def apply_operation_to_gimp(state: ProjectState, op: str, p: dict[str, Any]):
     elif op == "shrink":
         steps = max(0, int(p.get("steps", 1)))
         sf.call(f"(gimp-selection-shrink {img} {steps})")
+
+    elif op == "add_group":
+        name = sf_string(str(p.get("name", "Group")))
+        group_id = sf_int(f'(car (gimp-group-layer-new {img} "{name}"))')
+        sf.call(f"(gimp-image-insert-layer {img} {group_id} 0 -1)")
+
+    elif op == "move_to_group":
+        layer_id = requested_layer(img, p)
+        group_id = int(p.get("group_id", 0))
+        position = int(p.get("position", -1))
+        if group_id <= 0:
+            raise HTTPException(400, "group_id مطلوب")
+        sf.call(f"(gimp-image-reorder-item {img} {layer_id} {group_id} {position})")
+
+    elif op == "add_mask":
+        layer_id = requested_layer(img, p)
+        mask_type_map = {
+            "white": "ADD-WHITE-MASK",
+            "black": "ADD-BLACK-MASK",
+            "alpha": "ADD-ALPHA-MASK",
+            "selection": "ADD-SELECTION-MASK",
+            "grayscale": "ADD-COPY-MASK",
+        }
+        mask_type = mask_type_map.get(str(p.get("type", "white")).lower())
+        if not mask_type:
+            raise HTTPException(400, "نوع القناع غير مدعوم")
+        mask_id = sf_int(f"(car (gimp-layer-create-mask {layer_id} {mask_type}))")
+        sf.call(f"(gimp-layer-add-mask {layer_id} {mask_id})")
+
+    elif op == "remove_mask":
+        layer_id = requested_layer(img, p)
+        sf.call(f"(gimp-layer-remove-mask {layer_id} MASK-DISCARD)")
+
+    elif op == "apply_mask":
+        layer_id = requested_layer(img, p)
+        sf.call(f"(gimp-layer-remove-mask {layer_id} MASK-APPLY)")
+
+    elif op == "add_channel":
+        name = sf_string(str(p.get("name", "Channel")))
+        width = sf_int(f"(car (gimp-image-get-width {img}))")
+        height = sf_int(f"(car (gimp-image-get-height {img}))")
+        opacity = max(0.0, min(100.0, float(p.get("opacity", 100))))
+        color = scriptfu_color(p.get("color", "#000000"))
+        channel_id = sf_int(
+            f'(car (gimp-channel-new {img} "{name}" {width} {height} {opacity:.3f} {color}))'
+        )
+        sf.call(f"(gimp-image-insert-channel {img} {channel_id} 0 -1)")
+
+    elif op == "delete_channel":
+        channel_id = int(p.get("channel_id", 0))
+        if channel_id <= 0:
+            raise HTTPException(400, "channel_id مطلوب")
+        sf.call(f"(gimp-image-remove-channel {img} {channel_id})")
+
+    elif op == "channel_visibility":
+        channel_id = int(p.get("channel_id", 0))
+        visible = "TRUE" if bool(p.get("visible", True)) else "FALSE"
+        sf.call(f"(gimp-item-set-visible {channel_id} {visible})")
+
+    elif op == "channel_opacity":
+        channel_id = int(p.get("channel_id", 0))
+        opacity = max(0.0, min(100.0, float(p.get("opacity", 100))))
+        sf.call(f"(gimp-channel-set-opacity {channel_id} {opacity:.3f})")
+
+    elif op == "add_path":
+        name = sf_string(str(p.get("name", "Path")))
+        path_id = sf_int(f'(car (gimp-path-new {img} "{name}"))')
+        sf.call(f"(gimp-image-insert-path {img} {path_id} 0 -1)")
+
+    elif op == "delete_path":
+        path_id = int(p.get("path_id", 0))
+        if path_id <= 0:
+            raise HTTPException(400, "path_id مطلوب")
+        sf.call(f"(gimp-image-remove-path {img} {path_id})")
+
+    elif op == "path_visibility":
+        path_id = int(p.get("path_id", 0))
+        visible = "TRUE" if bool(p.get("visible", True)) else "FALSE"
+        sf.call(f"(gimp-item-set-visible {path_id} {visible})")
+
+    elif op == "text_to_path":
+        layer_id = requested_layer(img, p)
+        path_id = sf_int(f"(car (gimp-path-new-from-text-layer {img} {layer_id}))")
+        sf.call(f"(gimp-image-insert-path {img} {path_id} 0 -1)")
+
+    elif op == "levels":
+        layer_id = requested_layer(img, p)
+        low_in = max(0.0, min(1.0, float(p.get("low_input", 0.0))))
+        high_in = max(low_in, min(1.0, float(p.get("high_input", 1.0))))
+        gamma = max(0.1, min(10.0, float(p.get("gamma", 1.0))))
+        low_out = max(0.0, min(1.0, float(p.get("low_output", 0.0))))
+        high_out = max(low_out, min(1.0, float(p.get("high_output", 1.0))))
+        sf.call(
+            f"(gimp-drawable-levels {layer_id} HISTOGRAM-VALUE "
+            f"{low_in:.5f} {high_in:.5f} TRUE {gamma:.5f} "
+            f"{low_out:.5f} {high_out:.5f} TRUE)"
+        )
+
+    elif op == "curves":
+        layer_id = requested_layer(img, p)
+        pts = p.get("points", [0.0, 0.0, 1.0, 1.0])
+        vector, count = scriptfu_points(pts)
+        sf.call(f"(gimp-drawable-curves-spline {layer_id} HISTOGRAM-VALUE {count} {vector})")
+
+    elif op == "threshold":
+        layer_id = requested_layer(img, p)
+        low = max(0.0, min(1.0, float(p.get("low", 0.5))))
+        high = max(low, min(1.0, float(p.get("high", 1.0))))
+        sf.call(f"(gimp-drawable-threshold {layer_id} HISTOGRAM-VALUE {low:.5f} {high:.5f})")
+
+    elif op == "posterize":
+        layer_id = requested_layer(img, p)
+        levels = max(2, min(256, int(p.get("levels", 4))))
+        sf.call(f"(gimp-drawable-posterize {layer_id} {levels})")
+
+    elif op == "color_balance":
+        layer_id = requested_layer(img, p)
+        range_map = {
+            "shadows": "TRANSFER-SHADOWS",
+            "midtones": "TRANSFER-MIDTONES",
+            "highlights": "TRANSFER-HIGHLIGHTS",
+        }
+        tone = range_map.get(str(p.get("range", "midtones")).lower(), "TRANSFER-MIDTONES")
+        cr = max(-100.0, min(100.0, float(p.get("cyan_red", 0))))
+        mg = max(-100.0, min(100.0, float(p.get("magenta_green", 0))))
+        yb = max(-100.0, min(100.0, float(p.get("yellow_blue", 0))))
+        preserve = "TRUE" if bool(p.get("preserve_luminosity", True)) else "FALSE"
+        sf.call(
+            f"(gimp-drawable-color-balance {layer_id} {tone} {preserve} "
+            f"{cr:.3f} {mg:.3f} {yb:.3f})"
+        )
+
+    elif op == "equalize":
+        layer_id = requested_layer(img, p)
+        sf.call(f"(gimp-drawable-equalize {layer_id} FALSE)")
 
     elif op == "select_rectangle":
         x = int(p.get("x", 0))
