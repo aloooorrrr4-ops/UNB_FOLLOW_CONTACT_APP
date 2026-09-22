@@ -1270,7 +1270,7 @@ def export(project_id: str, format: str = "png"):
     suffix = "jpg" if fmt == "jpeg" else fmt
     out = state.folder / f"export.{suffix}"
 
-    with state.lock:
+    with engine_lock, state.lock:
         try:
             sf.call(
                 f'(gimp-file-save RUN-NONINTERACTIVE {state.image_id} "{sf_string(str(out))}")'
@@ -1296,9 +1296,5 @@ def close_project(project_id: str):
     if state is None:
         raise HTTPException(404, "المشروع غير موجود")
 
-    with state.lock:
-        delete_gimp_image(state.image_id)
-        clear_stack(state.undo)
-        clear_stack(state.redo)
-
+    destroy_project_state(state)
     return {"ok": True}
