@@ -1622,6 +1622,35 @@ def replace_text_professional(
     return result, style
 
 
+def apply_permanent_demo_watermark(img: Image.Image) -> Image.Image:
+    """Bake a visible, repeated test-only mark into every edited result."""
+    base = img.convert("RGBA")
+    overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    label = "DEMO - TEST ONLY"
+    size = max(24, int(min(base.size) * 0.055))
+    try:
+        font = ImageFont.truetype(
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", size=size
+        )
+    except Exception:
+        font = ImageFont.load_default()
+
+    step_x = max(280, int(size * 8.5))
+    step_y = max(150, int(size * 4.0))
+    for row, y0 in enumerate(range(-step_y, base.height + step_y, step_y)):
+        offset = 0 if row % 2 == 0 else -(step_x // 2)
+        for x0 in range(offset, base.width + step_x, step_x):
+            draw.text(
+                (x0, y0), label, font=font,
+                fill=(190, 22, 34, 92), stroke_width=max(1, size // 28),
+                stroke_fill=(255, 255, 255, 55)
+            )
+
+    overlay = overlay.rotate(22, resample=Image.Resampling.BICUBIC, expand=False)
+    return Image.alpha_composite(base, overlay).convert("RGB")
+
+
 @app.get("/health")
 def health():
     return {
@@ -1635,6 +1664,7 @@ def health():
         "background_cleanup": "glyph-mask inpaint + local-plane blend",
         "text_render": "same-line point-size calibration + core-ink color + stroke transfer",
         "style_match_version": 6,
+        "output_mode": "permanent-demo-watermark",
         "nonblocking_jobs": True,
         "lazy_ai_imports": True,
         "ocr_selection": "word-level boxes",
@@ -1713,7 +1743,7 @@ async def ocr_replace(
         # source font.
         if original_text and normalize_compare_text(new_text) == normalize_compare_text(original_text):
             return Response(
-                png_bytes(img),
+                png_bytes(apply_permanent_demo_watermark(img)),
                 media_type="image/png",
                 headers={
                     "Cache-Control": "no-store",
@@ -1732,6 +1762,8 @@ async def ocr_replace(
             direction,
             font_weight
         )
+
+        result = apply_permanent_demo_watermark(result)
 
         return Response(
             png_bytes(result),
