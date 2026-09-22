@@ -7,16 +7,18 @@ This service is the server-side editing engine for the Android professional edit
 Android sends high-level, allowlisted operations to FastAPI. FastAPI keeps project sessions and talks to a local GIMP 3 Script-Fu server over its binary TCP protocol. The API never accepts arbitrary Script-Fu from the phone.
 
 Default ports:
-- FastAPI staging: 18085
+- FastAPI: 18083
 - GIMP Script-Fu: 127.0.0.1:10008 (local only)
 
 ## Start
 
 1. Install GIMP 3.x and Python dependencies.
 2. Run `./start_gimp_scriptfu.sh`.
-3. Run `uvicorn app:app --host 0.0.0.0 --port 18085`.
+3. Run `uvicorn app:app --host 0.0.0.0 --port 18083`.
 
 ## Connected editor surface
+
+The old OCR/chat service on port 18083 is retired by this project. The professional editor API now owns port 18083.
 
 The current bridge exposes real GIMP operations for:
 
