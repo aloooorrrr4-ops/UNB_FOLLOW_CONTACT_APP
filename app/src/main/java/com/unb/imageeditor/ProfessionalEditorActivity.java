@@ -241,7 +241,9 @@ public class ProfessionalEditorActivity extends Activity {
                 lastImageTapX = imageX;
                 lastImageTapY = imageY;
                 if ("color_picker".equals(activeTool)) {
-                    setStatus("التقاط لون عند " + Math.round(imageX) + ", " + Math.round(imageY));
+                    pickLocalColor(imageX, imageY);
+                } else if ("fill".equals(activeTool) && projectId != null) {
+                    applyRemote("fill", jsonOf("color", foregroundColor));
                 } else if ("fuzzy_select".equals(activeTool) && projectId != null) {
                     applyRemote("select_contiguous", jsonOf(
                             "x", imageX, "y", imageY, "threshold", 0.15));
@@ -477,8 +479,11 @@ public class ProfessionalEditorActivity extends Activity {
                 loadResources("fonts");
             }));
             toolOptions.addView(actionButton("RTL / LTR", v -> toast("اتجاه النص ضمن الدفعة القادمة")));
-        } else if ("crop".equals(id) || "transform".equals(id) || "perspective".equals(id)) {
-            toolOptions.addView(actionButton("تطبيق", v -> toast("يتم ربط أبعاد التحويل بالـ Canvas")));
+        } else if ("crop".equals(id)) {
+            toolOptions.addView(label("اسحب مستطيلاً على الصورة؛ عند رفع إصبعك يتم القص.", 13, MUTED, false));
+        } else if ("transform".equals(id) || "perspective".equals(id)) {
+            toolOptions.addView(actionButton("خيارات التحويل", v ->
+                    toast("التحويل الحر المتقدم ضمن لوحة التحويل القادمة")));
             toolOptions.addView(actionButton("إلغاء", v -> setStatus("تم إلغاء التحويل")));
         } else if ("gradient".equals(id) || "fill".equals(id)) {
             addSlider(toolOptions, "العتامة", 0, 100, 100, null);
@@ -534,6 +539,23 @@ public class ProfessionalEditorActivity extends Activity {
             int h = Math.max(1, Math.round(Math.abs(y1 - y0)));
             applyRemote("select_rectangle", jsonOf(
                     "x", x, "y", y, "width", w, "height", h));
+            return;
+        }
+
+        if ("crop".equals(activeTool)) {
+            if (points.length < 4) {
+                canvas.clearStrokePreview();
+                return;
+            }
+            float x0 = points[0];
+            float y0 = points[1];
+            float x1 = points[points.length - 2];
+            float y1 = points[points.length - 1];
+            int x = Math.round(Math.min(x0, x1));
+            int y = Math.round(Math.min(y0, y1));
+            int w = Math.max(1, Math.round(Math.abs(x1 - x0)));
+            int h = Math.max(1, Math.round(Math.abs(y1 - y0)));
+            applyRemote("crop", jsonOf("x", x, "y", y, "width", w, "height", h));
             return;
         }
 
@@ -637,6 +659,17 @@ public class ProfessionalEditorActivity extends Activity {
             }
         }
         return array;
+    }
+
+    private void pickLocalColor(float imageX, float imageY) {
+        if (canvas == null || canvas.getBitmap() == null) return;
+        Bitmap bitmap = canvas.getBitmap();
+        int x = Math.max(0, Math.min(bitmap.getWidth() - 1, Math.round(imageX)));
+        int y = Math.max(0, Math.min(bitmap.getHeight() - 1, Math.round(imageY)));
+        int color = bitmap.getPixel(x, y);
+        foregroundColor = String.format("#%06X", (0xFFFFFF & color));
+        canvas.setStrokePreview(brushSize, color);
+        setStatus("اللون الحالي " + foregroundColor + "  •  X " + x + " Y " + y);
     }
 
     private int parseColorSafe(String color) {
