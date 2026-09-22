@@ -1203,38 +1203,254 @@ public class ProfessionalEditorActivity extends Activity {
     private void showMenuGroup(String group) {
         switch (group) {
             case "ملف":
-                toast("جديد • فتح • استيراد • حفظ • حفظ باسم • تصدير");
+                showChoice("ملف", new String[]{
+                        "فتح صورة", "حفظ PNG", "حفظ JPG", "حفظ WEBP", "حفظ XCF"
+                }, index -> {
+                    if (index == 0) chooseImage();
+                    else if (index == 1) exportProject("png");
+                    else if (index == 2) exportProject("jpg");
+                    else if (index == 3) exportProject("webp");
+                    else if (index == 4) exportProject("xcf");
+                });
                 break;
+
             case "تعديل":
-                toast("تراجع • إعادة • قص • نسخ • لصق • تفضيلات");
+                showChoice("تعديل", new String[]{"تراجع", "إعادة"}, index ->
+                        remoteHistory(index == 0 ? "undo" : "redo"));
                 break;
+
             case "تحديد":
-                toast("الكل • لا شيء • عكس • توسيع • تقليص • Feather");
+                showChoice("تحديد", new String[]{
+                        "تحديد الكل", "إلغاء التحديد", "عكس التحديد",
+                        "توسيع 5px", "تقليص 5px", "Feather 5px",
+                        "حدود 2px", "Sharpen"
+                }, index -> {
+                    switch (index) {
+                        case 0: applyRemote("select_all", new JSONObject()); break;
+                        case 1: applyRemote("select_none", new JSONObject()); break;
+                        case 2: applyRemote("invert_selection", new JSONObject()); break;
+                        case 3: applyRemote("grow", json("steps", 5)); break;
+                        case 4: applyRemote("shrink", json("steps", 5)); break;
+                        case 5: applyRemote("feather", json("radius", 5)); break;
+                        case 6: applyRemote("border", json("radius", 2)); break;
+                        case 7: applyRemote("sharpen_selection", new JSONObject()); break;
+                    }
+                });
                 break;
+
+            case "عرض":
+                showChoice("عرض", new String[]{"ملاءمة للصورة", "100%", "تكبير 125%", "تصغير 80%"},
+                        index -> {
+                            if (canvas == null) return;
+                            if (index == 0) canvas.fitToView();
+                            else if (index == 1) canvas.setZoom(1f);
+                            else if (index == 2) canvas.setZoom(canvas.getZoom() * 1.25f);
+                            else canvas.setZoom(canvas.getZoom() * 0.8f);
+                        });
+                break;
+
             case "صورة":
-                toast("Mode • Canvas Size • Scale • Rotate • Guides");
+                showChoice("صورة", new String[]{
+                        "تدوير 90° يمين", "تدوير 90° يسار", "تدوير 180°",
+                        "عكس أفقي", "عكس عمودي", "تغيير الحجم"
+                }, index -> {
+                    if (index == 0) applyRemote("rotate", json("degrees", 90));
+                    else if (index == 1) applyRemote("rotate", json("degrees", -90));
+                    else if (index == 2) applyRemote("rotate", json("degrees", 180));
+                    else if (index == 3) applyRemote("flip_horizontal", new JSONObject());
+                    else if (index == 4) applyRemote("flip_vertical", new JSONObject());
+                    else showResizeDialog();
+                });
                 break;
+
             case "طبقة":
-                showInspector("layers");
-                setPhoneInspectorExpanded(true);
-                toast("طبقة جديدة • Mask • Group • Merge • Blend");
+                showChoice("طبقة", new String[]{
+                        "فتح لوحة الطبقات", "طبقة جديدة", "مجموعة جديدة",
+                        "إضافة قناع أبيض", "دمج المرئي", "Flatten"
+                }, index -> {
+                    if (index == 0) {
+                        openInspectorTab("layers");
+                        refreshLayers();
+                    } else if (index == 1) {
+                        applyRemote("add_layer", jsonOf("name", "Layer"));
+                    } else if (index == 2) {
+                        applyRemote("add_group", jsonOf("name", "Group"));
+                    } else if (index == 3) {
+                        applyRemote("add_mask", jsonOf("type", "white"));
+                    } else if (index == 4) {
+                        applyRemote("merge_visible", new JSONObject());
+                    } else {
+                        applyRemote("flatten", new JSONObject());
+                    }
+                });
                 break;
+
             case "ألوان":
-                toast("Levels • Curves • Exposure • Hue/Saturation • Color Balance");
+                showChoice("ألوان", new String[]{
+                        "Brightness / Contrast", "Hue / Saturation",
+                        "Levels", "Curves", "Threshold", "Posterize",
+                        "Desaturate", "Invert", "Equalize", "Color Balance"
+                }, index -> {
+                    if (index == 0 || index == 1) {
+                        openInspectorTab("properties");
+                    } else if (index == 2) {
+                        applyRemote("levels", new JSONObject());
+                    } else if (index == 3) {
+                        applyRemote("curves", new JSONObject());
+                    } else if (index == 4) {
+                        showNumericOperationDialog("Threshold 0-100", "threshold", "low", 50, 0, 100, true);
+                    } else if (index == 5) {
+                        showNumericOperationDialog("Posterize 2-256", "posterize", "levels", 4, 2, 256, false);
+                    } else if (index == 6) {
+                        applyRemote("desaturate", new JSONObject());
+                    } else if (index == 7) {
+                        applyRemote("invert", new JSONObject());
+                    } else if (index == 8) {
+                        applyRemote("equalize", new JSONObject());
+                    } else {
+                        applyRemote("color_balance", new JSONObject());
+                    }
+                });
                 break;
+
             case "أدوات":
-                toast("Transform • Paint • Text • Clone • Heal • Paths");
+                showChoice("أدوات", new String[]{
+                        "تحريك", "تحديد", "لاسو", "تحديد سحري", "حسب اللون",
+                        "فرشاة", "قلم", "ممحاة", "تدرج", "نص",
+                        "Clone", "Heal", "Smudge", "Dodge/Burn", "Color Picker"
+                }, index -> {
+                    String[] ids = {
+                            "move", "select", "free_select", "fuzzy_select", "color_select",
+                            "brush", "pencil", "eraser", "gradient", "text",
+                            "clone", "heal", "smudge", "dodge_burn", "color_picker"
+                    };
+                    String[] names = {
+                            "تحريك", "تحديد", "لاسو", "سحري", "حسب لون",
+                            "فرشاة", "قلم", "ممحاة", "تدرج", "نص",
+                            "استنساخ", "ترميم", "تلطيخ", "إضاءة", "لون"
+                    };
+                    if (index >= 0 && index < ids.length) showTool(ids[index], names[index], null);
+                });
                 break;
+
             case "فلاتر":
-                toast("Blur • Enhance • Distort • Noise • Edge • Render • GEGL");
+                showChoice("فلاتر GEGL", new String[]{
+                        "Gaussian Blur", "Unsharp Mask", "Noise Reduction",
+                        "Bloom", "Emboss", "Edge", "Oilify", "Pixelize",
+                        "Mosaic", "Motion Blur", "Color Temperature"
+                }, index -> {
+                    String[] ops = {
+                            "gaussian_blur", "unsharp_mask", "noise_reduction",
+                            "bloom", "emboss", "edge", "oilify", "pixelize",
+                            "mosaic", "motion_blur", "color_temperature"
+                    };
+                    if (index >= 0 && index < ops.length) {
+                        applyRemote(ops[index], new JSONObject());
+                    }
+                });
                 break;
+
             case "نوافذ":
-                openInspectorTab("layers");
-                toast("Layers • Channels • Paths • Brushes • Fonts • History");
+                showChoice("نوافذ", new String[]{
+                        "خصائص", "طبقات", "قنوات", "مسارات", "موارد", "السجل"
+                }, index -> {
+                    String[] tabs = {"properties", "layers", "channels", "paths", "resources", "history"};
+                    if (index < 0 || index >= tabs.length) return;
+                    openInspectorTab(tabs[index]);
+                    if (index == 1) refreshLayers();
+                    else if (index == 2) refreshChannels();
+                    else if (index == 3) refreshPaths();
+                    else if (index == 4) loadResources("fonts");
+                });
                 break;
+
             default:
-                toast("Zoom • Grid • Guides • Snap • Fullscreen");
+                toast("القائمة غير متاحة");
         }
+    }
+
+    private interface ChoiceHandler {
+        void onChoice(int index);
+    }
+
+    private void showChoice(String title, String[] items, ChoiceHandler handler) {
+        new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setItems(items, (dialog, which) -> {
+                    if (handler != null) handler.onChoice(which);
+                })
+                .setNegativeButton("إغلاق", null)
+                .show();
+    }
+
+    private void showResizeDialog() {
+        if (projectId == null) {
+            toast("افتح صورة أولاً");
+            return;
+        }
+
+        LinearLayout box = column();
+        box.setPadding(dp(18), dp(8), dp(18), 0);
+
+        EditText width = new EditText(this);
+        width.setHint("العرض px");
+        width.setInputType(InputType.TYPE_CLASS_NUMBER);
+        width.setTextColor(TEXT);
+        width.setHintTextColor(MUTED);
+
+        EditText height = new EditText(this);
+        height.setHint("الارتفاع px");
+        height.setInputType(InputType.TYPE_CLASS_NUMBER);
+        height.setTextColor(TEXT);
+        height.setHintTextColor(MUTED);
+
+        if (canvas != null && canvas.getBitmap() != null) {
+            width.setText(String.valueOf(canvas.getBitmap().getWidth()));
+            height.setText(String.valueOf(canvas.getBitmap().getHeight()));
+        }
+
+        box.addView(width);
+        box.addView(height);
+
+        new AlertDialog.Builder(this)
+                .setTitle("تغيير حجم الصورة")
+                .setView(box)
+                .setNegativeButton("إلغاء", null)
+                .setPositiveButton("تطبيق", (dialog, which) -> {
+                    try {
+                        int w = Integer.parseInt(width.getText().toString());
+                        int h = Integer.parseInt(height.getText().toString());
+                        applyRemote("resize", jsonOf("width", w, "height", h));
+                    } catch (Exception e) {
+                        toast("أدخل عرضاً وارتفاعاً صحيحين");
+                    }
+                })
+                .show();
+    }
+
+    private void showNumericOperationDialog(String title, String operation, String key,
+                                            int initial, int min, int max, boolean normalize100) {
+        EditText value = new EditText(this);
+        value.setText(String.valueOf(initial));
+        value.setInputType(InputType.TYPE_CLASS_NUMBER |
+                InputType.TYPE_NUMBER_FLAG_DECIMAL |
+                InputType.TYPE_NUMBER_FLAG_SIGNED);
+
+        new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setView(value)
+                .setNegativeButton("إلغاء", null)
+                .setPositiveButton("تطبيق", (dialog, which) -> {
+                    try {
+                        double v = Double.parseDouble(value.getText().toString());
+                        v = Math.max(min, Math.min(max, v));
+                        if (normalize100) v /= 100.0;
+                        applyRemote(operation, json(key, v));
+                    } catch (Exception e) {
+                        toast("قيمة غير صحيحة");
+                    }
+                })
+                .show();
     }
 
     @Override
