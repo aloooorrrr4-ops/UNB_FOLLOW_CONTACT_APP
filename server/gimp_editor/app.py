@@ -1211,29 +1211,53 @@ def operation(project_id: str, request: OperationRequest):
 @app.post("/api/editor/projects/{project_id}/undo")
 def undo(project_id: str):
     state = project_or_404(project_id)
-    with state.lock:
+    with engine_lock, state.lock:
         if not state.undo:
             raise HTTPException(409, "لا توجد خطوة أقدم")
-        current_copy = sf_int(f"(car (gimp-image-duplicate {state.image_id}))")
-        state.redo.append(current_copy)
+
         old_current = state.image_id
-        state.image_id = state.undo.pop()
+        candidate = state.undo[-1]
+        current_copy = sf_int(f"(car (gimp-image-duplicate {old_current}))")
+        state.image_id = candidate
+        try:
+            preview_url = render_preview(state)
+        except Exception as exc:
+            state.image_id = old_current
+            delete_gimp_image(current_copy)
+            raise HTTPException(500, f"فشل إنشاء معاينة التراجع: {exc}")
+
+        state.undo.pop()
+        state.redo.append(current_copy)
+        while len(state.redo) > MAX_HISTORY:
+            delete_gimp_image(state.redo.pop(0))
         delete_gimp_image(old_current)
-        return {"ok": True, "preview_url": render_preview(state)}
+        return {"ok": True, "preview_url": preview_url}
 
 
 @app.post("/api/editor/projects/{project_id}/redo")
 def redo(project_id: str):
     state = project_or_404(project_id)
-    with state.lock:
+    with engine_lock, state.lock:
         if not state.redo:
             raise HTTPException(409, "لا توجد خطوة لإعادتها")
-        current_copy = sf_int(f"(car (gimp-image-duplicate {state.image_id}))")
-        state.undo.append(current_copy)
+
         old_current = state.image_id
-        state.image_id = state.redo.pop()
+        candidate = state.redo[-1]
+        current_copy = sf_int(f"(car (gimp-image-duplicate {old_current}))")
+        state.image_id = candidate
+        try:
+            preview_url = render_preview(state)
+        except Exception as exc:
+            state.image_id = old_current
+            delete_gimp_image(current_copy)
+            raise HTTPException(500, f"فشل إنشاء معاينة الإعادة: {exc}")
+
+        state.redo.pop()
+        state.undo.append(current_copy)
+        while len(state.undo) > MAX_HISTORY:
+            delete_gimp_image(state.undo.pop(0))
         delete_gimp_image(old_current)
-        return {"ok": True, "preview_url": render_preview(state)}
+        return {"ok": True, "preview_url": preview_url}
 
 
 @app.get("/api/editor/projects/{project_id}/export")
