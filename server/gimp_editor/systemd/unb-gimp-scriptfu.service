@@ -1,0 +1,17 @@
+[Unit]
+Description=UNB GIMP 3 Script-Fu Engine
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/unb-pro-editor/gimp_editor
+Environment=UNB_GIMP_HOST=127.0.0.1
+Environment=UNB_GIMP_PORT=10008
+Environment=UNB_GIMP_LOG=/var/log/unb-gimp-scriptfu.log
+ExecStart=/opt/unb-pro-editor/gimp_editor/start_gimp_scriptfu.sh
+Restart=always
+RestartSec=3
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target
