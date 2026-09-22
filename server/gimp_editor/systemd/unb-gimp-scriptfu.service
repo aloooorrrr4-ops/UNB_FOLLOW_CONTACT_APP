@@ -4,14 +4,22 @@ After=network.target
 
 [Service]
 Type=simple
+User=unb-editor
+Group=unb-editor
 WorkingDirectory=/opt/unb-pro-editor/gimp_editor
+Environment=HOME=/var/lib/unb-pro-editor
 Environment=UNB_GIMP_HOST=127.0.0.1
 Environment=UNB_GIMP_PORT=10008
-Environment=UNB_GIMP_LOG=/var/log/unb-gimp-scriptfu.log
+Environment=UNB_GIMP_LOG=/var/lib/unb-pro-editor/gimp-scriptfu.log
 ExecStart=/opt/unb-pro-editor/gimp_editor/start_gimp_scriptfu.sh
 Restart=always
 RestartSec=3
 TimeoutStopSec=20
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/unb-pro-editor
 
 [Install]
 WantedBy=multi-user.target
