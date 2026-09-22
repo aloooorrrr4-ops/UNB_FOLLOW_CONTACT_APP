@@ -44,6 +44,7 @@ public class AiProcessService extends Service {
     public static final int OCR_DETECT = 5;
     public static final int OCR_REPLACE = 6;
     public static final int CHAT_EDIT = 7;
+    public static final int CHAT_EXTRACT = 8;
 
     public static final String FIRST = "first_input.img";
     public static final String SECOND = "second_input.img";
@@ -57,6 +58,7 @@ public class AiProcessService extends Service {
     public static final String OCR_RESULT = "ocr_result.png";
     public static final String CHAT_INPUT = "chat_input.img";
     public static final String CHAT_RESULT = "chat_result.png";
+    public static final String CHAT_TEXT_RESULT = "chat_text_result.json";
 
     private static final String CHANNEL_ID = "unb_ai_processing";
     private static final int NOTIFICATION_ID = 4201;
@@ -77,7 +79,7 @@ public class AiProcessService extends Service {
         final int stage = intent.getIntExtra(EXTRA_STAGE, 0);
         final String server = intent.getStringExtra(EXTRA_SERVER);
 
-        if (stage < 1 || stage > CHAT_EDIT || server == null || server.trim().isEmpty()) {
+        if (stage < 1 || stage > CHAT_EXTRACT || server == null || server.trim().isEmpty()) {
             stopSelf(startId);
             return START_NOT_STICKY;
         }
@@ -154,6 +156,21 @@ public class AiProcessService extends Service {
                     Part.file("target_cutout", "stage1.png", "image/png", targetCutout)
             );
             writeFile(new File(dir, STAGE4), result);
+            return;
+        }
+
+        if (stage == CHAT_EXTRACT) {
+            byte[] image = readFile(required(dir, CHAT_INPUT));
+            byte[] result = postMultipart(
+                    server + "/api/chat/extract",
+                    Part.file("image", "chat.png", "image/png", image)
+            );
+
+            if (result.length == 0) {
+                throw new Exception("الخادم لم يرجع نصوص");
+            }
+
+            writeFile(new File(dir, CHAT_TEXT_RESULT), result);
             return;
         }
 
@@ -248,6 +265,7 @@ public class AiProcessService extends Service {
         if (stage == OCR_DETECT) return "جاري اكتشاف النصوص العربية والإنجليزية";
         if (stage == OCR_REPLACE) return "جاري استبدال النص داخل الصورة";
         if (stage == CHAT_EDIT) return "جاري تنفيذ تعديل الصورة — يمكنك الخروج من التطبيق";
+        if (stage == CHAT_EXTRACT) return "جاري استخراج النصوص من الصورة";
         return "جاري تنفيذ المرحلة " + stage + " بالذكاء الاصطناعي";
     }
 
@@ -255,6 +273,7 @@ public class AiProcessService extends Service {
         if (stage == OCR_DETECT) return "تم اكتشاف النصوص";
         if (stage == OCR_REPLACE) return "تم استبدال النص";
         if (stage == CHAT_EDIT) return "تم تنفيذ تعديل الصورة";
+        if (stage == CHAT_EXTRACT) return "تم استخراج النصوص";
         return "تمت المرحلة " + stage + " بنجاح";
     }
 
