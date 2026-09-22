@@ -146,6 +146,29 @@ public class EditorApiClient {
         });
     }
 
+    public void getJson(String path, Callback<JSONObject> cb) {
+        executor.execute(() -> {
+            HttpURLConnection conn = null;
+            try {
+                conn = open(path, "GET");
+                ensureOk(conn);
+                cb.onSuccess(new JSONObject(readText(conn.getInputStream())));
+            } catch (Exception e) {
+                cb.onError(clean(e));
+            } finally {
+                if (conn != null) conn.disconnect();
+            }
+        });
+    }
+
+    public void getProjectSection(String projectId, String section, Callback<JSONObject> cb) {
+        getJson("/api/editor/projects/" + encode(projectId) + "/" + encode(section), cb);
+    }
+
+    public void getResources(String kind, Callback<JSONObject> cb) {
+        getJson("/api/editor/resources/" + encode(kind), cb);
+    }
+
     public byte[] downloadBytes(String relativeOrAbsolute) throws Exception {
         String target = absoluteUrl(relativeOrAbsolute);
         HttpURLConnection conn = (HttpURLConnection) new URL(target).openConnection();
