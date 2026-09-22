@@ -26,6 +26,8 @@ public class AiProcessService extends Service {
     public static final String EXTRA_STAGE = "stage";
     public static final String EXTRA_SERVER = "server";
     public static final String EXTRA_MESSAGE = "message";
+    public static final String EXTRA_PROMPT = "prompt";
+    public static final String EXTRA_CHAT_PATH = "chat_path";
 
     public static final String EXTRA_X = "x";
     public static final String EXTRA_Y = "y";
@@ -41,6 +43,7 @@ public class AiProcessService extends Service {
 
     public static final int OCR_DETECT = 5;
     public static final int OCR_REPLACE = 6;
+    public static final int CHAT_EDIT = 7;
 
     public static final String FIRST = "first_input.img";
     public static final String SECOND = "second_input.img";
@@ -52,6 +55,8 @@ public class AiProcessService extends Service {
     public static final String OCR_INPUT = "ocr_input.img";
     public static final String OCR_BLOCKS = "ocr_blocks.json";
     public static final String OCR_RESULT = "ocr_result.png";
+    public static final String CHAT_INPUT = "chat_input.img";
+    public static final String CHAT_RESULT = "chat_result.png";
 
     private static final String CHANNEL_ID = "unb_ai_processing";
     private static final int NOTIFICATION_ID = 4201;
@@ -72,7 +77,7 @@ public class AiProcessService extends Service {
         final int stage = intent.getIntExtra(EXTRA_STAGE, 0);
         final String server = intent.getStringExtra(EXTRA_SERVER);
 
-        if (stage < 1 || stage > OCR_REPLACE || server == null || server.trim().isEmpty()) {
+        if (stage < 1 || stage > CHAT_EDIT || server == null || server.trim().isEmpty()) {
             stopSelf(startId);
             return START_NOT_STICKY;
         }
@@ -152,6 +157,33 @@ public class AiProcessService extends Service {
             return;
         }
 
+        if (stage == CHAT_EDIT) {
+            byte[] image = readFile(required(dir, CHAT_INPUT));
+            String prompt = safe(intent.getStringExtra(EXTRA_PROMPT)).trim();
+            String path = defaultString(intent.getStringExtra(EXTRA_CHAT_PATH), "/api/chat/edit").trim();
+
+            if (prompt.isEmpty()) {
+                throw new Exception("طلب التعديل فارغ");
+            }
+
+            if (!path.startsWith("/")) {
+                path = "/" + path;
+            }
+
+            byte[] result = postMultipart(
+                    server + path,
+                    Part.file("image", "chat.png", "image/png", image),
+                    Part.text("prompt", prompt)
+            );
+
+            if (result.length == 0) {
+                throw new Exception("الخادم لم يرجع صورة");
+            }
+
+            writeFile(new File(dir, CHAT_RESULT), result);
+            return;
+        }
+
         if (stage == OCR_DETECT) {
             File source = new File(dir, OCR_RESULT);
             if (!source.exists() || source.length() == 0) {
@@ -215,12 +247,14 @@ public class AiProcessService extends Service {
     private String notificationText(int stage) {
         if (stage == OCR_DETECT) return "جاري اكتشاف النصوص العربية والإنجليزية";
         if (stage == OCR_REPLACE) return "جاري استبدال النص داخل الصورة";
+        if (stage == CHAT_EDIT) return "جاري تنفيذ تعديل الصورة — يمكنك الخروج من التطبيق";
         return "جاري تنفيذ المرحلة " + stage + " بالذكاء الاصطناعي";
     }
 
     private String doneText(int stage) {
         if (stage == OCR_DETECT) return "تم اكتشاف النصوص";
         if (stage == OCR_REPLACE) return "تم استبدال النص";
+        if (stage == CHAT_EDIT) return "تم تنفيذ تعديل الصورة";
         return "تمت المرحلة " + stage + " بنجاح";
     }
 
