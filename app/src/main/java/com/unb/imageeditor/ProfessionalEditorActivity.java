@@ -1205,47 +1205,132 @@ public class ProfessionalEditorActivity extends Activity {
                 data == null || data.getData() == null) return;
 
         Uri uri = data.getData();
-        try {
-            sourceBytes = readAll(uri);
-            sourceName = queryName(uri);
-            Bitmap bitmap = BitmapFactory.decodeByteArray(sourceBytes, 0, sourceBytes.length);
-            if (bitmap == null) throw new Exception("صيغة الصورة غير مدعومة");
-            canvas.setBitmap(bitmap);
-            setStatus("جاري إنشاء مشروع على السيرفر...");
-            setBusy(true);
+        loadSelectedImage(uri);
+    }
 
-            api.createProject(sourceBytes, sourceName, new EditorApiClient.Callback<EditorApiClient.Project>() {
-                @Override
-                public void onSuccess(EditorApiClient.Project p) {
-                    runOnUiThread(() -> {
-                        projectId = p.id;
-                        if (p.preview != null) canvas.setBitmap(p.preview);
-                        projectText.setText("Project " + projectId.substring(0, Math.min(8, projectId.length())));
-                        setBusy(false);
-                        setStatus("المشروع متصل بالسيرفر");
-                        addHistory("فتح " + sourceName);
-                        refreshRemotePanels();
-                    });
-                }
+    private void loadSelectedImage(Uri uri) {
+        if (uri == null || busy) return;
 
-                @Override
-                public void onError(String message) {
-                    runOnUiThread(() -> {
-                        setBusy(false);
-                        if (message != null && message.contains("404")) {
-                            setStatus("الصورة مفتوحة محليًا — السيرفر ما زال على المحرك القديم");
-                            if (projectText != null) projectText.setText("بانتظار تحديث المحرك");
-                        } else {
-                            setStatus("الصورة محليًا — السيرفر: " + shortText(message));
-                        }
-                        addHistory("فتح محلي " + sourceName);
-                        refreshLayers();
-                    });
-                }
+        String oldProject = projectId;
+        projectId = null;
+        if (projectText != null) projectText.setText("بدون مشروع");
+        if (oldProject != null) {
+            api.closeProject(oldProject, new EditorApiClient.Callback<JSONObject>() {
+                @Override public void onSuccess(JSONObject value) {}
+                @Override public void onError(String message) {}
             });
-        } catch (Exception e) {
-            toast("تعذر فتح الصورة: " + e.getMessage());
         }
+
+        setBusy(true);
+        setStatus("جاري قراءة الصورة...");
+        ioExecutor.execute(() -> {
+            try {
+                long declaredSize = querySize(uri);
+                if (declaredSize > MAX_LOCAL_IMAGE_BYTES) {
+                    throw new Exception("حجم الصورة أكبر من 80MB");
+                }
+
+                byte[] bytes = readAllLimited(uri, MAX_LOCAL_IMAGE_BYTES);
+                String name = queryName(uri);
+                Bitmap preview = decodePreview(bytes, PREVIEW_MAX_DIMENSION);
+                if (preview == null) throw new Exception("صيغة الصورة غير مدعومة");
+
+                sourceBytes = bytes;
+                sourceName = name;
+
+                runOnUiThread(() -> {
+                    canvas.setBitmap(preview);
+                    setStatus("جاري إنشاء مشروع على السيرفر...");
+                });
+
+                api.createProject(bytes, name, new EditorApiClient.Callback<EditorApiClient.Project>() {
+                    @Override
+                    public void onSuccess(EditorApiClient.Project p) {
+                        runOnUiThread(() -> {
+                            projectId = p.id;
+                            if (p.preview != null) canvas.setBitmap(p.preview);
+                            projectText.setText("Project " +
+                                    projectId.substring(0, Math.min(8, projectId.length())));
+                            setBusy(false);
+                            setStatus("المشروع متصل بالسيرفر");
+                            addHistory("فتح " + sourceName);
+                            refreshRemotePanels();
+                        });
+                    }
+
+                    @Override
+                    public void onError(String message) {
+                        runOnUiThread(() -> {
+                            projectId = null;
+                            setBusy(false);
+                            if (message != null && message.contains("401")) {
+                                setStatus("الصورة محليًا — أدخل API Key من زر سيرفر");
+                                projectText.setText("مصادقة مطلوبة");
+                            } else if (message != null && message.contains("404")) {
+                                setStatus("الصورة مفتوحة محليًا — السيرفر ما زال على المحرك القديم");
+                                projectText.setText("بانتظار تحديث المحرك");
+                            } else {
+                                setStatus("الصورة محليًا — السيرفر: " + shortText(message));
+                            }
+                            addHistory("فتح محلي " + sourceName);
+                            refreshLayers();
+                        });
+                    }
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    projectId = null;
+                    setBusy(false);
+                    toast("تعذر فتح الصورة: " + e.getMessage());
+                    setStatus("فشل فتح الصورة");
+                });
+            }
+        });
+    }
+
+    private long querySize(Uri uri) {
+        try (Cursor cursor = getContentResolver().query(
+                uri, new String[]{OpenableColumns.SIZE}, null, null, null)) {
+            if (cursor != null && cursor.moveToFirst()) {
+                int index = cursor.getColumnIndex(OpenableColumns.SIZE);
+                if (index >= 0 && !cursor.isNull(index)) return cursor.getLong(index);
+            }
+        } catch (Exception ignored) {}
+        return -1L;
+    }
+
+    private byte[] readAllLimited(Uri uri, long maxBytes) throws Exception {
+        try (InputStream in = getContentResolver().openInputStream(uri);
+             ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            if (in == null) throw new Exception("تعذر قراءة الملف");
+            byte[] buffer = new byte[16384];
+            long total = 0;
+            int n;
+            while ((n = in.read(buffer)) != -1) {
+                total += n;
+                if (total > maxBytes) throw new Exception("حجم الصورة أكبر من 80MB");
+                out.write(buffer, 0, n);
+            }
+            return out.toByteArray();
+        }
+    }
+
+    private Bitmap decodePreview(byte[] bytes, int maxDimension) {
+        BitmapFactory.Options bounds = new BitmapFactory.Options();
+        bounds.inJustDecodeBounds = true;
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.length, bounds);
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null;
+
+        int sample = 1;
+        while ((bounds.outWidth / sample) > maxDimension ||
+                (bounds.outHeight / sample) > maxDimension) {
+            sample *= 2;
+        }
+
+        BitmapFactory.Options options = new BitmapFactory.Options();
+        options.inSampleSize = sample;
+        options.inPreferredConfig = Bitmap.Config.ARGB_8888;
+        return BitmapFactory.decodeByteArray(bytes, 0, bytes.length, options);
     }
 
     private void applyRemote(String operation, JSONObject params) {
