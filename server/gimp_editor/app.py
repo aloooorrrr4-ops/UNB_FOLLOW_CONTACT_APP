@@ -383,12 +383,14 @@ def operation_catalog() -> dict[str, list[str]]:
         "edit": ["undo", "redo"],
         "selection": ["select_all", "select_none", "invert_selection", "select_rectangle", "select_ellipse",
                       "feather", "grow", "shrink"],
-        "image": ["resize", "crop", "rotate", "flip_horizontal", "flip_vertical"],
+        "image": ["resize", "crop", "rotate", "flip_horizontal", "flip_vertical",
+                  "translate_layer", "scale_layer", "rotate_layer", "perspective_layer", "transform_2d"],
         "layers": ["add_layer", "delete_layer", "duplicate_layer", "rename_layer", "visibility",
                    "opacity", "blend_mode", "merge_visible", "flatten"],
         "colors": ["brightness", "contrast", "hue_saturation", "levels", "curves", "color_balance",
                    "threshold", "posterize", "desaturate", "invert"],
-        "paint": ["pencil", "paintbrush", "airbrush", "eraser", "fill", "stroke_selection"],
+        "paint": ["pencil", "paintbrush", "airbrush", "eraser", "fill", "stroke_selection",
+                  "clone", "heal", "smudge", "dodge_burn", "gradient"],
         "text": ["add_text", "edit_text", "font", "font_size", "text_color"],
         "filters": ["gaussian_blur", "unsharp_mask", "noise_reduction", "bloom", "emboss",
                     "edge", "oilify", "pixelize", "mosaic", "motion_blur", "drop_shadow",
@@ -441,7 +443,9 @@ def capabilities():
             "add_group", "move_to_group", "add_mask", "remove_mask", "apply_mask",
             "add_channel", "delete_channel", "channel_visibility", "channel_opacity",
             "add_path", "delete_path", "path_visibility", "text_to_path",
-            "levels", "curves", "threshold", "posterize", "color_balance", "equalize"
+            "levels", "curves", "threshold", "posterize", "color_balance", "equalize",
+            "clone", "heal", "smudge", "dodge_burn", "gradient",
+            "translate_layer", "scale_layer", "rotate_layer", "perspective_layer", "transform_2d"
         ],
         "architecture": "allowlisted PDB bridge; no arbitrary remote script execution",
     }
@@ -780,6 +784,127 @@ def apply_operation_to_gimp(state: ProjectState, op: str, p: dict[str, Any]):
     elif op == "equalize":
         layer_id = requested_layer(img, p)
         sf.call(f"(gimp-drawable-equalize {layer_id} FALSE)")
+
+    elif op == "translate_layer":
+        layer_id = requested_layer(img, p)
+        x = float(p.get("x", 0))
+        y = float(p.get("y", 0))
+        sf.call(f"(gimp-item-transform-translate {layer_id} {x:.5f} {y:.5f})")
+
+    elif op == "scale_layer":
+        layer_id = requested_layer(img, p)
+        x0 = float(p.get("x0", 0))
+        y0 = float(p.get("y0", 0))
+        x1 = float(p.get("x1", 0))
+        y1 = float(p.get("y1", 0))
+        if x1 <= x0 or y1 <= y0:
+            raise HTTPException(400, "إحداثيات التحجيم غير صحيحة")
+        sf.call(f"(gimp-item-transform-scale {layer_id} {x0:.5f} {y0:.5f} {x1:.5f} {y1:.5f})")
+
+    elif op == "rotate_layer":
+        layer_id = requested_layer(img, p)
+        angle = float(p.get("radians", 0))
+        auto_center = "TRUE" if bool(p.get("auto_center", True)) else "FALSE"
+        cx = float(p.get("center_x", 0))
+        cy = float(p.get("center_y", 0))
+        sf.call(
+            f"(gimp-item-transform-rotate {layer_id} {angle:.8f} "
+            f"{auto_center} {cx:.5f} {cy:.5f})"
+        )
+
+    elif op == "perspective_layer":
+        layer_id = requested_layer(img, p)
+        vals = [float(p.get(k, 0)) for k in ("x0","y0","x1","y1","x2","y2","x3","y3")]
+        sf.call(
+            "(gimp-item-transform-perspective "
+            + str(layer_id) + " " + " ".join(f"{v:.5f}" for v in vals) + ")"
+        )
+
+    elif op == "transform_2d":
+        layer_id = requested_layer(img, p)
+        sx = float(p.get("source_x", 0))
+        sy = float(p.get("source_y", 0))
+        scalex = float(p.get("scale_x", 1))
+        scaley = float(p.get("scale_y", 1))
+        angle = float(p.get("radians", 0))
+        dx = float(p.get("dest_x", sx))
+        dy = float(p.get("dest_y", sy))
+        sf.call(
+            f"(gimp-item-transform-2d {layer_id} {sx:.5f} {sy:.5f} "
+            f"{scalex:.6f} {scaley:.6f} {angle:.8f} {dx:.5f} {dy:.5f})"
+        )
+
+    elif op == "clone":
+        layer_id = requested_layer(img, p)
+        src_layer = int(p.get("source_layer_id", layer_id))
+        src_x = float(p.get("source_x", 0))
+        src_y = float(p.get("source_y", 0))
+        vector, count = scriptfu_points(p.get("points"))
+        size = max(1.0, min(2000.0, float(p.get("size", 30))))
+        sf.call(f"(gimp-context-set-brush-size {size:.3f})")
+        sf.call(
+            f"(gimp-clone {layer_id} {src_layer} IMAGE-CLONE "
+            f"{src_x:.5f} {src_y:.5f} {count} {vector})"
+        )
+
+    elif op == "heal":
+        layer_id = requested_layer(img, p)
+        src_layer = int(p.get("source_layer_id", layer_id))
+        src_x = float(p.get("source_x", 0))
+        src_y = float(p.get("source_y", 0))
+        vector, count = scriptfu_points(p.get("points"))
+        size = max(1.0, min(2000.0, float(p.get("size", 30))))
+        sf.call(f"(gimp-context-set-brush-size {size:.3f})")
+        sf.call(
+            f"(gimp-heal {layer_id} {src_layer} {src_x:.5f} {src_y:.5f} "
+            f"{count} {vector})"
+        )
+
+    elif op == "smudge":
+        layer_id = requested_layer(img, p)
+        vector, count = scriptfu_points(p.get("points"))
+        pressure = max(0.0, min(100.0, float(p.get("pressure", 50))))
+        size = max(1.0, min(2000.0, float(p.get("size", 30))))
+        sf.call(f"(gimp-context-set-brush-size {size:.3f})")
+        sf.call(f"(gimp-smudge {layer_id} {pressure:.3f} {count} {vector})")
+
+    elif op == "dodge_burn":
+        layer_id = requested_layer(img, p)
+        vector, count = scriptfu_points(p.get("points"))
+        exposure = max(0.0, min(100.0, float(p.get("exposure", 50))))
+        kind = "DODGE" if str(p.get("type", "dodge")).lower() == "dodge" else "BURN"
+        tone_map = {
+            "shadows": "TRANSFER-SHADOWS",
+            "midtones": "TRANSFER-MIDTONES",
+            "highlights": "TRANSFER-HIGHLIGHTS",
+        }
+        tone = tone_map.get(str(p.get("range", "midtones")).lower(), "TRANSFER-MIDTONES")
+        sf.call(f"(gimp-dodgeburn {layer_id} {exposure:.3f} {kind} {tone} {count} {vector})")
+
+    elif op == "gradient":
+        layer_id = requested_layer(img, p)
+        x1 = float(p.get("x1", 0))
+        y1 = float(p.get("y1", 0))
+        x2 = float(p.get("x2", 100))
+        y2 = float(p.get("y2", 0))
+        gradient_map = {
+            "linear": "GRADIENT-LINEAR",
+            "radial": "GRADIENT-RADIAL",
+            "square": "GRADIENT-SQUARE",
+            "bilinear": "GRADIENT-BILINEAR",
+        }
+        gradient_type = gradient_map.get(str(p.get("type", "linear")).lower(), "GRADIENT-LINEAR")
+        if "foreground" in p:
+            sf.call(f"(gimp-context-set-foreground {scriptfu_color(p.get('foreground'))})")
+        if "background" in p:
+            sf.call(f"(gimp-context-set-background {scriptfu_color(p.get('background'))})")
+        sf.call("(gimp-context-set-gradient-fg-bg-rgb)")
+        reverse = "TRUE" if bool(p.get("reverse", False)) else "FALSE"
+        sf.call(f"(gimp-context-set-gradient-reverse {reverse})")
+        sf.call(
+            f"(gimp-drawable-edit-gradient-fill {layer_id} {gradient_type} 0 "
+            f"FALSE 3 0.2 TRUE {x1:.5f} {y1:.5f} {x2:.5f} {y2:.5f})"
+        )
 
     elif op == "select_rectangle":
         x = int(p.get("x", 0))
