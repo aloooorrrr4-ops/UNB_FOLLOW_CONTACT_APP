@@ -159,8 +159,9 @@ public class OcrEditorActivity extends Activity {
         imagePreview.setOnBlockClickListener(this::showEditDialog);
 
         Button pick = new Button(this);
-        pick.setText("اختيار صورة عامة");
+        pick.setText("رفع الصور — غير متاح تجريبيًا");
         styleSecondaryButton(pick);
+        pick.setEnabled(false);
 
         Button demo = new Button(this);
         demo.setText("إنشاء نموذج تجريبي");
@@ -211,7 +212,6 @@ public class OcrEditorActivity extends Activity {
         blocksContainer.setOrientation(LinearLayout.VERTICAL);
         root.addView(blocksContainer);
 
-        pick.setOnClickListener(v -> chooseImage());
         demo.setOnClickListener(v -> createDemoTemplate());
         analyzeButton.setOnClickListener(v -> startDetect());
         saveResultButton.setOnClickListener(v -> saveResult());
