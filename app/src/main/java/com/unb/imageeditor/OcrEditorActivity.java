@@ -2,6 +2,7 @@ package com.unb.imageeditor;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.Manifest;
 import android.content.BroadcastReceiver;
 import android.content.ContentResolver;
 import android.content.ContentValues;
@@ -20,6 +21,7 @@ import android.media.ExifInterface;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.content.pm.PackageManager;
 import android.provider.MediaStore;
 import android.view.Gravity;
 import android.view.View;
@@ -58,6 +60,8 @@ public class OcrEditorActivity extends Activity {
     private TextView status;
     private Button analyzeButton;
     private Button saveResultButton;
+    private Button demoButton;
+    private boolean maintenanceMode = false;
 
     private JSONArray blocks = new JSONArray();
     private boolean receiverRegistered = false;
@@ -112,6 +116,8 @@ public class OcrEditorActivity extends Activity {
         serverBase = getSharedPreferences(PREFS, MODE_PRIVATE)
                 .getString(KEY_SERVER, DEFAULT_SERVER);
 
+        requestNotificationPermission();
+
         ScrollView scroll = new ScrollView(this);
 
         LinearLayout root = new LinearLayout(this);
@@ -147,7 +153,6 @@ public class OcrEditorActivity extends Activity {
         imagePreview = new OcrOverlayImageView(this);
         imagePreview.setAdjustViewBounds(true);
         imagePreview.setBackgroundColor(Color.rgb(18, 25, 42));
-        imagePreview.setPadding(dp(8), dp(8), dp(8), dp(8));
         root.addView(
                 imagePreview,
                 new LinearLayout.LayoutParams(
@@ -163,16 +168,16 @@ public class OcrEditorActivity extends Activity {
         styleSecondaryButton(pick);
         pick.setEnabled(false);
 
-        Button demo = new Button(this);
-        demo.setText("إنشاء نموذج تجريبي");
-        stylePrimaryButton(demo);
+        demoButton = new Button(this);
+        demoButton.setText("إنشاء نموذج تجريبي");
+        stylePrimaryButton(demoButton);
 
         LinearLayout sourceActions = new LinearLayout(this);
         sourceActions.setOrientation(LinearLayout.HORIZONTAL);
         sourceActions.setPadding(0, dp(12), 0, dp(6));
         LinearLayout.LayoutParams half = new LinearLayout.LayoutParams(0, dp(52), 1f);
         half.setMarginEnd(dp(6));
-        sourceActions.addView(demo, half);
+        sourceActions.addView(demoButton, half);
         LinearLayout.LayoutParams half2 = new LinearLayout.LayoutParams(0, dp(52), 1f);
         half2.setMarginStart(dp(6));
         sourceActions.addView(pick, half2);
@@ -212,7 +217,7 @@ public class OcrEditorActivity extends Activity {
         blocksContainer.setOrientation(LinearLayout.VERTICAL);
         root.addView(blocksContainer);
 
-        demo.setOnClickListener(v -> createDemoTemplate());
+        demoButton.setOnClickListener(v -> createDemoTemplate());
         analyzeButton.setOnClickListener(v -> startDetect());
         saveResultButton.setOnClickListener(v -> saveResult());
 
@@ -222,56 +227,93 @@ public class OcrEditorActivity extends Activity {
         loadPreview();
         loadBlocks();
         refreshButtons();
+        loadRemoteConfig();
+    }
+
+    private void requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= 33 &&
+                checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 4401);
+        }
+    }
+
+    private void loadRemoteConfig() {
+        new Thread(() -> {
+            try {
+                AppRemoteConfig config = AppRemoteConfig.fetch();
+                getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                        .putString(KEY_SERVER, config.serverBase)
+                        .apply();
+                runOnUiThread(() -> {
+                    serverBase = config.serverBase;
+                    maintenanceMode = config.maintenance;
+                    if (config.maintenance) {
+                        progress.setVisibility(View.GONE);
+                        status.setText(config.maintenanceMessage);
+                        analyzeButton.setEnabled(false);
+                        saveResultButton.setEnabled(false);
+                        demoButton.setEnabled(false);
+                    }
+                });
+            } catch (Exception ignored) {
+                // Keep the last known endpoint when remote config is unavailable.
+            }
+        }, "UNB-Remote-Config").start();
     }
 
     private void createDemoTemplate() {
         try {
             int width = 1400;
-            int height = 850;
+            int height = 900;
             Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
             Canvas canvas = new Canvas(bitmap);
-            canvas.drawColor(Color.rgb(239, 244, 255));
+            canvas.drawColor(Color.rgb(246, 248, 252));
 
             Paint panel = new Paint(Paint.ANTI_ALIAS_FLAG);
-            panel.setColor(Color.rgb(26, 44, 82));
-            canvas.drawRoundRect(55, 55, width - 55, height - 55, 42, 42, panel);
+            panel.setColor(Color.WHITE);
+            canvas.drawRoundRect(55, 55, width - 55, height - 55, 34, 34, panel);
 
             Paint accent = new Paint(Paint.ANTI_ALIAS_FLAG);
-            accent.setColor(Color.rgb(44, 199, 190));
-            canvas.drawRoundRect(90, 95, 350, 755, 28, 28, accent);
+            accent.setColor(Color.rgb(35, 117, 238));
+            canvas.drawRoundRect(55, 55, width - 55, 220, 34, 34, accent);
+            canvas.drawRect(55, 170, width - 55, 220, accent);
 
             Paint white = new Paint(Paint.ANTI_ALIAS_FLAG);
             white.setColor(Color.WHITE);
             white.setTypeface(Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD));
             white.setTextAlign(Paint.Align.RIGHT);
             white.setTextSize(58);
-            canvas.drawText("بطاقة اختبار النصوص", 1310, 155, white);
+            canvas.drawText("مختبر مطابقة الخطوط", 1285, 145, white);
 
             Paint body = new Paint(Paint.ANTI_ALIAS_FLAG);
-            body.setColor(Color.rgb(222, 230, 247));
+            body.setColor(Color.rgb(31, 41, 55));
             body.setTypeface(Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL));
             body.setTextAlign(Paint.Align.RIGHT);
             body.setTextSize(42);
-            canvas.drawText("الاسم: أحمد سالم التجريبي", 1310, 270, body);
-            canvas.drawText("المهنة: مهندس برمجيات", 1310, 360, body);
-            canvas.drawText("الرقم: 0000 1234 5678", 1310, 450, body);
-            canvas.drawText("المدينة: مدينة الاختبار", 1310, 540, body);
+            canvas.drawText("العنوان العربي الرئيسي", 1285, 320, body);
+            canvas.drawText("سطر عربي متوسط لاختبار القياس والمحاذاة", 1285, 430, body);
+            canvas.drawText("القيمة التجريبية: 1234 5678", 1285, 540, body);
 
             Paint latin = new Paint(Paint.ANTI_ALIAS_FLAG);
-            latin.setColor(Color.WHITE);
+            latin.setColor(Color.rgb(35, 117, 238));
             latin.setTypeface(Typeface.create(Typeface.SERIF, Typeface.BOLD));
             latin.setTextAlign(Paint.Align.LEFT);
             latin.setTextSize(48);
-            canvas.drawText("AHMED SALEM — DEMO", 405, 665, latin);
+            canvas.drawText("TYPOGRAPHY CALIBRATION — DEMO", 115, 680, latin);
+
+            Paint rule = new Paint(Paint.ANTI_ALIAS_FLAG);
+            rule.setColor(Color.rgb(226, 232, 240));
+            rule.setStrokeWidth(3);
+            canvas.drawLine(115, 740, 1285, 740, rule);
 
             Paint mark = new Paint(Paint.ANTI_ALIAS_FLAG);
-            mark.setColor(Color.argb(105, 255, 255, 255));
+            mark.setColor(Color.argb(58, 190, 22, 34));
             mark.setTypeface(Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD));
             mark.setTextAlign(Paint.Align.CENTER);
-            mark.setTextSize(96);
+            mark.setTextSize(82);
             canvas.save();
             canvas.rotate(-22, width / 2f, height / 2f);
-            canvas.drawText("نموذج تجريبي — غير صالح للاستخدام", width / 2f, height / 2f, mark);
+            canvas.drawText("نموذج تجريبي", width / 2f, height / 2f, mark);
             canvas.restore();
 
             File input = new File(getFilesDir(), AiProcessService.OCR_INPUT);
@@ -299,6 +341,7 @@ public class OcrEditorActivity extends Activity {
         loadPreview();
         loadBlocks();
         refreshButtons();
+        loadRemoteConfig();
     }
 
     @Override
@@ -582,12 +625,21 @@ public class OcrEditorActivity extends Activity {
                     " | " + block.optString("text_color")
             );
             item.setAllCaps(false);
-            item.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+            item.setGravity(Gravity.RIGHT | Gravity.CENTER_VERTICAL);
+            item.setTextColor(Color.rgb(226, 232, 240));
+            item.setTextSize(15);
+            item.setBackground(rounded(Color.rgb(24, 32, 49), 14));
+            item.setPadding(dp(14), dp(10), dp(14), dp(10));
 
             JSONObject captured = block;
             item.setOnClickListener(v -> showEditDialog(captured));
 
-            blocksContainer.addView(item);
+            LinearLayout.LayoutParams itemParams = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+            );
+            itemParams.bottomMargin = dp(8);
+            blocksContainer.addView(item, itemParams);
         }
 
         if (blocks.length() == 0 && hasInput()) {
@@ -646,8 +698,9 @@ public class OcrEditorActivity extends Activity {
     }
 
     private void refreshButtons() {
-        analyzeButton.setEnabled(hasInput());
-        saveResultButton.setEnabled(hasResult());
+        analyzeButton.setEnabled(!maintenanceMode && hasInput());
+        saveResultButton.setEnabled(!maintenanceMode && hasResult());
+        if (demoButton != null) demoButton.setEnabled(!maintenanceMode);
     }
 
     private boolean hasInput() {
@@ -689,16 +742,11 @@ public class OcrEditorActivity extends Activity {
 
             if (uri == null) throw new Exception("تعذر إنشاء الملف");
 
-            try (InputStream in = new FileInputStream(source);
-                 OutputStream out = resolver.openOutputStream(uri)) {
-
+            try (OutputStream out = resolver.openOutputStream(uri)) {
                 if (out == null) throw new Exception("تعذر فتح الملف");
-
-                byte[] buffer = new byte[8192];
-                int n;
-
-                while ((n = in.read(buffer)) != -1) {
-                    out.write(buffer, 0, n);
+                Bitmap exported = addExportWatermark(BitmapFactory.decodeFile(source.getAbsolutePath()));
+                if (!exported.compress(Bitmap.CompressFormat.PNG, 100, out)) {
+                    throw new Exception("تعذر ترميز الصورة");
                 }
             }
 
@@ -711,6 +759,25 @@ public class OcrEditorActivity extends Activity {
                     Toast.LENGTH_LONG
             ).show();
         }
+    }
+
+    private Bitmap addExportWatermark(Bitmap source) throws Exception {
+        if (source == null) throw new Exception("الصورة غير صالحة");
+        Bitmap result = source.copy(Bitmap.Config.ARGB_8888, true);
+        Canvas canvas = new Canvas(result);
+        Paint mark = new Paint(Paint.ANTI_ALIAS_FLAG);
+        mark.setColor(Color.argb(105, 190, 22, 34));
+        mark.setTypeface(Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD));
+        mark.setTextAlign(Paint.Align.CENTER);
+        mark.setTextSize(Math.max(28f, Math.min(result.getWidth(), result.getHeight()) * 0.055f));
+        canvas.save();
+        canvas.rotate(-22f, result.getWidth() / 2f, result.getHeight() / 2f);
+        float stepY = Math.max(150f, mark.getTextSize() * 3.2f);
+        for (float y = -result.getHeight(); y < result.getHeight() * 2f; y += stepY) {
+            canvas.drawText("نموذج تجريبي — غير صالح للاستخدام", result.getWidth() / 2f, y, mark);
+        }
+        canvas.restore();
+        return result;
     }
 
     private void copyUriToFile(Uri uri, File outFile) throws Exception {
