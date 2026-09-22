@@ -10,7 +10,12 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
+import android.graphics.Color;
 import android.graphics.Matrix;
+import android.graphics.Paint;
+import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
 import android.media.ExifInterface;
 import android.net.Uri;
 import android.os.Build;
@@ -101,6 +106,9 @@ public class OcrEditorActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
+        getWindow().setStatusBarColor(Color.rgb(8, 12, 24));
+        getWindow().setNavigationBarColor(Color.rgb(8, 12, 24));
+
         serverBase = getSharedPreferences(PREFS, MODE_PRIVATE)
                 .getString(KEY_SERVER, DEFAULT_SERVER);
 
@@ -108,39 +116,75 @@ public class OcrEditorActivity extends Activity {
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(14), dp(14), dp(14), dp(30));
+        root.setPadding(dp(16), dp(18), dp(16), dp(32));
+        root.setBackgroundColor(Color.rgb(8, 12, 24));
         scroll.addView(root);
 
-        TextView title = text("محرر النصوص بالذكاء الاصطناعي", 24);
+        TextView title = text("استوديو مطابقة النصوص", 25);
+        title.setTextColor(Color.WHITE);
+        title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        title.setGravity(Gravity.RIGHT);
         root.addView(title);
 
-        TextView server = text("الخادم: " + serverBase, 13);
-        server.setPadding(0, dp(4), 0, dp(10));
-        root.addView(server);
+        TextView subtitle = text("اكتشاف، تحديد، ثم استبدال مع الحفاظ على القياسات", 14);
+        subtitle.setTextColor(Color.rgb(157, 167, 190));
+        subtitle.setGravity(Gravity.RIGHT);
+        subtitle.setPadding(0, dp(4), 0, dp(14));
+        root.addView(subtitle);
+
+        TextView demoNotice = text("وضع تجريبي آمن  •  النتيجة تحمل علامة دائمة", 14);
+        demoNotice.setTextColor(Color.rgb(191, 219, 254));
+        demoNotice.setGravity(Gravity.RIGHT | Gravity.CENTER_VERTICAL);
+        demoNotice.setPadding(dp(14), dp(12), dp(14), dp(12));
+        demoNotice.setBackground(rounded(Color.rgb(20, 45, 82), 16));
+        LinearLayout.LayoutParams noticeParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        );
+        noticeParams.bottomMargin = dp(14);
+        root.addView(demoNotice, noticeParams);
 
         imagePreview = new OcrOverlayImageView(this);
         imagePreview.setAdjustViewBounds(true);
-        imagePreview.setBackgroundColor(0xFFF1F1F1);
+        imagePreview.setBackgroundColor(Color.rgb(18, 25, 42));
+        imagePreview.setPadding(dp(8), dp(8), dp(8), dp(8));
         root.addView(
                 imagePreview,
                 new LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.MATCH_PARENT,
-                        dp(420)
+                        dp(330)
                 )
         );
 
         imagePreview.setOnBlockClickListener(this::showEditDialog);
 
         Button pick = new Button(this);
-        pick.setText("اختيار صورة أو مستند");
-        root.addView(pick);
+        pick.setText("اختيار صورة عامة");
+        styleSecondaryButton(pick);
+
+        Button demo = new Button(this);
+        demo.setText("إنشاء نموذج تجريبي");
+        stylePrimaryButton(demo);
+
+        LinearLayout sourceActions = new LinearLayout(this);
+        sourceActions.setOrientation(LinearLayout.HORIZONTAL);
+        sourceActions.setPadding(0, dp(12), 0, dp(6));
+        LinearLayout.LayoutParams half = new LinearLayout.LayoutParams(0, dp(52), 1f);
+        half.setMarginEnd(dp(6));
+        sourceActions.addView(demo, half);
+        LinearLayout.LayoutParams half2 = new LinearLayout.LayoutParams(0, dp(52), 1f);
+        half2.setMarginStart(dp(6));
+        sourceActions.addView(pick, half2);
+        root.addView(sourceActions);
 
         analyzeButton = new Button(this);
-        analyzeButton.setText("اكتشاف النصوص العربية والإنجليزية");
+        analyzeButton.setText("تحليل النصوص");
+        stylePrimaryButton(analyzeButton);
         root.addView(analyzeButton);
 
         saveResultButton = new Button(this);
-        saveResultButton.setText("حفظ الصورة المعدلة");
+        saveResultButton.setText("حفظ النتيجة التجريبية");
+        styleSecondaryButton(saveResultButton);
         root.addView(saveResultButton);
 
         progress = new ProgressBar(this);
@@ -151,10 +195,15 @@ public class OcrEditorActivity extends Activity {
         root.addView(progress, pp);
 
         status = text("اختر صورة ثم اضغط اكتشاف النصوص", 15);
+        status.setTextColor(Color.rgb(196, 205, 224));
+        status.setGravity(Gravity.RIGHT);
         status.setPadding(0, dp(8), 0, dp(12));
         root.addView(status);
 
         TextView detectedTitle = text("النصوص المكتشفة", 19);
+        detectedTitle.setTextColor(Color.WHITE);
+        detectedTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        detectedTitle.setGravity(Gravity.RIGHT);
         detectedTitle.setPadding(0, dp(8), 0, dp(5));
         root.addView(detectedTitle);
 
@@ -163,6 +212,7 @@ public class OcrEditorActivity extends Activity {
         root.addView(blocksContainer);
 
         pick.setOnClickListener(v -> chooseImage());
+        demo.setOnClickListener(v -> createDemoTemplate());
         analyzeButton.setOnClickListener(v -> startDetect());
         saveResultButton.setOnClickListener(v -> saveResult());
 
@@ -172,6 +222,73 @@ public class OcrEditorActivity extends Activity {
         loadPreview();
         loadBlocks();
         refreshButtons();
+    }
+
+    private void createDemoTemplate() {
+        try {
+            int width = 1400;
+            int height = 850;
+            Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+            Canvas canvas = new Canvas(bitmap);
+            canvas.drawColor(Color.rgb(239, 244, 255));
+
+            Paint panel = new Paint(Paint.ANTI_ALIAS_FLAG);
+            panel.setColor(Color.rgb(26, 44, 82));
+            canvas.drawRoundRect(55, 55, width - 55, height - 55, 42, 42, panel);
+
+            Paint accent = new Paint(Paint.ANTI_ALIAS_FLAG);
+            accent.setColor(Color.rgb(44, 199, 190));
+            canvas.drawRoundRect(90, 95, 350, 755, 28, 28, accent);
+
+            Paint white = new Paint(Paint.ANTI_ALIAS_FLAG);
+            white.setColor(Color.WHITE);
+            white.setTypeface(Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD));
+            white.setTextAlign(Paint.Align.RIGHT);
+            white.setTextSize(58);
+            canvas.drawText("بطاقة اختبار النصوص", 1310, 155, white);
+
+            Paint body = new Paint(Paint.ANTI_ALIAS_FLAG);
+            body.setColor(Color.rgb(222, 230, 247));
+            body.setTypeface(Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL));
+            body.setTextAlign(Paint.Align.RIGHT);
+            body.setTextSize(42);
+            canvas.drawText("الاسم: أحمد سالم التجريبي", 1310, 270, body);
+            canvas.drawText("المهنة: مهندس برمجيات", 1310, 360, body);
+            canvas.drawText("الرقم: 0000 1234 5678", 1310, 450, body);
+            canvas.drawText("المدينة: مدينة الاختبار", 1310, 540, body);
+
+            Paint latin = new Paint(Paint.ANTI_ALIAS_FLAG);
+            latin.setColor(Color.WHITE);
+            latin.setTypeface(Typeface.create(Typeface.SERIF, Typeface.BOLD));
+            latin.setTextAlign(Paint.Align.LEFT);
+            latin.setTextSize(48);
+            canvas.drawText("AHMED SALEM — DEMO", 405, 665, latin);
+
+            Paint mark = new Paint(Paint.ANTI_ALIAS_FLAG);
+            mark.setColor(Color.argb(105, 255, 255, 255));
+            mark.setTypeface(Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD));
+            mark.setTextAlign(Paint.Align.CENTER);
+            mark.setTextSize(96);
+            canvas.save();
+            canvas.rotate(-22, width / 2f, height / 2f);
+            canvas.drawText("نموذج تجريبي — غير صالح للاستخدام", width / 2f, height / 2f, mark);
+            canvas.restore();
+
+            File input = new File(getFilesDir(), AiProcessService.OCR_INPUT);
+            try (FileOutputStream out = new FileOutputStream(input, false)) {
+                bitmap.compress(Bitmap.CompressFormat.PNG, 100, out);
+            }
+            delete(AiProcessService.OCR_BLOCKS);
+            delete(AiProcessService.OCR_RESULT);
+            blocks = new JSONArray();
+            blocksContainer.removeAllViews();
+            imagePreview.setBlocks(blocks);
+            loadPreview();
+            refreshButtons();
+            status.setText("النموذج جاهز — اضغط تحليل النصوص");
+        } catch (Exception e) {
+            Toast.makeText(this, "تعذر إنشاء النموذج: " + e.getMessage(), Toast.LENGTH_LONG).show();
+        }
     }
 
     @Override
@@ -649,6 +766,28 @@ public class OcrEditorActivity extends Activity {
         v.setTextSize(size);
         v.setGravity(Gravity.CENTER);
         return v;
+    }
+
+    private GradientDrawable rounded(int color, int radiusDp) {
+        GradientDrawable shape = new GradientDrawable();
+        shape.setColor(color);
+        shape.setCornerRadius(dp(radiusDp));
+        return shape;
+    }
+
+    private void stylePrimaryButton(Button button) {
+        button.setAllCaps(false);
+        button.setTextColor(Color.WHITE);
+        button.setTextSize(15);
+        button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        button.setBackground(rounded(Color.rgb(35, 117, 238), 15));
+    }
+
+    private void styleSecondaryButton(Button button) {
+        button.setAllCaps(false);
+        button.setTextColor(Color.rgb(218, 226, 243));
+        button.setTextSize(15);
+        button.setBackground(rounded(Color.rgb(29, 38, 58), 15));
     }
 
     private int dp(int value) {
