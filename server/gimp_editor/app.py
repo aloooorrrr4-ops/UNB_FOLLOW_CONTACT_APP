@@ -9,12 +9,14 @@ import uuid
 import socket
 import struct
 import threading
+import shutil
+import hmac
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, File, UploadFile, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, File, UploadFile, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 APP_NAME = "UNB Pro Editor GIMP Bridge"
@@ -22,10 +24,29 @@ DATA_DIR = Path(os.getenv("UNB_EDITOR_DATA", "/var/lib/unb-pro-editor"))
 GIMP_HOST = os.getenv("UNB_GIMP_HOST", "127.0.0.1")
 GIMP_PORT = int(os.getenv("UNB_GIMP_PORT", "10008"))
 MAX_HISTORY = int(os.getenv("UNB_EDITOR_HISTORY", "20"))
+MAX_UPLOAD_BYTES = int(os.getenv("UNB_EDITOR_MAX_UPLOAD", str(80 * 1024 * 1024)))
+PROJECT_TTL_SECONDS = int(os.getenv("UNB_EDITOR_PROJECT_TTL", "3600"))
+CLEANUP_INTERVAL_SECONDS = int(os.getenv("UNB_EDITOR_CLEANUP_INTERVAL", "300"))
+EDITOR_API_KEY = os.getenv("UNB_EDITOR_API_KEY", "").strip()
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-app = FastAPI(title=APP_NAME, version="1.0.0-alpha")
+app = FastAPI(title=APP_NAME, version="1.0.1-alpha")
+engine_lock = threading.RLock()
+
+
+@app.middleware("http")
+async def editor_auth(request: Request, call_next):
+    if request.url.path.startswith("/api/editor/"):
+        if not EDITOR_API_KEY:
+            return JSONResponse(
+                status_code=503,
+                content={"detail": "UNB_EDITOR_API_KEY is not configured on the server"},
+            )
+        supplied = request.headers.get("X-UNB-Editor-Key", "")
+        if not supplied or not hmac.compare_digest(supplied, EDITOR_API_KEY):
+            return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
+    return await call_next(request)
 
 
 class ScriptFuError(RuntimeError):
@@ -76,31 +97,29 @@ class ScriptFuClient:
         if len(payload) > 65535:
             raise ValueError("Script-Fu command exceeds protocol limit")
 
+        # Never retry an in-flight Script-Fu command automatically. If the
+        # socket dies after GIMP executed a mutation but before the response
+        # arrives, retrying could apply the edit twice.
         with self._lock:
-            for attempt in range(2):
-                try:
-                    self._connect()
-                    assert self._sock is not None
-                    self._sock.sendall(self.MAGIC + struct.pack(">H", len(payload)) + payload)
+            try:
+                self._connect()
+                assert self._sock is not None
+                self._sock.sendall(self.MAGIC + struct.pack(">H", len(payload)) + payload)
 
-                    header = self._recv_exact(4)
-                    if header[0:1] != self.MAGIC:
-                        raise ScriptFuError("Invalid response magic from GIMP")
+                header = self._recv_exact(4)
+                if header[0:1] != self.MAGIC:
+                    raise ScriptFuError("Invalid response magic from GIMP")
 
-                    is_error = header[1] != 0
-                    body_len = struct.unpack(">H", header[2:4])[0]
-                    body = self._recv_exact(body_len).decode("utf-8", errors="replace")
+                is_error = header[1] != 0
+                body_len = struct.unpack(">H", header[2:4])[0]
+                body = self._recv_exact(body_len).decode("utf-8", errors="replace")
 
-                    if is_error:
-                        raise ScriptFuError(body.strip() or "GIMP returned an error")
-                    return body.strip()
-                except ScriptFuError:
-                    raise
-                except (OSError, ConnectionError):
-                    self.close()
-                    if attempt == 1:
-                        raise
-            raise ConnectionError("Unable to reach GIMP")
+                if is_error:
+                    raise ScriptFuError(body.strip() or "GIMP returned an error")
+                return body.strip()
+            except Exception:
+                self.close()
+                raise
 
 
 sf = ScriptFuClient(GIMP_HOST, GIMP_PORT)
@@ -319,6 +338,7 @@ class ProjectState:
     folder: Path
     source_name: str
     created_at: float = field(default_factory=time.time)
+    last_accessed: float = field(default_factory=time.time)
     undo: list[int] = field(default_factory=list)
     redo: list[int] = field(default_factory=list)
     lock: threading.RLock = field(default_factory=threading.RLock)
@@ -338,6 +358,7 @@ def project_or_404(project_id: str) -> ProjectState:
         state = projects.get(project_id)
     if state is None:
         raise HTTPException(404, "المشروع غير موجود أو انتهت جلسة السيرفر")
+    state.last_accessed = time.time()
     return state
 
 
@@ -356,9 +377,38 @@ def clear_stack(stack: list[int]):
 def push_undo(state: ProjectState):
     snapshot = sf_int(f"(car (gimp-image-duplicate {state.image_id}))")
     state.undo.append(snapshot)
-    clear_stack(state.redo)
     while len(state.undo) > MAX_HISTORY:
         delete_gimp_image(state.undo.pop(0))
+    return snapshot
+
+
+def destroy_project_state(state: ProjectState):
+    with state.lock:
+        with engine_lock:
+            delete_gimp_image(state.image_id)
+            clear_stack(state.undo)
+            clear_stack(state.redo)
+    shutil.rmtree(state.folder, ignore_errors=True)
+
+
+def cleanup_expired_projects():
+    while True:
+        time.sleep(max(30, CLEANUP_INTERVAL_SECONDS))
+        cutoff = time.time() - max(300, PROJECT_TTL_SECONDS)
+        expired: list[ProjectState] = []
+        with projects_lock:
+            for project_id, state in list(projects.items()):
+                if state.last_accessed < cutoff:
+                    expired.append(projects.pop(project_id))
+        for state in expired:
+            destroy_project_state(state)
+
+
+threading.Thread(
+    target=cleanup_expired_projects,
+    name="unb-project-cleanup",
+    daemon=True,
+).start()
 
 
 def preview_path(state: ProjectState) -> Path:
@@ -421,6 +471,9 @@ def health():
         "gimp_port": GIMP_PORT,
         "detail": detail,
         "projects": len(projects),
+        "auth_required": True,
+        "api_key_configured": bool(EDITOR_API_KEY),
+        "project_ttl_seconds": PROJECT_TTL_SECONDS,
     }
 
 
@@ -456,13 +509,7 @@ def capabilities():
 
 
 @app.post("/api/editor/projects")
-async def create_project(image: UploadFile = File(...)):
-    data = await image.read()
-    if not data:
-        raise HTTPException(400, "الملف فارغ")
-    if len(data) > 80 * 1024 * 1024:
-        raise HTTPException(413, "حجم الصورة أكبر من الحد الحالي 80MB")
-
+def create_project(image: UploadFile = File(...)):
     project_id = uuid.uuid4().hex
     folder = DATA_DIR / project_id
     folder.mkdir(parents=True, exist_ok=True)
@@ -470,16 +517,41 @@ async def create_project(image: UploadFile = File(...)):
     ext = Path(image.filename or "image.png").suffix.lower()
     if ext not in {".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp", ".gif"}:
         ext = ".png"
-
     source = folder / f"source{ext}"
-    source.write_bytes(data)
+
+    total = 0
+    try:
+        with source.open("wb") as out:
+            while True:
+                chunk = image.file.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_UPLOAD_BYTES:
+                    raise HTTPException(
+                        413,
+                        f"حجم الصورة أكبر من الحد الحالي {MAX_UPLOAD_BYTES // (1024 * 1024)}MB",
+                    )
+                out.write(chunk)
+    except HTTPException:
+        shutil.rmtree(folder, ignore_errors=True)
+        raise
+    except Exception as exc:
+        shutil.rmtree(folder, ignore_errors=True)
+        raise HTTPException(400, f"تعذر قراءة الملف: {exc}")
+
+    if total == 0:
+        shutil.rmtree(folder, ignore_errors=True)
+        raise HTTPException(400, "الملف فارغ")
 
     try:
-        image_id = sf_int(
-            f'(car (gimp-file-load RUN-NONINTERACTIVE "{sf_string(str(source))}"))'
-        )
-        sf.call(f"(gimp-image-undo-enable {image_id})")
+        with engine_lock:
+            image_id = sf_int(
+                f'(car (gimp-file-load RUN-NONINTERACTIVE "{sf_string(str(source))}"))'
+            )
+            sf.call(f"(gimp-image-undo-enable {image_id})")
     except Exception as exc:
+        shutil.rmtree(folder, ignore_errors=True)
         raise HTTPException(503, f"تعذر فتح الصورة في GIMP: {exc}")
 
     state = ProjectState(
@@ -493,11 +565,12 @@ async def create_project(image: UploadFile = File(...)):
         projects[project_id] = state
 
     try:
-        preview_url = render_preview(state)
+        with engine_lock:
+            preview_url = render_preview(state)
     except Exception as exc:
-        delete_gimp_image(image_id)
         with projects_lock:
             projects.pop(project_id, None)
+        destroy_project_state(state)
         raise HTTPException(500, f"تم فتح الصورة لكن فشل إنشاء المعاينة: {exc}")
 
     return {
@@ -511,7 +584,7 @@ async def create_project(image: UploadFile = File(...)):
 @app.get("/api/editor/projects/{project_id}")
 def get_project(project_id: str):
     state = project_or_404(project_id)
-    with state.lock:
+    with engine_lock, state.lock:
         width = sf_int(f"(car (gimp-image-get-width {state.image_id}))")
         height = sf_int(f"(car (gimp-image-get-height {state.image_id}))")
         layers = layer_list(state.image_id)
@@ -530,21 +603,21 @@ def get_project(project_id: str):
 @app.get("/api/editor/projects/{project_id}/layers")
 def get_layers(project_id: str):
     state = project_or_404(project_id)
-    with state.lock:
+    with engine_lock, state.lock:
         return {"ok": True, "layers": layer_list(state.image_id)}
 
 
 @app.get("/api/editor/projects/{project_id}/channels")
 def get_channels(project_id: str):
     state = project_or_404(project_id)
-    with state.lock:
+    with engine_lock, state.lock:
         return {"ok": True, "channels": channel_list(state.image_id)}
 
 
 @app.get("/api/editor/projects/{project_id}/paths")
 def get_paths(project_id: str):
     state = project_or_404(project_id)
-    with state.lock:
+    with engine_lock, state.lock:
         return {"ok": True, "paths": path_list(state.image_id)}
 
 
@@ -560,7 +633,8 @@ def get_resources(kind: str, q: str = ""):
     if not proc:
         raise HTTPException(404, "نوع المورد غير معروف")
     try:
-        return {"ok": True, "kind": kind.lower(), "items": resource_list(proc, q)}
+        with engine_lock:
+            return {"ok": True, "kind": kind.lower(), "items": resource_list(proc, q)}
     except Exception as exc:
         raise HTTPException(500, f"تعذر قراءة موارد GIMP: {exc}")
 
@@ -570,7 +644,7 @@ def get_preview(project_id: str):
     state = project_or_404(project_id)
     path = preview_path(state)
     if not path.exists():
-        with state.lock:
+        with engine_lock, state.lock:
             render_preview(state)
     return FileResponse(path, media_type="image/png",
                         headers={"Cache-Control": "no-store, max-age=0"})
@@ -845,7 +919,9 @@ def apply_operation_to_gimp(state: ProjectState, op: str, p: dict[str, Any]):
         src_y = float(p.get("source_y", 0))
         vector, count = scriptfu_points(p.get("points"))
         size = max(1.0, min(2000.0, float(p.get("size", 30))))
+        opacity = max(0.0, min(100.0, float(p.get("opacity", 100))))
         sf.call(f"(gimp-context-set-brush-size {size:.3f})")
+        sf.call(f"(gimp-context-set-opacity {opacity:.3f})")
         sf.call(
             f"(gimp-clone {layer_id} {src_layer} IMAGE-CLONE "
             f"{src_x:.5f} {src_y:.5f} {count} {vector})"
@@ -858,7 +934,9 @@ def apply_operation_to_gimp(state: ProjectState, op: str, p: dict[str, Any]):
         src_y = float(p.get("source_y", 0))
         vector, count = scriptfu_points(p.get("points"))
         size = max(1.0, min(2000.0, float(p.get("size", 30))))
+        opacity = max(0.0, min(100.0, float(p.get("opacity", 100))))
         sf.call(f"(gimp-context-set-brush-size {size:.3f})")
+        sf.call(f"(gimp-context-set-opacity {opacity:.3f})")
         sf.call(
             f"(gimp-heal {layer_id} {src_layer} {src_x:.5f} {src_y:.5f} "
             f"{count} {vector})"
