@@ -127,6 +127,7 @@ public class EditorCanvasView extends View {
                     @Override
                     public boolean onScaleBegin(ScaleGestureDetector detector) {
                         cancelStroke();
+                        activeTransformHandle = -1;
                         return bitmap != null;
                     }
 
@@ -692,6 +693,7 @@ public class EditorCanvasView extends View {
 
         if (event.getPointerCount() >= 2 || scaleDetector.isInProgress()) {
             cancelStroke();
+            activeTransformHandle = -1;
             gestureDetector.onTouchEvent(event);
             return true;
         }
