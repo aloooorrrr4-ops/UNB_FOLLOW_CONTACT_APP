@@ -1863,61 +1863,84 @@ public class ProfessionalEditorActivity extends Activity {
         if (layerList == null) return;
         layerList.removeAllViews();
 
-        if (!desktopLayout) {
-            addContextTitle(layerList, "الطبقات");
-            layerList.addView(actionButton("+ طبقة", v ->
-                    toast("الطبقات المتعددة ضمن V2")));
-            layerList.addView(actionButton("+ مجموعة", v ->
-                    toast("مجموعات الطبقات ضمن V2")));
-            layerList.addView(actionButton("+ قناع", v ->
-                    toast("Layer Masks ضمن V2")));
-
-            if (localEngine.hasImage()) {
-                addContextCard(layerList,
-                        "◉ Background\n100% • " +
-                                localEngine.width() + "×" + localEngine.height());
-            } else {
-                addContextCard(layerList, "افتح صورة أولاً");
-            }
-            return;
-        }
-
-        layerList.addView(label("الطبقات", 17, TEXT, true));
-
-        LinearLayout actions = new LinearLayout(this);
-        actions.setOrientation(LinearLayout.HORIZONTAL);
-        actions.addView(actionButton("+ طبقة", v ->
-                toast("الطبقات المتعددة قادمة في المحرك المحلي V2")),
-                new LinearLayout.LayoutParams(0, dp(44), 1f));
-        actions.addView(actionButton("+ مجموعة", v ->
-                toast("مجموعات الطبقات قادمة في V2")),
-                new LinearLayout.LayoutParams(0, dp(44), 1f));
-        actions.addView(actionButton("+ قناع", v ->
-                toast("Layer Masks قادمة في V2")),
-                new LinearLayout.LayoutParams(0, dp(44), 1f));
-        layerList.addView(actions);
-
         if (!localEngine.hasImage()) {
+            if (!desktopLayout) addContextTitle(layerList, "الطبقات");
+            else layerList.addView(label("الطبقات", 17, TEXT, true));
             layerList.addView(label("افتح صورة لعرض الطبقات", 13, MUTED, false));
             return;
         }
 
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(7), dp(5), dp(7), dp(5));
-        row.setBackground(rounded(Color.rgb(44, 49, 57), 8));
+        if (!desktopLayout) {
+            addContextTitle(layerList, "الطبقات");
+        } else {
+            layerList.addView(label("الطبقات", 17, TEXT, true));
+        }
 
-        Button eye = flatButton("◉", 14);
-        TextView name = label("▤ Background", 13, TEXT, false);
-        TextView meta = label("100%  •  " + localEngine.width() + "×" + localEngine.height(),
-                11, MUTED, false);
-        meta.setGravity(Gravity.END);
+        layerList.addView(actionButton("+ طبقة", v ->
+                applyRemote("add_layer", jsonOf("name",
+                        "Layer " + (localEngine.layerInfo().size() + 1)))));
+        layerList.addView(actionButton("نسخ", v ->
+                applyRemote("duplicate_layer", new JSONObject())));
+        layerList.addView(actionButton("حذف", v ->
+                applyRemote("delete_layer", new JSONObject())));
+        layerList.addView(actionButton("دمج لأسفل", v ->
+                applyRemote("merge_down", new JSONObject())));
+        layerList.addView(actionButton("Flatten", v ->
+                applyRemote("flatten", new JSONObject())));
 
-        row.addView(eye, new LinearLayout.LayoutParams(dp(42), dp(36)));
-        row.addView(name, new LinearLayout.LayoutParams(0, dp(36), 1f));
-        row.addView(meta, new LinearLayout.LayoutParams(dp(132), dp(36)));
-        layerList.addView(row);
+        List<LocalEditorEngine.LayerInfo> layers = localEngine.layerInfo();
+        LocalEditorEngine.LayerInfo active = null;
+
+        for (LocalEditorEngine.LayerInfo info : layers) {
+            if (info.active) active = info;
+
+            if (!desktopLayout) {
+                String text = (info.active ? "● " : "○ ") +
+                        info.name + "\n" +
+                        Math.round(info.opacity * 100f / 255f) + "%";
+                Button card = actionButton(text, v ->
+                        applyRemote("set_active_layer", json("index", info.index)));
+                if (info.active) card.setBackground(rounded(Color.rgb(44, 83, 145), 8));
+                layerList.addView(card);
+
+                Button eye = actionButton(info.visible ? "👁" : "⊘", v ->
+                        applyRemote("toggle_layer_visibility", json("index", info.index)));
+                layerList.addView(eye);
+            } else {
+                LinearLayout row = new LinearLayout(this);
+                row.setOrientation(LinearLayout.HORIZONTAL);
+                row.setGravity(Gravity.CENTER_VERTICAL);
+                row.setPadding(dp(7), dp(5), dp(7), dp(5));
+                row.setBackground(rounded(
+                        info.active ? Color.rgb(44, 83, 145) : Color.rgb(44, 49, 57), 8));
+
+                Button eye = flatButton(info.visible ? "◉" : "○", 14);
+                eye.setOnClickListener(v ->
+                        applyRemote("toggle_layer_visibility", json("index", info.index)));
+
+                TextView name = label(info.name, 13, TEXT, info.active);
+                name.setOnClickListener(v ->
+                        applyRemote("set_active_layer", json("index", info.index)));
+
+                TextView meta = label(Math.round(info.opacity * 100f / 255f) + "%",
+                        11, MUTED, false);
+                meta.setGravity(Gravity.END);
+
+                row.addView(eye, new LinearLayout.LayoutParams(dp(42), dp(36)));
+                row.addView(name, new LinearLayout.LayoutParams(0, dp(36), 1f));
+                row.addView(meta, new LinearLayout.LayoutParams(dp(64), dp(36)));
+                layerList.addView(row);
+            }
+        }
+
+        if (active != null) {
+            int initialOpacity = Math.round(active.opacity * 100f / 255f);
+            int activeIndex = active.index;
+            addSlider(layerList, "عتامة الطبقة", 0, 100, initialOpacity, value ->
+                    applyRemote("set_layer_opacity", jsonOf(
+                            "index", activeIndex,
+                            "opacity", Math.round(value * 255f / 100f))));
+        }
     }
 
     private void refreshChannels() {
