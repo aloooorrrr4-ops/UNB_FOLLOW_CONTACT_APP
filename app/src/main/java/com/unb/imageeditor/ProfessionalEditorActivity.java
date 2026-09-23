@@ -109,6 +109,22 @@ public class ProfessionalEditorActivity extends Activity {
         api = new EditorApiClient(savedServer);
         api.setApiKey(prefs.getString("editor_api_key", ""));
         desktopLayout = isDesktopLayout();
+        rebuildEditorUi(null, "جاهز", "تحريك");
+        addHistory("جاهز");
+        refreshLayers();
+        pingServer();
+    }
+
+    private void rebuildEditorUi(Bitmap retainedBitmap, String retainedStatus, String retainedToolLabel) {
+        activeToolButton = null;
+        phoneInspectorPanel = null;
+        inspectorBodyScroll = null;
+        toolOptions = null;
+        layerList = null;
+        channelList = null;
+        pathList = null;
+        resourceList = null;
+        historyList = null;
 
         LinearLayout root = column();
         root.setBackgroundColor(BG);
@@ -132,10 +148,45 @@ public class ProfessionalEditorActivity extends Activity {
         root.addView(buildStatusBar());
 
         setContentView(root);
-        showTool("move", "تحريك", null);
-        addHistory("جاهز");
-        refreshLayers();
-        pingServer();
+
+        String label = retainedToolLabel == null || retainedToolLabel.trim().isEmpty()
+                ? "تحريك" : retainedToolLabel;
+        showTool(activeTool, label, null);
+
+        if (retainedBitmap != null && canvas != null) {
+            canvas.setBitmap(retainedBitmap);
+        }
+        if (statusText != null && retainedStatus != null) {
+            statusText.setText(retainedStatus);
+        }
+        if (projectText != null) {
+            if (projectId == null) {
+                projectText.setText("بدون مشروع");
+            } else {
+                projectText.setText("Project " +
+                        projectId.substring(0, Math.min(8, projectId.length())));
+            }
+        }
+
+        addHistoryRowsOnly();
+        if (projectId != null) {
+            refreshRemotePanels();
+        } else {
+            refreshLayers();
+        }
+    }
+
+    @Override
+    public void onConfigurationChanged(Configuration newConfig) {
+        Bitmap retainedBitmap = canvas == null ? null : canvas.getBitmap();
+        String retainedStatus = statusText == null ? "جاهز" : statusText.getText().toString();
+        String retainedToolLabel = toolTitle == null
+                ? activeTool
+                : toolTitle.getText().toString().replace("أداة: ", "");
+
+        super.onConfigurationChanged(newConfig);
+        desktopLayout = isDesktopLayout();
+        rebuildEditorUi(retainedBitmap, retainedStatus, retainedToolLabel);
     }
 
     private View buildMenuBar() {
@@ -1035,6 +1086,10 @@ public class ProfessionalEditorActivity extends Activity {
     private void addHistory(String item) {
         history.add(0, item);
         if (history.size() > 30) history.remove(history.size() - 1);
+        addHistoryRowsOnly();
+    }
+
+    private void addHistoryRowsOnly() {
         if (historyList == null) return;
         historyList.removeAllViews();
         historyList.addView(label("السجل", 17, TEXT, true));
