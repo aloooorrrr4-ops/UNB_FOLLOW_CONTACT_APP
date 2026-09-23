@@ -59,9 +59,11 @@ jobs:
 
       - name: Verify production endpoint
         run: |
-          set -e
+          set -euo pipefail
           sleep 3
           curl --fail --show-error --silent http://91.98.126.167:18083/health
           echo
-          curl --fail --show-error --silent http://91.98.126.167:18083/api/editor/capabilities
+          STATUS="$(curl --silent --output /tmp/caps.json --write-out '%{http_code}' http://91.98.126.167:18083/api/editor/capabilities)"
+          cat /tmp/caps.json
           echo
+          test "$STATUS" = "401"
