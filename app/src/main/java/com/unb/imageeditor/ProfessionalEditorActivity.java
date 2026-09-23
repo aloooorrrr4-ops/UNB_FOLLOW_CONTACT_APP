@@ -1947,49 +1947,59 @@ public class ProfessionalEditorActivity extends Activity {
         if (channelList == null) return;
         channelList.removeAllViews();
 
-        if (!desktopLayout) {
-            addContextTitle(channelList, "القنوات");
-            if (!localEngine.hasImage()) {
-                addContextCard(channelList, "افتح صورة أولاً");
-                return;
-            }
-            addContextCard(channelList, "◉ RGB");
-            addContextCard(channelList, "R");
-            addContextCard(channelList, "G");
-            addContextCard(channelList, "B");
-            addContextCard(channelList, "Alpha");
-            return;
-        }
-
-        channelList.addView(label("القنوات Channels", 17, TEXT, true));
+        if (!desktopLayout) addContextTitle(channelList, "القنوات");
+        else channelList.addView(label("القنوات Channels", 17, TEXT, true));
 
         if (!localEngine.hasImage()) {
             channelList.addView(label("افتح صورة لعرض القنوات", 13, MUTED, false));
             return;
         }
 
-        channelList.addView(label("◉ RGB", 13, TEXT, false));
-        channelList.addView(label("   R  •  G  •  B  •  Alpha", 12, MUTED, false));
-        channelList.addView(label("قنوات Alpha المخصصة ستضاف في V2.", 12, MUTED, false));
+        channelList.addView(actionButton("R", v ->
+                applyRemote("channel_extract", json("channel", "R"))));
+        channelList.addView(actionButton("G", v ->
+                applyRemote("channel_extract", json("channel", "G"))));
+        channelList.addView(actionButton("B", v ->
+                applyRemote("channel_extract", json("channel", "B"))));
+        channelList.addView(actionButton("Alpha", v ->
+                applyRemote("channel_extract", json("channel", "A"))));
+
+        TextView note = label(
+                "استخراج القناة يحولها إلى صورة رمادية ويمكن التراجع عنه.",
+                11, MUTED, false);
+        note.setPadding(dp(8), 0, dp(8), 0);
+        if (!desktopLayout) {
+            channelList.addView(note, new LinearLayout.LayoutParams(dp(230), dp(72)));
+        } else {
+            channelList.addView(note);
+        }
     }
 
     private void refreshPaths() {
         if (pathList == null) return;
         pathList.removeAllViews();
 
-        if (!desktopLayout) {
-            addContextTitle(pathList, "المسارات");
-            pathList.addView(actionButton("+ مسار", v ->
-                    toast("Bezier Paths ضمن V2")));
-            addContextCard(pathList, "تحويل النص لمسار");
-            addContextCard(pathList, "Bezier");
-            return;
-        }
+        if (!desktopLayout) addContextTitle(pathList, "المسارات");
+        else pathList.addView(label("المسارات Paths", 17, TEXT, true));
 
-        pathList.addView(label("المسارات Paths", 17, TEXT, true));
-        pathList.addView(label(
-                "المحرك Offline يعمل الآن. مسارات Bezier والتحويل من النص إلى مسار ضمن V2.",
-                12, MUTED, false));
+        pathList.addView(actionButton("مسار حر", v ->
+                showTool("free_select", "لاسو", null)));
+        pathList.addView(actionButton("مسار مستطيل", v ->
+                showTool("select", "تحديد", null)));
+        pathList.addView(actionButton("تحديد نص", v -> {
+            showTool("text", "نص", null);
+            detectTextRegions();
+        }));
+
+        TextView note = label(
+                "المسار الحر والمستطيل يعملان محليًا ويمكن تحويلهما إلى تحديد.",
+                11, MUTED, false);
+        note.setPadding(dp(8), 0, dp(8), 0);
+        if (!desktopLayout) {
+            pathList.addView(note, new LinearLayout.LayoutParams(dp(250), dp(72)));
+        } else {
+            pathList.addView(note);
+        }
     }
 
     private void loadResources(String kind) {
@@ -2016,7 +2026,25 @@ public class ProfessionalEditorActivity extends Activity {
                     text = "تدرجات";
                     break;
                 case "patterns":
-                    text = "نقوش";
+                    resourceList.addView(actionButton("مربعات", v ->
+                            applyRemote("pattern_fill", jsonOf(
+                                    "style", "checker",
+                                    "foreground", foregroundColor,
+                                    "background", "#000000",
+                                    "size", 24))));
+                    resourceList.addView(actionButton("خطوط", v ->
+                            applyRemote("pattern_fill", jsonOf(
+                                    "style", "stripes",
+                                    "foreground", foregroundColor,
+                                    "background", "#000000",
+                                    "size", 24))));
+                    resourceList.addView(actionButton("نقاط", v ->
+                            applyRemote("pattern_fill", jsonOf(
+                                    "style", "dots",
+                                    "foreground", foregroundColor,
+                                    "background", "#000000",
+                                    "size", 24))));
+                    text = "نقوش محلية جاهزة";
                     break;
                 default:
                     text = "Palettes";
@@ -2051,7 +2079,25 @@ public class ProfessionalEditorActivity extends Activity {
                 message = "Linear Gradient يعمل محليًا الآن";
                 break;
             case "patterns":
-                message = "مكتبة النقوش المحلية ستضاف في V2";
+                resourceList.addView(actionButton("مربعات", v ->
+                        applyRemote("pattern_fill", jsonOf(
+                                "style", "checker",
+                                "foreground", foregroundColor,
+                                "background", "#000000",
+                                "size", 24))));
+                resourceList.addView(actionButton("خطوط", v ->
+                        applyRemote("pattern_fill", jsonOf(
+                                "style", "stripes",
+                                "foreground", foregroundColor,
+                                "background", "#000000",
+                                "size", 24))));
+                resourceList.addView(actionButton("نقاط", v ->
+                        applyRemote("pattern_fill", jsonOf(
+                                "style", "dots",
+                                "foreground", foregroundColor,
+                                "background", "#000000",
+                                "size", 24))));
+                message = "النقوش المحلية جاهزة وتطبق على الطبقة النشطة";
                 break;
             default:
                 message = "ألوان المقدمة والخلفية محلية بالكامل";
@@ -2395,13 +2441,12 @@ public class ProfessionalEditorActivity extends Activity {
         switch (group) {
             case "ملف":
                 showChoice("ملف", new String[]{
-                        "فتح صورة", "حفظ PNG", "حفظ JPG", "حفظ WEBP", "حفظ XCF"
+                        "فتح صورة", "حفظ PNG", "حفظ JPG", "حفظ WEBP"
                 }, index -> {
                     if (index == 0) chooseImage();
                     else if (index == 1) exportProject("png");
                     else if (index == 2) exportProject("jpg");
                     else if (index == 3) exportProject("webp");
-                    else if (index == 4) exportProject("xcf");
                 });
                 break;
 
@@ -2456,8 +2501,8 @@ public class ProfessionalEditorActivity extends Activity {
 
             case "طبقة":
                 showChoice("طبقة", new String[]{
-                        "فتح لوحة الطبقات", "طبقة جديدة", "مجموعة جديدة",
-                        "إضافة قناع أبيض", "دمج المرئي", "Flatten"
+                        "فتح لوحة الطبقات", "طبقة جديدة", "نسخ الطبقة",
+                        "حذف الطبقة", "دمج لأسفل", "Flatten"
                 }, index -> {
                     if (index == 0) {
                         openInspectorTab("layers");
@@ -2465,11 +2510,11 @@ public class ProfessionalEditorActivity extends Activity {
                     } else if (index == 1) {
                         applyRemote("add_layer", jsonOf("name", "Layer"));
                     } else if (index == 2) {
-                        applyRemote("add_group", jsonOf("name", "Group"));
+                        applyRemote("duplicate_layer", new JSONObject());
                     } else if (index == 3) {
-                        applyRemote("add_mask", jsonOf("type", "white"));
+                        applyRemote("delete_layer", new JSONObject());
                     } else if (index == 4) {
-                        applyRemote("merge_visible", new JSONObject());
+                        applyRemote("merge_down", new JSONObject());
                     } else {
                         applyRemote("flatten", new JSONObject());
                     }
