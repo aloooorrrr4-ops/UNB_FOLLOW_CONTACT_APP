@@ -1537,11 +1537,13 @@ public class ProfessionalEditorActivity extends Activity {
                     recognizedText = "";
                     recognizedTextConfidence = 0;
                     activeTool = "text_detect";
-                    pointerWorkEnabled = true;
                     if (canvas != null) {
                         canvas.setDetectedTextRegions(regions);
                         canvas.setInteractionMode("text_select");
-                        canvas.setPointerActionEnabled(true);
+                        // Keep the user's shared pointer safety preference.
+                        // Direct taps on OCR boxes still select non-destructively,
+                        // while dragged detached-pointer actions obey move-only.
+                        canvas.setPointerActionEnabled(pointerWorkEnabled);
                         canvas.showPointerNow();
                     }
                     setBusy(false);
@@ -1618,38 +1620,42 @@ public class ProfessionalEditorActivity extends Activity {
 
     private void selectDetectedTextRegion(float imageX, float imageY) {
         RectF best = null;
-        float bestScore = Float.MAX_VALUE;
+        float bestArea = Float.MAX_VALUE;
 
-        // First prefer an exact hit. If the text is very small, allow a small
-        // halo around the detected box so numbers and short Arabic words are
-        // easy to select with a finger.
+        // Pass 1: exact containment always wins. This prevents a smaller
+        // neighboring OCR box's padded halo from stealing a tap that is
+        // genuinely inside another word.
         for (RectF region : detectedTextRegions) {
+            if (!region.contains(imageX, imageY)) continue;
             float area = Math.max(1f, region.width() * region.height());
-            if (region.contains(imageX, imageY)) {
-                if (area < bestScore) {
-                    bestScore = area;
+            if (area < bestArea) {
+                bestArea = area;
+                best = region;
+            }
+        }
+
+        // Pass 2: only when there is no exact hit, use a forgiving touch halo
+        // for tiny words/numbers that are difficult to hit precisely.
+        if (best == null) {
+            float bestScore = Float.MAX_VALUE;
+            for (RectF region : detectedTextRegions) {
+                float halo = Math.max(4f, Math.min(14f, region.height() * 0.45f));
+                RectF expanded = new RectF(
+                        region.left - halo,
+                        region.top - halo,
+                        region.right + halo,
+                        region.bottom + halo);
+                if (!expanded.contains(imageX, imageY)) continue;
+
+                float area = Math.max(1f, region.width() * region.height());
+                float dx = imageX - region.centerX();
+                float dy = imageY - region.centerY();
+                float distancePenalty = dx * dx + dy * dy;
+                float score = area + distancePenalty * 0.25f;
+                if (score < bestScore) {
+                    bestScore = score;
                     best = region;
                 }
-                continue;
-            }
-
-            float halo = Math.max(4f, Math.min(14f, region.height() * 0.45f));
-            RectF expanded = new RectF(
-                    region.left - halo,
-                    region.top - halo,
-                    region.right + halo,
-                    region.bottom + halo);
-            if (!expanded.contains(imageX, imageY)) continue;
-
-            float cx = region.centerX();
-            float cy = region.centerY();
-            float dx = imageX - cx;
-            float dy = imageY - cy;
-            float distancePenalty = dx * dx + dy * dy;
-            float score = area + distancePenalty * 0.25f;
-            if (score < bestScore) {
-                bestScore = score;
-                best = region;
             }
         }
 
