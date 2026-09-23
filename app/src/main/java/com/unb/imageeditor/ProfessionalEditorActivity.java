@@ -1537,15 +1537,20 @@ public class ProfessionalEditorActivity extends Activity {
                     recognizedText = "";
                     recognizedTextConfidence = 0;
                     activeTool = "text_detect";
+                    // Text detection is immediately actionable: moving/releasing the
+                    // detached pointer over a detected box selects it. Previously this
+                    // inherited the global "move only" state, so the blue boxes appeared
+                    // but selectedTextRegion stayed null and edit/crop/delete refused to run.
+                    pointerWorkEnabled = true;
                     if (canvas != null) {
                         canvas.setDetectedTextRegions(regions);
                         canvas.setInteractionMode("text_select");
-                        canvas.setPointerActionEnabled(pointerWorkEnabled);
+                        canvas.setPointerActionEnabled(true);
                         canvas.showPointerNow();
                     }
                     setBusy(false);
                     setStatus("تم اكتشاف " + regions.size() +
-                            " منطقة نص — حرّك المؤشر فوق الكلمة المطلوبة");
+                            " منطقة نص — حرّك المؤشر فوق الكلمة واترك إصبعك لتحديدها");
                     addHistory("كشف النصوص " + regions.size());
                 });
             } catch (Exception e) {
@@ -1620,7 +1625,15 @@ public class ProfessionalEditorActivity extends Activity {
         float bestArea = Float.MAX_VALUE;
 
         for (RectF region : detectedTextRegions) {
-            if (!region.contains(imageX, imageY)) continue;
+            // Give the pointer a small hit margin around thin OCR boxes. On a phone
+            // the crosshair may visually cover the text while landing a few image
+            // pixels outside the exact OCR rectangle.
+            float pad = Math.max(3f, Math.min(18f,
+                    Math.min(region.width(), region.height()) * 0.35f));
+            RectF hit = new RectF(region);
+            hit.inset(-pad, -pad);
+            if (!hit.contains(imageX, imageY)) continue;
+
             float area = region.width() * region.height();
             if (area < bestArea) {
                 bestArea = area;
@@ -1634,7 +1647,7 @@ public class ProfessionalEditorActivity extends Activity {
         if (canvas != null) canvas.setSelectedTextRegion(selectedTextRegion);
 
         if (selectedTextRegion == null) {
-            setStatus("لم يتم تحديد نص — اضغط داخل أحد الإطارات الزرقاء");
+            setStatus("لم يتم تحديد نص — ضع رأس المؤشر داخل أحد الإطارات الزرقاء");
         } else {
             setStatus("تم تحديد النص • " +
                     Math.round(selectedTextRegion.width()) + "×" +
@@ -1642,19 +1655,27 @@ public class ProfessionalEditorActivity extends Activity {
         }
     }
 
-    private void selectTextAtPointer() {
-        if (canvas == null) return;
+    private boolean selectTextAtPointerNow() {
+        if (canvas == null) return false;
         float[] p = canvas.getPointerImagePosition();
-        if (p == null || p.length < 2) {
-            toast("المؤشر غير جاهز");
-            return;
-        }
+        if (p == null || p.length < 2) return false;
         selectDetectedTextRegion(p[0], p[1]);
+        return selectedTextRegion != null;
+    }
+
+    private void selectTextAtPointer() {
+        if (!selectTextAtPointerNow()) {
+            toast("ضع رأس المؤشر داخل إطار النص");
+        }
+    }
+
+    private boolean ensureSelectedTextRegion() {
+        return selectedTextRegion != null || selectTextAtPointerNow();
     }
 
     private void recognizeSelectedText(boolean openEditorAfter) {
-        if (selectedTextRegion == null) {
-            toast("حدد النص بالمؤشر أولاً");
+        if (!ensureSelectedTextRegion()) {
+            toast("ضع رأس المؤشر داخل إطار النص ثم اضغط مرة أخرى");
             return;
         }
         if (busy) return;
@@ -1796,8 +1817,8 @@ public class ProfessionalEditorActivity extends Activity {
     }
 
     private void deleteSelectedTextRegion() {
-        if (selectedTextRegion == null) {
-            toast("حدد النص أولاً");
+        if (!ensureSelectedTextRegion()) {
+            toast("ضع رأس المؤشر داخل إطار النص ثم اضغط حذف المحدد");
             return;
         }
         replaceSelectedTextRegion("", Math.max(8, selectedTextRegion.height() * 0.7));
@@ -1845,8 +1866,8 @@ public class ProfessionalEditorActivity extends Activity {
     }
 
     private void cropSelectedTextRegion() {
-        if (selectedTextRegion == null) {
-            toast("حدد إطار النص أولاً");
+        if (!ensureSelectedTextRegion()) {
+            toast("ضع رأس المؤشر داخل إطار النص ثم اضغط قص المحدد");
             return;
         }
 
