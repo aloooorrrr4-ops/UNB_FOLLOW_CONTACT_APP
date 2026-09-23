@@ -296,6 +296,9 @@ public class ProfessionalEditorActivity extends Activity {
         addTool(rail, "smudge", "تلطيخ");
         addTool(rail, "dodge_burn", "إضاءة");
         addTool(rail, "color_picker", "لون");
+        addTool(rail, "brightness_adjust", "سطوع");
+        addTool(rail, "contrast_adjust", "تباين");
+        addTool(rail, "saturation_adjust", "تشبع");
         addTool(rail, "zoom", "تكبير");
 
         if (!desktopLayout) {
@@ -623,6 +626,21 @@ public class ProfessionalEditorActivity extends Activity {
                     toast("اتجاه النص سيصبح قابلًا للتبديل في محرك النص V2")));
             toolOptions.addView(actionButton("لون النص", v ->
                     toast("لون النص الحالي " + foregroundColor)));
+        } else if ("brightness_adjust".equals(id)) {
+            addSlider(toolOptions, "السطوع", -100, 100, 0,
+                    value -> applyRemote("brightness", json("value", value)));
+            toolOptions.addView(actionButton("إعادة 0", v ->
+                    showTool("brightness_adjust", "سطوع", source)));
+        } else if ("contrast_adjust".equals(id)) {
+            addSlider(toolOptions, "التباين", -100, 100, 0,
+                    value -> applyRemote("contrast", json("value", value)));
+            toolOptions.addView(actionButton("إعادة 0", v ->
+                    showTool("contrast_adjust", "تباين", source)));
+        } else if ("saturation_adjust".equals(id)) {
+            addSlider(toolOptions, "التشبع", -100, 100, 0,
+                    value -> applyRemote("saturation", json("value", value)));
+            toolOptions.addView(actionButton("إعادة 0", v ->
+                    showTool("saturation_adjust", "تشبع", source)));
         } else if ("crop".equals(id)) {
             cropAspectRatio = 0f;
             toolOptions.addView(actionButton("يدوي", v -> {
@@ -1587,25 +1605,29 @@ public class ProfessionalEditorActivity extends Activity {
 
             case "ألوان":
                 showChoice("ألوان", new String[]{
-                        "Brightness / Contrast", "Hue / Saturation",
+                        "السطوع", "التباين", "التشبع",
                         "Levels", "Curves", "Threshold", "Posterize",
                         "Desaturate", "Invert", "Equalize", "Color Balance"
                 }, index -> {
-                    if (index == 0 || index == 1) {
-                        openInspectorTab("properties");
+                    if (index == 0) {
+                        showTool("brightness_adjust", "سطوع", null);
+                    } else if (index == 1) {
+                        showTool("contrast_adjust", "تباين", null);
                     } else if (index == 2) {
-                        applyRemote("levels", new JSONObject());
+                        showTool("saturation_adjust", "تشبع", null);
                     } else if (index == 3) {
-                        applyRemote("curves", new JSONObject());
+                        applyRemote("levels", new JSONObject());
                     } else if (index == 4) {
-                        showNumericOperationDialog("Threshold 0-100", "threshold", "low", 50, 0, 100, true);
+                        applyRemote("curves", new JSONObject());
                     } else if (index == 5) {
-                        showNumericOperationDialog("Posterize 2-256", "posterize", "levels", 4, 2, 256, false);
+                        showNumericOperationDialog("Threshold 0-100", "threshold", "low", 50, 0, 100, true);
                     } else if (index == 6) {
-                        applyRemote("desaturate", new JSONObject());
+                        showNumericOperationDialog("Posterize 2-256", "posterize", "levels", 4, 2, 256, false);
                     } else if (index == 7) {
-                        applyRemote("invert", new JSONObject());
+                        applyRemote("desaturate", new JSONObject());
                     } else if (index == 8) {
+                        applyRemote("invert", new JSONObject());
+                    } else if (index == 9) {
                         applyRemote("equalize", new JSONObject());
                     } else {
                         applyRemote("color_balance", new JSONObject());
