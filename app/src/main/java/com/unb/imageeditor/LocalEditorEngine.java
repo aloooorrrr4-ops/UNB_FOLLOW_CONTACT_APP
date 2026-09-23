@@ -1805,17 +1805,19 @@ public final class LocalEditorEngine {
         float maxWidth = Math.max(1f, w - 4f);
         float targetWidth = Math.max(1f, maxWidth * 0.92f);
 
-        // Preserve the original text-region height first. The previous logic
-        // reduced the font size whenever the replacement string was wider,
-        // which made Arabic replacements such as "اليمن نت" visibly tiny.
-        paint.setTextSize(requested);
+        // Preserve the requested/original-region font height first. The old
+        // implementation shrank the whole font whenever the replacement text
+        // was wider. Only reduce height when it genuinely cannot fit vertically.
+        float fitted = requested;
+        paint.setTextSize(fitted);
         Paint.FontMetrics initialFm = paint.getFontMetrics();
         float glyphHeight = Math.max(1f, initialFm.descent - initialFm.ascent);
-        float targetLineHeight = Math.max(6f,
-                (h * 0.78f) / Math.max(1, lines.length));
-        float heightScale = targetLineHeight / glyphHeight;
-        float fitted = Math.max(6f, requested * heightScale);
-        paint.setTextSize(fitted);
+        float availableLineHeight = Math.max(6f,
+                (h * 0.88f) / Math.max(1, lines.length));
+        if (glyphHeight > availableLineHeight) {
+            fitted = Math.max(6f, fitted * (availableLineHeight / glyphHeight));
+            paint.setTextSize(fitted);
+        }
 
         float baseWidthScale = Math.max(0.5f, Math.min(2.0f,
                 (float) p.optDouble("width_scale", 1.0)));
