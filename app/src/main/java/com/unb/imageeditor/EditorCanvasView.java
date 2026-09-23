@@ -56,6 +56,7 @@ public class EditorCanvasView extends View {
     private RectF selectedTextRegion;
 
     private Bitmap bitmap;
+    private Bitmap selectionOverlay;
     private float zoom = 1f;
     private float offsetX = 0f;
     private float offsetY = 0f;
@@ -259,12 +260,23 @@ public class EditorCanvasView extends View {
         invalidate();
     }
 
+    public void setSelectionOverlay(Bitmap overlay) {
+        selectionOverlay = overlay;
+        invalidate();
+    }
+
+    public void clearSelectionOverlay() {
+        selectionOverlay = null;
+        invalidate();
+    }
+
     public Bitmap getBitmap() {
         return bitmap;
     }
 
     public void clearBitmap() {
         bitmap = null;
+        selectionOverlay = null;
         fitted = false;
         clearStrokePreview();
         invalidate();
@@ -341,6 +353,9 @@ public class EditorCanvasView extends View {
 
         rebuildMatrix();
         canvas.drawBitmap(bitmap, drawMatrix, imagePaint);
+        if (selectionOverlay != null) {
+            canvas.drawBitmap(selectionOverlay, drawMatrix, imagePaint);
+        }
 
         RectF r = new RectF(0, 0, bitmap.getWidth(), bitmap.getHeight());
         drawMatrix.mapRect(r);
