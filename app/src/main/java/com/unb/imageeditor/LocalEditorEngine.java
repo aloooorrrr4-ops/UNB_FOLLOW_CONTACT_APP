@@ -2006,9 +2006,13 @@ public final class LocalEditorEngine {
     private boolean[] filterLikelyGlyphComponents(boolean[] candidate,
                                                   int width, int height) {
         int count = width * height;
-        boolean[] visited = new boolean[count];
         boolean[] accepted = new boolean[count];
-        int[] queue = new int[count];
+
+        // Reuse one queue whose capacity follows the largest actual candidate
+        // component rather than the full selected region. The candidate array
+        // itself doubles as the visited map by clearing entries when enqueued.
+        int initialCapacity = Math.max(32, Math.min(256, count));
+        int[] queue = new int[initialCapacity];
 
         int maxReasonableArea = Math.max(24, (int) (count * 0.42f));
         int longHorizontal = Math.max(12, Math.round(width * 0.55f));
@@ -2016,18 +2020,19 @@ public final class LocalEditorEngine {
         int thinHorizontalHeight = Math.max(2, Math.round(height * 0.10f));
         int thinVerticalWidth = Math.max(2, Math.round(width * 0.10f));
 
-        for (int start = 0; start < count; start++) {
-            if (!candidate[start] || visited[start]) continue;
+        for (int startIndex = 0; startIndex < count; startIndex++) {
+            if (!candidate[startIndex]) continue;
 
             int head = 0;
             int tail = 0;
-            queue[tail++] = start;
-            visited[start] = true;
+            if (tail == queue.length) {
+                queue = java.util.Arrays.copyOf(queue, queue.length * 2);
+            }
+            queue[tail++] = startIndex;
+            candidate[startIndex] = false;
 
             int minX = width, minY = height, maxX = -1, maxY = -1;
             int area = 0;
-            boolean touchesLeft = false, touchesRight = false;
-            boolean touchesTop = false, touchesBottom = false;
 
             while (head < tail) {
                 int index = queue[head++];
@@ -2038,10 +2043,6 @@ public final class LocalEditorEngine {
                 if (x > maxX) maxX = x;
                 if (y < minY) minY = y;
                 if (y > maxY) maxY = y;
-                if (x == 0) touchesLeft = true;
-                if (x == width - 1) touchesRight = true;
-                if (y == 0) touchesTop = true;
-                if (y == height - 1) touchesBottom = true;
 
                 for (int dy = -1; dy <= 1; dy++) {
                     int ny = y + dy;
@@ -2051,28 +2052,32 @@ public final class LocalEditorEngine {
                         int nx = x + dx;
                         if (nx < 0 || nx >= width) continue;
                         int ni = ny * width + nx;
-                        if (!candidate[ni] || visited[ni]) continue;
-                        visited[ni] = true;
+                        if (!candidate[ni]) continue;
+
+                        if (tail == queue.length) {
+                            int nextCapacity = Math.min(count,
+                                    Math.max(queue.length + 1, queue.length * 2));
+                            queue = java.util.Arrays.copyOf(queue, nextCapacity);
+                        }
                         queue[tail++] = ni;
+                        candidate[ni] = false;
                     }
                 }
             }
 
             int boxW = Math.max(1, maxX - minX + 1);
             int boxH = Math.max(1, maxY - minY + 1);
-            boolean spansOppositeEdges =
-                    (touchesLeft && touchesRight) || (touchesTop && touchesBottom);
             boolean longThinHorizontal =
                     boxW >= longHorizontal && boxH <= thinHorizontalHeight;
             boolean longThinVertical =
                     boxH >= longVertical && boxW <= thinVerticalWidth;
             boolean hugeArtwork = area > maxReasonableArea;
 
-            // Arabic words may form a wide connected component, so width alone
-            // is not a rejection criterion. We reject only obviously line-like,
-            // edge-spanning, or implausibly huge components.
+            // Tight manual selections are allowed: Arabic words or individual
+            // glyphs can legitimately touch opposite edges. Reject only
+            // components whose geometry is clearly line-like or implausibly
+            // large for text inside the selected region.
             boolean keep = area >= 2 &&
-                    !spansOppositeEdges &&
                     !longThinHorizontal &&
                     !longThinVertical &&
                     !hugeArtwork;
@@ -2120,7 +2125,11 @@ public final class LocalEditorEngine {
         int dr = Math.abs(Color.red(a) - Color.red(b));
         int dg = Math.abs(Color.green(a) - Color.green(b));
         int db = Math.abs(Color.blue(a) - Color.blue(b));
-        return (da + dr + dg + db) / 4;
+
+        // Preserve the exact RGB sensitivity used before alpha support was
+        // added, while still detecting alpha-only contrast on transparent art.
+        int rgbDistance = (dr + dg + db) / 3;
+        return Math.max(rgbDistance, da);
     }
 
     private boolean containsRtl(String text) {
