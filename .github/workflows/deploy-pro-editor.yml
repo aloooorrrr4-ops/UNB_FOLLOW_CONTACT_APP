@@ -55,7 +55,7 @@ jobs:
           script: |
             set -e
             cd /tmp/unb-pro-editor-deploy/server/gimp_editor
-            chmod +x install_staging.sh start_gimp_scriptfu.sh diagnose.sh
+            chmod +x install_staging.sh setup_https_ip.sh start_gimp_scriptfu.sh diagnose.sh
             ./install_staging.sh
             ./setup_https_ip.sh
 
