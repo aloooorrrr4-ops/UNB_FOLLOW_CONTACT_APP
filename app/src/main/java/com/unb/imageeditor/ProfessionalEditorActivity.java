@@ -8,6 +8,7 @@ import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
+import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
@@ -40,6 +41,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class ProfessionalEditorActivity extends Activity {
 
@@ -56,6 +58,7 @@ public class ProfessionalEditorActivity extends Activity {
 
     private EditorCanvasView canvas;
     private final LocalEditorEngine localEngine = new LocalEditorEngine();
+    private final LocalTextRegionDetector textRegionDetector = new LocalTextRegionDetector();
     private final ExecutorService localExecutor = Executors.newSingleThreadExecutor();
     private String projectId;
     private byte[] sourceBytes;
@@ -82,7 +85,13 @@ public class ProfessionalEditorActivity extends Activity {
     private float lastImageTapY = 0f;
     private int brushSize = 45;
     private int brushOpacity = 100;
+    private int pointerOffsetDp = 92;
+    private int brightnessValue = 0;
+    private int contrastValue = 0;
+    private int saturationValue = 0;
     private String foregroundColor = "#ffffff";
+    private final List<RectF> detectedTextRegions = new ArrayList<>();
+    private RectF selectedTextRegion;
     private float cloneSourceX = Float.NaN;
     private float cloneSourceY = Float.NaN;
     private float cropAspectRatio = 0f;
@@ -91,6 +100,9 @@ public class ProfessionalEditorActivity extends Activity {
 
     private final List<String> history = new ArrayList<>();
     private boolean busy = false;
+    private String pendingHistoryAction = null;
+    private final AtomicInteger adjustmentGeneration = new AtomicInteger();
+    private String activeAdjustmentOperation = null;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -246,6 +258,8 @@ public class ProfessionalEditorActivity extends Activity {
                 lastImageTapY = imageY;
                 if ("color_picker".equals(activeTool)) {
                     pickLocalColor(imageX, imageY);
+                } else if ("text_detect".equals(activeTool)) {
+                    selectDetectedTextRegion(imageX, imageY);
                 } else if ("fill".equals(activeTool) && projectId != null) {
                     applyRemote("fill", jsonOf("color", foregroundColor));
                 } else if ("fuzzy_select".equals(activeTool) && projectId != null) {
@@ -264,6 +278,7 @@ public class ProfessionalEditorActivity extends Activity {
                 handleCanvasStroke(imagePoints);
             }
         });
+        v.setPointerOffsetDp(pointerOffsetDp);
         return v;
     }
 
@@ -296,6 +311,9 @@ public class ProfessionalEditorActivity extends Activity {
         addTool(rail, "smudge", "تلطيخ");
         addTool(rail, "dodge_burn", "إضاءة");
         addTool(rail, "color_picker", "لون");
+        addTool(rail, "brightness_adjust", "سطوع");
+        addTool(rail, "contrast_adjust", "تباين");
+        addTool(rail, "saturation_adjust", "تشبع");
         addTool(rail, "zoom", "تكبير");
 
         if (!desktopLayout) {
@@ -581,16 +599,22 @@ public class ProfessionalEditorActivity extends Activity {
         }
 
         if (Arrays.asList("brush", "pencil", "eraser", "clone", "heal", "smudge", "dodge_burn").contains(id)) {
-            addSlider(toolOptions, "الحجم", 1, 300, brushSize, value -> {
+            addLiveSlider(toolOptions, "الحجم", 1, 300, brushSize, value -> {
                 brushSize = value;
                 if (canvas != null) {
                     canvas.setStrokePreview(brushSize, parseColorSafe(foregroundColor));
                 }
             });
-            addSlider(toolOptions, "العتامة", 0, 100, brushOpacity,
+            addLiveSlider(toolOptions, "العتامة", 0, 100, brushOpacity,
                     value -> brushOpacity = value);
             addSlider(toolOptions, "الصلابة", 0, 100, 70, null);
             addSlider(toolOptions, "التباعد", 1, 200, 20, null);
+            addLiveSlider(toolOptions, "ارتفاع الرأس", 48, 160, pointerOffsetDp, value -> {
+                pointerOffsetDp = value;
+                if (canvas != null) canvas.setPointerOffsetDp(pointerOffsetDp);
+            });
+            toolOptions.addView(actionButton("اللون " + foregroundColor, v ->
+                    showTool("color_picker", "اختيار لون", null)));
 
             if ("clone".equals(id) || "heal".equals(id)) {
                 toolOptions.addView(actionButton("تحديد المصدر", v -> {
@@ -623,6 +647,44 @@ public class ProfessionalEditorActivity extends Activity {
                     toast("اتجاه النص سيصبح قابلًا للتبديل في محرك النص V2")));
             toolOptions.addView(actionButton("لون النص", v ->
                     toast("لون النص الحالي " + foregroundColor)));
+        } else if ("color_picker".equals(id)) {
+            addLiveSlider(toolOptions, "ارتفاع الرأس", 48, 160, pointerOffsetDp, value -> {
+                pointerOffsetDp = value;
+                if (canvas != null) canvas.setPointerOffsetDp(pointerOffsetDp);
+            });
+            TextView colorInfo = label("اللون الحالي  " + foregroundColor,
+                    desktopLayout ? 13 : 11, TEXT, true);
+            colorInfo.setPadding(dp(10), 0, dp(10), 0);
+            colorInfo.setBackground(rounded(parseColorSafe(foregroundColor), 8));
+            colorInfo.setTextColor(colorLuminance(parseColorSafe(foregroundColor)) > 150
+                    ? Color.BLACK : Color.WHITE);
+            toolOptions.addView(colorInfo, new LinearLayout.LayoutParams(dp(160), dp(72)));
+            TextView help = label("حرّك إصبعك من أسفل؛ رأس المؤشر فوق يلتقط اللون بدقة.",
+                    11, MUTED, false);
+            help.setPadding(dp(10), 0, dp(10), 0);
+            toolOptions.addView(help, new LinearLayout.LayoutParams(dp(240), dp(82)));
+        } else if ("brightness_adjust".equals(id)) {
+            addAdjustmentSlider(toolOptions, "السطوع", "brightness", brightnessValue,
+                    value -> brightnessValue = value);
+        } else if ("contrast_adjust".equals(id)) {
+            addAdjustmentSlider(toolOptions, "التباين", "contrast", contrastValue,
+                    value -> contrastValue = value);
+        } else if ("saturation_adjust".equals(id)) {
+            addAdjustmentSlider(toolOptions, "التشبع", "saturation", saturationValue,
+                    value -> saturationValue = value);
+        } else if ("text_detect".equals(id)) {
+            toolOptions.addView(actionButton("اكتشاف النص", v -> detectTextRegions()));
+            toolOptions.addView(actionButton("قص المحدد", v -> cropSelectedTextRegion()));
+            toolOptions.addView(actionButton("مسح التحديد", v -> {
+                selectedTextRegion = null;
+                detectedTextRegions.clear();
+                if (canvas != null) canvas.clearDetectedTextRegions();
+                setStatus("تم مسح تحديد النص");
+            }));
+            TextView help = label("اكتشاف محلي لمناطق النص. اضغط على الإطار المطلوب ثم قص المحدد.",
+                    11, MUTED, false);
+            help.setPadding(dp(10), 0, dp(10), 0);
+            toolOptions.addView(help, new LinearLayout.LayoutParams(dp(250), dp(82)));
         } else if ("crop".equals(id)) {
             cropAspectRatio = 0f;
             toolOptions.addView(actionButton("يدوي", v -> {
@@ -645,9 +707,14 @@ public class ProfessionalEditorActivity extends Activity {
                 cropAspectRatio = 9f / 16f;
                 setStatus("القص بنسبة 9:16");
             }));
-            TextView help = label("اسحب على الصورة لتنفيذ القص", 11, MUTED, false);
+            addLiveSlider(toolOptions, "ارتفاع الرأس", 48, 160, pointerOffsetDp, value -> {
+                pointerOffsetDp = value;
+                if (canvas != null) canvas.setPointerOffsetDp(pointerOffsetDp);
+            });
+            TextView help = label("المس من أسفل، والقص يعمل عند رأس المؤشر فوق إصبعك",
+                    11, MUTED, false);
             help.setPadding(dp(10), 0, dp(10), 0);
-            toolOptions.addView(help, new LinearLayout.LayoutParams(dp(190), dp(82)));
+            toolOptions.addView(help, new LinearLayout.LayoutParams(dp(240), dp(82)));
         } else if ("select".equals(id)) {
             toolOptions.addView(actionButton("مستطيل", v ->
                     setStatus("اسحب لتحديد مستطيل")));
@@ -692,19 +759,19 @@ public class ProfessionalEditorActivity extends Activity {
             }
         }
 
+        // On phones the bottom strip must contain ONLY the selected tool's
+        // properties. Generic image color controls belong to the Colors menu,
+        // otherwise tapping Text/Crop/Eraser appears to open the wrong panel.
         if (desktopLayout) {
             toolOptions.addView(divider());
             toolOptions.addView(label("ضبط سريع للصورة", 14, TEXT, true));
-        } else {
-            toolOptions.addView(verticalDivider());
+            addSlider(toolOptions, "السطوع", -100, 100, 0,
+                    value -> applyRemote("brightness", json("value", value)));
+            addSlider(toolOptions, "التباين", -100, 100, 0,
+                    value -> applyRemote("contrast", json("value", value)));
+            addSlider(toolOptions, "التشبع", -100, 100, 0,
+                    value -> applyRemote("saturation", json("value", value)));
         }
-
-        addSlider(toolOptions, "السطوع", -100, 100, 0,
-                value -> applyRemote("brightness", json("value", value)));
-        addSlider(toolOptions, "التباين", -100, 100, 0,
-                value -> applyRemote("contrast", json("value", value)));
-        addSlider(toolOptions, "التشبع", -100, 100, 0,
-                value -> applyRemote("saturation", json("value", value)));
     }
 
     private void handleCanvasStroke(float[] points) {
@@ -724,6 +791,12 @@ public class ProfessionalEditorActivity extends Activity {
 
         lastImageTapX = points[points.length - 2];
         lastImageTapY = points[points.length - 1];
+
+        if ("color_picker".equals(activeTool)) {
+            pickLocalColor(lastImageTapX, lastImageTapY);
+            canvas.clearStrokePreview();
+            return;
+        }
 
         if ("select".equals(activeTool)) {
             if (points.length < 4) {
@@ -889,6 +962,84 @@ public class ProfessionalEditorActivity extends Activity {
         setStatus("اللون الحالي " + foregroundColor + "  •  X " + x + " Y " + y);
     }
 
+    private void detectTextRegions() {
+        if (!localEngine.hasImage() || busy) {
+            if (!localEngine.hasImage()) toast("افتح صورة أولاً");
+            return;
+        }
+
+        setBusy(true);
+        setStatus("جاري اكتشاف مناطق النص محليًا...");
+
+        localExecutor.execute(() -> {
+            try {
+                Bitmap source = localEngine.current();
+                List<RectF> regions = textRegionDetector.detect(source);
+
+                runOnUiThread(() -> {
+                    detectedTextRegions.clear();
+                    detectedTextRegions.addAll(regions);
+                    selectedTextRegion = null;
+                    if (canvas != null) canvas.setDetectedTextRegions(regions);
+                    setBusy(false);
+                    setStatus("تم اكتشاف " + regions.size() + " منطقة نص — اضغط على الإطار المطلوب");
+                    addHistory("كشف النص");
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    setBusy(false);
+                    setStatus("فشل اكتشاف النص");
+                    toast(shortText(e.getMessage()));
+                });
+            }
+        });
+    }
+
+    private void selectDetectedTextRegion(float imageX, float imageY) {
+        RectF best = null;
+        float bestArea = Float.MAX_VALUE;
+
+        for (RectF region : detectedTextRegions) {
+            if (!region.contains(imageX, imageY)) continue;
+            float area = region.width() * region.height();
+            if (area < bestArea) {
+                bestArea = area;
+                best = region;
+            }
+        }
+
+        selectedTextRegion = best == null ? null : new RectF(best);
+        if (canvas != null) canvas.setSelectedTextRegion(selectedTextRegion);
+
+        if (selectedTextRegion == null) {
+            setStatus("لم يتم تحديد نص — اضغط داخل أحد الإطارات الزرقاء");
+        } else {
+            setStatus("تم تحديد النص • " +
+                    Math.round(selectedTextRegion.width()) + "×" +
+                    Math.round(selectedTextRegion.height()));
+        }
+    }
+
+    private void cropSelectedTextRegion() {
+        if (selectedTextRegion == null) {
+            toast("حدد إطار النص أولاً");
+            return;
+        }
+
+        int x = Math.max(0, Math.round(selectedTextRegion.left));
+        int y = Math.max(0, Math.round(selectedTextRegion.top));
+        int w = Math.max(1, Math.round(selectedTextRegion.width()));
+        int h = Math.max(1, Math.round(selectedTextRegion.height()));
+
+        applyRemote("crop", jsonOf("x", x, "y", y, "width", w, "height", h));
+    }
+
+    private int colorLuminance(int color) {
+        return Math.round(Color.red(color) * 0.299f +
+                Color.green(color) * 0.587f +
+                Color.blue(color) * 0.114f);
+    }
+
     private int parseColorSafe(String color) {
         try {
             return Color.parseColor(color);
@@ -1025,6 +1176,189 @@ public class ProfessionalEditorActivity extends Activity {
                 if (commit != null && projectId != null) commit.apply(current);
             }
         });
+    }
+
+    private void addLiveSlider(LinearLayout parent, String title,
+                               int min, int max, int initial, SliderCommit live) {
+        LinearLayout card = sliderCard(title, String.valueOf(initial));
+        TextView value = (TextView) ((LinearLayout) card.getChildAt(0)).getChildAt(1);
+
+        SeekBar seek = new SeekBar(this);
+        seek.setMax(max - min);
+        seek.setProgress(initial - min);
+        seek.setKeyProgressIncrement(1);
+        card.addView(seek, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(desktopLayout ? 42 : 34)));
+        addSliderCard(parent, card);
+
+        seek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            public void onProgressChanged(SeekBar s, int progress, boolean fromUser) {
+                int current = min + progress;
+                value.setText(String.valueOf(current));
+                if (fromUser && live != null) live.apply(current);
+            }
+            public void onStartTrackingTouch(SeekBar s) {}
+            public void onStopTrackingTouch(SeekBar s) {}
+        });
+    }
+
+    private void addAdjustmentSlider(LinearLayout parent, String title, String operation,
+                                     int initial, SliderCommit saveValue) {
+        int safeInitial = Math.max(-100, Math.min(100, initial));
+        LinearLayout card = sliderCard(title, signedValue(safeInitial));
+        TextView value = (TextView) ((LinearLayout) card.getChildAt(0)).getChildAt(1);
+        value.setTextDirection(View.TEXT_DIRECTION_LTR);
+        value.setLayoutDirection(View.LAYOUT_DIRECTION_LTR);
+        value.setGravity(Gravity.END);
+
+        SeekBar seek = new SeekBar(this);
+        seek.setMax(200);
+        seek.setProgress(safeInitial + 100);
+        seek.setKeyProgressIncrement(1);
+        card.addView(seek, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(desktopLayout ? 42 : 34)));
+        addSliderCard(parent, card);
+
+        final int[] current = {safeInitial};
+
+        seek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onStartTrackingTouch(SeekBar s) {
+                if (!localEngine.hasImage()) return;
+                activeAdjustmentOperation = operation;
+                int requested = current[0];
+                localExecutor.execute(() -> {
+                    try {
+                        int actual = localEngine.beginAdjustment(operation, requested);
+                        if (actual != requested) {
+                            runOnUiThread(() -> {
+                                current[0] = actual;
+                                seek.setProgress(actual + 100);
+                                value.setText(signedValue(actual));
+                                if (saveValue != null) saveValue.apply(actual);
+                            });
+                        }
+                    } catch (Exception e) {
+                        runOnUiThread(() -> toast(shortText(e.getMessage())));
+                    }
+                });
+            }
+
+            @Override
+            public void onProgressChanged(SeekBar s, int progress, boolean fromUser) {
+                current[0] = progress - 100;
+                value.setText(signedValue(current[0]));
+                if (saveValue != null) saveValue.apply(current[0]);
+                if (fromUser && localEngine.hasImage()) {
+                    requestAdjustmentPreview(operation, current[0], false);
+                }
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar s) {
+                if (!localEngine.hasImage()) return;
+                requestAdjustmentPreview(operation, current[0], true);
+            }
+        });
+    }
+
+    private LinearLayout sliderCard(String title, String initialText) {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setGravity(Gravity.CENTER_VERTICAL);
+        card.setPadding(dp(8), dp(4), dp(8), dp(2));
+        if (!desktopLayout) {
+            card.setBackground(rounded(Color.rgb(35, 39, 45), 8));
+        }
+
+        LinearLayout header = new LinearLayout(this);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView name = label(title, desktopLayout ? 13 : 11, MUTED, false);
+        TextView value = label(initialText, desktopLayout ? 13 : 11, TEXT, true);
+        value.setGravity(Gravity.END);
+
+        header.addView(name, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        header.addView(value, new LinearLayout.LayoutParams(dp(desktopLayout ? 60 : 48),
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+        card.addView(header);
+        return card;
+    }
+
+    private void addSliderCard(LinearLayout parent, LinearLayout card) {
+        LinearLayout.LayoutParams cardLp;
+        if (desktopLayout) {
+            cardLp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        } else {
+            cardLp = new LinearLayout.LayoutParams(dp(170), dp(82));
+            cardLp.setMargins(dp(3), 0, dp(3), 0);
+        }
+        parent.addView(card, cardLp);
+    }
+
+    private String signedValue(int value) {
+        if (value > 0) return "+" + value;
+        return String.valueOf(value);
+    }
+
+    private void requestAdjustmentPreview(String operation, int value, boolean commit) {
+        int token = adjustmentGeneration.incrementAndGet();
+
+        localExecutor.execute(() -> {
+            try {
+                if (token != adjustmentGeneration.get()) return;
+
+                Bitmap frame = localEngine.previewAdjustment(operation, value);
+                if (token != adjustmentGeneration.get()) return;
+
+                if (commit) {
+                    frame = localEngine.commitAdjustment();
+                }
+
+                Bitmap result = frame;
+                runOnUiThread(() -> {
+                    if (token != adjustmentGeneration.get()) return;
+                    if (canvas != null) canvas.setBitmapPreserveViewport(result);
+                    projectText.setText("Offline • " +
+                            localEngine.width() + "×" + localEngine.height());
+
+                    if (commit) {
+                        activeAdjustmentOperation = null;
+                        if (value != 0) addHistory(operation + " " + signedValue(value));
+                        setStatus(operationLabel(operation) + " " + signedValue(value));
+                        refreshRemotePanels();
+                        flushPendingHistory();
+                    } else {
+                        setStatus(operationLabel(operation) + " " + signedValue(value));
+                    }
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    activeAdjustmentOperation = null;
+                    setStatus("فشل التعديل: " + shortText(e.getMessage()));
+                    toast(shortText(e.getMessage()));
+                    flushPendingHistory();
+                });
+            }
+        });
+    }
+
+    private String operationLabel(String operation) {
+        if ("brightness".equals(operation)) return "السطوع";
+        if ("contrast".equals(operation)) return "التباين";
+        if ("saturation".equals(operation)) return "التشبع";
+        return operation;
+    }
+
+    private void resetAdjustmentValues() {
+        adjustmentGeneration.incrementAndGet();
+        activeAdjustmentOperation = null;
+        brightnessValue = 0;
+        contrastValue = 0;
+        saturationValue = 0;
     }
 
     private void refreshLayers() {
@@ -1353,6 +1687,10 @@ public class ProfessionalEditorActivity extends Activity {
                 runOnUiThread(() -> {
                     sourceBytes = bytes;
                     sourceName = name;
+                    resetAdjustmentValues();
+                    detectedTextRegions.clear();
+                    selectedTextRegion = null;
+                    if (canvas != null) canvas.clearDetectedTextRegions();
                     projectId = "LOCAL";
                     canvas.setBitmap(frame);
                     projectText.setText("Offline • " +
@@ -1388,6 +1726,14 @@ public class ProfessionalEditorActivity extends Activity {
                 runOnUiThread(() -> {
                     canvas.setBitmap(value);
                     if (canvas != null) canvas.clearStrokePreview();
+                    if (!"brightness".equals(operation) &&
+                            !"contrast".equals(operation) &&
+                            !"saturation".equals(operation)) {
+                        resetAdjustmentValues();
+                        detectedTextRegions.clear();
+                        selectedTextRegion = null;
+                        if (canvas != null) canvas.clearDetectedTextRegions();
+                    }
                     setBusy(false);
                     projectId = "LOCAL";
                     projectText.setText("Offline • " +
@@ -1395,6 +1741,7 @@ public class ProfessionalEditorActivity extends Activity {
                     setStatus("تم " + operation + " محليًا");
                     addHistory(operation);
                     refreshRemotePanels();
+                    flushPendingHistory();
                 });
             } catch (Exception e) {
                 runOnUiThread(() -> {
@@ -1402,13 +1749,28 @@ public class ProfessionalEditorActivity extends Activity {
                     setBusy(false);
                     setStatus("غير متاح بعد: " + shortText(e.getMessage()));
                     toast(shortText(e.getMessage()));
+                    flushPendingHistory();
                 });
             }
         });
     }
 
     private void remoteHistory(String action) {
-        if (!localEngine.hasImage() || busy) return;
+        if (!localEngine.hasImage()) return;
+
+        if (activeAdjustmentOperation != null) {
+            pendingHistoryAction = action;
+            setStatus(("redo".equals(action) ? "الإعادة" : "التراجع") +
+                    " سيتم بعد تثبيت قيمة المؤشر");
+            return;
+        }
+
+        if (busy) {
+            pendingHistoryAction = action;
+            setStatus(("redo".equals(action) ? "الإعادة" : "التراجع") +
+                    " سيتم فور انتهاء العملية الحالية");
+            return;
+        }
 
         setBusy(true);
         setStatus("جاري " + action + " محليًا...");
@@ -1421,6 +1783,7 @@ public class ProfessionalEditorActivity extends Activity {
 
                 runOnUiThread(() -> {
                     canvas.setBitmap(value);
+                    resetAdjustmentValues();
                     setBusy(false);
                     projectText.setText("Offline • " +
                             localEngine.width() + "×" + localEngine.height());
@@ -1436,6 +1799,13 @@ public class ProfessionalEditorActivity extends Activity {
                 });
             }
         });
+    }
+
+    private void flushPendingHistory() {
+        if (busy || pendingHistoryAction == null) return;
+        String action = pendingHistoryAction;
+        pendingHistoryAction = null;
+        remoteHistory(action);
     }
 
     private void exportProject(String format) {
@@ -1587,25 +1957,29 @@ public class ProfessionalEditorActivity extends Activity {
 
             case "ألوان":
                 showChoice("ألوان", new String[]{
-                        "Brightness / Contrast", "Hue / Saturation",
+                        "السطوع", "التباين", "التشبع",
                         "Levels", "Curves", "Threshold", "Posterize",
                         "Desaturate", "Invert", "Equalize", "Color Balance"
                 }, index -> {
-                    if (index == 0 || index == 1) {
-                        openInspectorTab("properties");
+                    if (index == 0) {
+                        showTool("brightness_adjust", "سطوع", null);
+                    } else if (index == 1) {
+                        showTool("contrast_adjust", "تباين", null);
                     } else if (index == 2) {
-                        applyRemote("levels", new JSONObject());
+                        showTool("saturation_adjust", "تشبع", null);
                     } else if (index == 3) {
-                        applyRemote("curves", new JSONObject());
+                        applyRemote("levels", new JSONObject());
                     } else if (index == 4) {
-                        showNumericOperationDialog("Threshold 0-100", "threshold", "low", 50, 0, 100, true);
+                        applyRemote("curves", new JSONObject());
                     } else if (index == 5) {
-                        showNumericOperationDialog("Posterize 2-256", "posterize", "levels", 4, 2, 256, false);
+                        showNumericOperationDialog("Threshold 0-100", "threshold", "low", 50, 0, 100, true);
                     } else if (index == 6) {
-                        applyRemote("desaturate", new JSONObject());
+                        showNumericOperationDialog("Posterize 2-256", "posterize", "levels", 4, 2, 256, false);
                     } else if (index == 7) {
-                        applyRemote("invert", new JSONObject());
+                        applyRemote("desaturate", new JSONObject());
                     } else if (index == 8) {
+                        applyRemote("invert", new JSONObject());
+                    } else if (index == 9) {
                         applyRemote("equalize", new JSONObject());
                     } else {
                         applyRemote("color_balance", new JSONObject());

@@ -35,12 +35,21 @@ public final class LocalEditorEngine {
     private final Deque<Bitmap> undo = new ArrayDeque<>();
     private final Deque<Bitmap> redo = new ArrayDeque<>();
 
+    private Bitmap adjustmentBase;
+    private Bitmap adjustmentSessionStart;
+    private String adjustmentOperation;
+    private int adjustmentValue;
+    private int brightnessAdjustment;
+    private int contrastAdjustment;
+    private int saturationAdjustment;
+
     public synchronized void open(Bitmap source) {
         if (source == null) throw new IllegalArgumentException("الصورة غير صالحة");
         undo.clear();
         redo.clear();
         bitmap = mutable(source);
         selection = null;
+        clearAdjustmentPipeline();
     }
 
     public synchronized boolean hasImage() {
@@ -69,6 +78,7 @@ public final class LocalEditorEngine {
 
     public synchronized Bitmap undo() {
         requireImage();
+        clearAdjustmentPipeline();
         if (undo.isEmpty()) throw new IllegalStateException("لا توجد خطوة أقدم");
         redo.addLast(copy(bitmap));
         trim(redo);
@@ -79,6 +89,7 @@ public final class LocalEditorEngine {
 
     public synchronized Bitmap redo() {
         requireImage();
+        clearAdjustmentPipeline();
         if (redo.isEmpty()) throw new IllegalStateException("لا توجد خطوة لإعادتها");
         undo.addLast(copy(bitmap));
         trim(undo);
@@ -87,8 +98,110 @@ public final class LocalEditorEngine {
         return bitmap;
     }
 
+    public synchronized int beginAdjustment(String operation, int requestedValue) {
+        requireImage();
+        String op = normalizeAdjustment(operation);
+
+        if (adjustmentBase == null) {
+            adjustmentBase = copy(bitmap);
+        }
+
+        adjustmentSessionStart = copy(bitmap);
+        adjustmentOperation = op;
+        adjustmentValue = committedAdjustment(op);
+        return adjustmentValue;
+    }
+
+    public synchronized Bitmap previewAdjustment(String operation, int value) {
+        requireImage();
+        String op = normalizeAdjustment(operation);
+        if (adjustmentOperation == null || !op.equals(adjustmentOperation)) {
+            beginAdjustment(op, committedAdjustment(op));
+        }
+
+        adjustmentValue = Math.max(-100, Math.min(100, value));
+        bitmap = copy(adjustmentBase);
+
+        int b = "brightness".equals(op) ? adjustmentValue : brightnessAdjustment;
+        int c = "contrast".equals(op) ? adjustmentValue : contrastAdjustment;
+        int s = "saturation".equals(op) ? adjustmentValue : saturationAdjustment;
+
+        if (b != 0) brightness(b);
+        if (c != 0) contrast(c);
+        if (s != 0) saturation(s);
+        return bitmap;
+    }
+
+    public synchronized Bitmap commitAdjustment() {
+        requireImage();
+        if (adjustmentOperation == null) return bitmap;
+
+        int previous = committedAdjustment(adjustmentOperation);
+        if (adjustmentValue != previous) {
+            if (adjustmentSessionStart != null) {
+                undo.addLast(adjustmentSessionStart);
+                trim(undo);
+            }
+            redo.clear();
+            setCommittedAdjustment(adjustmentOperation, adjustmentValue);
+        } else if (adjustmentSessionStart != null) {
+            bitmap = adjustmentSessionStart;
+        }
+
+        adjustmentSessionStart = null;
+        adjustmentOperation = null;
+        adjustmentValue = 0;
+        return bitmap;
+    }
+
+    public synchronized Bitmap cancelAdjustment() {
+        if (adjustmentSessionStart != null) {
+            bitmap = adjustmentSessionStart;
+        }
+        adjustmentSessionStart = null;
+        adjustmentOperation = null;
+        adjustmentValue = 0;
+        return bitmap;
+    }
+
+    public synchronized boolean hasAdjustmentSession() {
+        return adjustmentOperation != null;
+    }
+
+    private String normalizeAdjustment(String operation) {
+        String op = operation == null ? "" : operation.trim().toLowerCase();
+        if (!"brightness".equals(op) && !"contrast".equals(op) && !"saturation".equals(op)) {
+            throw new IllegalArgumentException("تعديل غير مدعوم");
+        }
+        return op;
+    }
+
+    private int committedAdjustment(String operation) {
+        if ("brightness".equals(operation)) return brightnessAdjustment;
+        if ("contrast".equals(operation)) return contrastAdjustment;
+        if ("saturation".equals(operation)) return saturationAdjustment;
+        return 0;
+    }
+
+    private void setCommittedAdjustment(String operation, int value) {
+        if ("brightness".equals(operation)) brightnessAdjustment = value;
+        else if ("contrast".equals(operation)) contrastAdjustment = value;
+        else if ("saturation".equals(operation)) saturationAdjustment = value;
+    }
+
+    private void clearAdjustmentPipeline() {
+        adjustmentBase = null;
+        adjustmentSessionStart = null;
+        adjustmentOperation = null;
+        adjustmentValue = 0;
+        brightnessAdjustment = 0;
+        contrastAdjustment = 0;
+        saturationAdjustment = 0;
+    }
+
     public synchronized Bitmap apply(String operation, JSONObject params) {
         requireImage();
+        clearAdjustmentPipeline();
         String op = operation == null ? "" : operation.trim().toLowerCase();
         JSONObject p = params == null ? new JSONObject() : params;
 
