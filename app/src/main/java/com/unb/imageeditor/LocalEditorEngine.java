@@ -807,15 +807,20 @@ public final class LocalEditorEngine {
         Canvas canvas = new Canvas(out);
         Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
 
+        boolean hasBackdrop = false;
         for (Layer layer : layers) {
             if (!layer.visible) continue;
             paint.setAlpha(layer.opacity);
-            PorterDuff.Mode mode = porterDuffForBlend(layer.blendMode);
+
+            // A blend mode requires an existing backdrop. The first visible
+            // layer is always composited normally, matching desktop editors.
+            PorterDuff.Mode mode = hasBackdrop ? porterDuffForBlend(layer.blendMode) : null;
             if (mode != null) paint.setXfermode(new PorterDuffXfermode(mode));
             else paint.setXfermode(null);
 
             Bitmap draw = layer.mask == null ? layer.bitmap : maskedLayerBitmap(layer);
             canvas.drawBitmap(draw, 0, 0, paint);
+            hasBackdrop = true;
         }
         paint.setAlpha(255);
         paint.setXfermode(null);
