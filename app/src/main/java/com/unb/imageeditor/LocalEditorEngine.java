@@ -320,6 +320,14 @@ public final class LocalEditorEngine {
                 return moveLayer(activeLayerIndex, 1);
             case "move_layer_down":
                 return moveLayer(activeLayerIndex, -1);
+            case "move_layer_top":
+                return moveLayerToEdge(activeLayerIndex, true);
+            case "move_layer_bottom":
+                return moveLayerToEdge(activeLayerIndex, false);
+            case "show_all_layers":
+                return showAllLayers();
+            case "hide_other_layers":
+                return hideOtherLayers(activeLayerIndex);
             case "add_layer_mask":
                 return addLayerMask();
             case "invert_layer_mask":
@@ -330,8 +338,9 @@ public final class LocalEditorEngine {
                 return removeLayerMask();
             case "merge_down":
                 return mergeDown();
-            case "flatten":
             case "merge_visible":
+                return mergeVisibleLayers();
+            case "flatten":
                 return flattenLayers();
         }
 
@@ -653,6 +662,35 @@ public final class LocalEditorEngine {
         return compositeLayers();
     }
 
+    private Bitmap moveLayerToEdge(int index, boolean top) {
+        if (index < 0 || index >= layers.size()) {
+            throw new IllegalArgumentException("طبقة غير موجودة");
+        }
+        if (layers.size() <= 1) return compositeLayers();
+
+        Layer layer = layers.remove(index);
+        int target = top ? layers.size() : 0;
+        layers.add(target, layer);
+        activeLayerIndex = target;
+        bitmap = layer.bitmap;
+        return compositeLayers();
+    }
+
+    private Bitmap showAllLayers() {
+        for (Layer layer : layers) layer.visible = true;
+        return compositeLayers();
+    }
+
+    private Bitmap hideOtherLayers(int index) {
+        if (index < 0 || index >= layers.size()) {
+            throw new IllegalArgumentException("طبقة غير موجودة");
+        }
+        for (int i = 0; i < layers.size(); i++) {
+            layers.get(i).visible = i == index;
+        }
+        return compositeLayers();
+    }
+
     private Bitmap setLayerBlendMode(int index, String mode) {
         if (index < 0 || index >= layers.size()) {
             throw new IllegalArgumentException("طبقة غير موجودة");
@@ -802,6 +840,59 @@ public final class LocalEditorEngine {
         layers.remove(activeLayerIndex);
         activeLayerIndex--;
         bitmap = lower.bitmap;
+        undo.clear();
+        redo.clear();
+        clearAdjustmentPipeline();
+        return compositeLayers();
+    }
+
+    private Bitmap mergeVisibleLayers() {
+        int visibleCount = 0;
+        int topVisibleIndex = -1;
+        for (int i = 0; i < layers.size(); i++) {
+            if (layers.get(i).visible) {
+                visibleCount++;
+                topVisibleIndex = i;
+            }
+        }
+        if (visibleCount <= 1) return compositeLayers();
+
+        int w = width();
+        int h = height();
+        Bitmap mergedBitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(mergedBitmap);
+        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+        boolean hasBackdrop = false;
+
+        for (Layer layer : layers) {
+            if (!layer.visible) continue;
+            paint.setAlpha(layer.opacity);
+            PorterDuff.Mode mode = hasBackdrop ? porterDuffForBlend(layer.blendMode) : null;
+            paint.setXfermode(mode == null ? null : new PorterDuffXfermode(mode));
+            Bitmap draw = layer.mask == null ? layer.bitmap : maskedLayerBitmap(layer);
+            canvas.drawBitmap(draw, 0, 0, paint);
+            hasBackdrop = true;
+        }
+        paint.setAlpha(255);
+        paint.setXfermode(null);
+
+        Layer mergedLayer = new Layer("Merged Visible", mergedBitmap);
+        java.util.ArrayList<Layer> rebuilt = new java.util.ArrayList<>();
+        int mergedIndex = -1;
+        for (int i = 0; i < layers.size(); i++) {
+            Layer layer = layers.get(i);
+            if (!layer.visible) {
+                rebuilt.add(layer);
+            } else if (i == topVisibleIndex) {
+                mergedIndex = rebuilt.size();
+                rebuilt.add(mergedLayer);
+            }
+        }
+
+        layers.clear();
+        layers.addAll(rebuilt);
+        activeLayerIndex = Math.max(0, mergedIndex);
+        bitmap = layers.get(activeLayerIndex).bitmap;
         undo.clear();
         redo.clear();
         clearAdjustmentPipeline();
