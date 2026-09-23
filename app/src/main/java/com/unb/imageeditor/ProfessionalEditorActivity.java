@@ -1921,7 +1921,9 @@ public class ProfessionalEditorActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
 
         GridLayout grid = new GridLayout(this);
-        grid.setColumnCount(6);
+        int screenWidthDp = getResources().getConfiguration().screenWidthDp;
+        int paletteColumns = screenWidthDp < 380 ? 4 : (screenWidthDp < 480 ? 5 : 6);
+        grid.setColumnCount(paletteColumns);
         int[] palette = {
                 0xFFFFFFFF, 0xFFBDBDBD, 0xFF757575, 0xFF212121, 0xFF000000, 0xFFFF1744,
                 0xFFFF5252, 0xFFFF8A80, 0xFFFF9100, 0xFFFFC400, 0xFFFFFF00, 0xFFCDDC39,
