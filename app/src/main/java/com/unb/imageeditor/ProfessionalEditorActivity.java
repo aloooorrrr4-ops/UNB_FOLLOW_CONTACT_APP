@@ -1669,19 +1669,27 @@ public class ProfessionalEditorActivity extends Activity {
         }
     }
 
-    private void selectTextAtPointer() {
-        if (canvas == null) return;
+    private boolean selectTextAtPointerNow() {
+        if (canvas == null) return false;
         float[] p = canvas.getPointerImagePosition();
-        if (p == null || p.length < 2) {
-            toast("المؤشر غير جاهز");
-            return;
-        }
+        if (p == null || p.length < 2) return false;
         selectDetectedTextRegion(p[0], p[1]);
+        return selectedTextRegion != null;
+    }
+
+    private void selectTextAtPointer() {
+        if (!selectTextAtPointerNow()) {
+            toast("ضع رأس المؤشر داخل إطار النص أو اضغط على الإطار مباشرة");
+        }
+    }
+
+    private boolean ensureSelectedTextRegion() {
+        return selectedTextRegion != null || selectTextAtPointerNow();
     }
 
     private void recognizeSelectedText(boolean openEditorAfter) {
-        if (selectedTextRegion == null) {
-            toast("اضغط على إطار النص الأزرق أولاً");
+        if (!ensureSelectedTextRegion()) {
+            toast("اضغط على إطار النص أو ضع رأس المؤشر داخله");
             return;
         }
         if (busy) return;
@@ -1823,8 +1831,8 @@ public class ProfessionalEditorActivity extends Activity {
     }
 
     private void deleteSelectedTextRegion() {
-        if (selectedTextRegion == null) {
-            toast("حدد النص أولاً");
+        if (!ensureSelectedTextRegion()) {
+            toast("اضغط على إطار النص أو ضع رأس المؤشر داخله ثم اضغط حذف");
             return;
         }
         replaceSelectedTextRegion("", Math.max(8, selectedTextRegion.height() * 0.7));
@@ -1872,8 +1880,8 @@ public class ProfessionalEditorActivity extends Activity {
     }
 
     private void cropSelectedTextRegion() {
-        if (selectedTextRegion == null) {
-            toast("حدد إطار النص أولاً");
+        if (!ensureSelectedTextRegion()) {
+            toast("اضغط على إطار النص أو ضع رأس المؤشر داخله ثم اضغط قص المحدد");
             return;
         }
 
