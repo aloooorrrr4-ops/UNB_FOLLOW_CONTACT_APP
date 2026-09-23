@@ -270,6 +270,7 @@ public class EditorCanvasView extends View {
     public void startTextOverlay(String text, float x, float y, float size, int color,
                                  String fontFamily, boolean bold, float widthScale) {
         if (bitmap == null || text == null || text.trim().isEmpty()) return;
+        if (hasTextOverlay()) return;
         textOverlayText = text;
         textOverlayX = clamp(x, 0f, bitmap.getWidth());
         textOverlayY = clamp(y, 0f, bitmap.getHeight());
@@ -292,6 +293,9 @@ public class EditorCanvasView extends View {
     public void clearTextOverlay() {
         textOverlayText = null;
         textOverlayGesture = 0;
+        if ("text_place".equals(interactionMode)) {
+            interactionMode = "text";
+        }
         invalidate();
     }
 
@@ -374,6 +378,7 @@ public class EditorCanvasView extends View {
 
     public void setBitmap(Bitmap bitmap) {
         this.bitmap = bitmap;
+        clearTextOverlay();
         fitted = false;
         clearStrokePreview();
         post(() -> {
@@ -405,6 +410,7 @@ public class EditorCanvasView extends View {
     public void clearBitmap() {
         bitmap = null;
         selectionOverlay = null;
+        clearTextOverlay();
         fitted = false;
         clearStrokePreview();
         invalidate();
@@ -956,7 +962,7 @@ public class EditorCanvasView extends View {
                     return true;
                 case MotionEvent.ACTION_UP:
                     updateDetachedPointer(event.getX(), event.getY());
-                    if (listener != null) {
+                    if (pointerActionEnabled && listener != null) {
                         float[] p = getPointerImagePosition();
                         if (p != null) listener.onTapImage(p[0], p[1]);
                     }
