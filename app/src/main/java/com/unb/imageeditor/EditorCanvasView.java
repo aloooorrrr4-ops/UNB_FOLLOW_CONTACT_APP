@@ -48,6 +48,8 @@ public class EditorCanvasView extends View {
     private final Paint pointerGuidePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint textRegionPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint selectedTextRegionPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint transformPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint transformHandlePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Matrix drawMatrix = new Matrix();
     private final Matrix inverse = new Matrix();
 
@@ -73,6 +75,8 @@ public class EditorCanvasView extends View {
     private float pointerHeadY;
     private boolean pointerVisible = false;
     private boolean pointerActionEnabled = true;
+    private float[] transformQuad;
+    private int activeTransformHandle = -1;
 
     private final ScaleGestureDetector scaleDetector;
     private final GestureDetector gestureDetector;
@@ -108,6 +112,13 @@ public class EditorCanvasView extends View {
         selectedTextRegionPaint.setStyle(Paint.Style.STROKE);
         selectedTextRegionPaint.setStrokeWidth(dp(2.5f));
         selectedTextRegionPaint.setColor(Color.rgb(255, 196, 64));
+
+        transformPaint.setStyle(Paint.Style.STROKE);
+        transformPaint.setStrokeWidth(dp(2));
+        transformPaint.setColor(Color.rgb(255, 196, 64));
+
+        transformHandlePaint.setStyle(Paint.Style.FILL);
+        transformHandlePaint.setColor(Color.WHITE);
 
         pointerOffsetPx = dp(92);
 
@@ -182,10 +193,15 @@ public class EditorCanvasView extends View {
     public void setInteractionMode(String mode) {
         interactionMode = mode == null ? "move" : mode;
         clearStrokePreview();
-        if (usesDetachedPointer()) {
+        if ("transform_quad".equals(interactionMode)) {
+            pointerVisible = false;
+            post(this::resetTransformQuad);
+        } else if (usesDetachedPointer()) {
             post(this::ensurePointerVisibleAtCenter);
         } else {
             pointerVisible = false;
+            transformQuad = null;
+            activeTransformHandle = -1;
             invalidate();
         }
     }
@@ -213,6 +229,28 @@ public class EditorCanvasView extends View {
     public float[] getPointerImagePosition() {
         if (!pointerVisible || bitmap == null) return null;
         return screenToImage(pointerHeadX, pointerHeadY);
+    }
+
+    public void resetTransformQuad() {
+        if (bitmap == null) return;
+        transformQuad = new float[]{
+                0f, 0f,
+                bitmap.getWidth(), 0f,
+                bitmap.getWidth(), bitmap.getHeight(),
+                0f, bitmap.getHeight()
+        };
+        activeTransformHandle = -1;
+        invalidate();
+    }
+
+    public float[] getTransformQuad() {
+        return transformQuad == null ? null : transformQuad.clone();
+    }
+
+    public void clearTransformQuad() {
+        transformQuad = null;
+        activeTransformHandle = -1;
+        invalidate();
     }
 
     private void ensurePointerVisibleAtCenter() {
@@ -362,6 +400,7 @@ public class EditorCanvasView extends View {
         canvas.drawRect(r, borderPaint);
 
         drawTextRegions(canvas);
+        drawTransformQuad(canvas);
         drawStrokePreview(canvas);
         drawDetachedPointer(canvas);
     }
@@ -401,6 +440,68 @@ public class EditorCanvasView extends View {
             RectF selected = new RectF(selectedTextRegion);
             drawMatrix.mapRect(selected);
             canvas.drawRect(selected, selectedTextRegionPaint);
+        }
+    }
+
+    private void drawTransformQuad(Canvas canvas) {
+        if (transformQuad == null || !"transform_quad".equals(interactionMode)) return;
+
+        float[][] p = new float[4][];
+        for (int i = 0; i < 4; i++) {
+            p[i] = imageToScreen(transformQuad[i * 2], transformQuad[i * 2 + 1]);
+        }
+
+        Path path = new Path();
+        path.moveTo(p[0][0], p[0][1]);
+        for (int i = 1; i < 4; i++) path.lineTo(p[i][0], p[i][1]);
+        path.close();
+        canvas.drawPath(path, transformPaint);
+
+        float r = dp(7);
+        for (int i = 0; i < 4; i++) {
+            canvas.drawCircle(p[i][0], p[i][1], r, transformHandlePaint);
+            canvas.drawCircle(p[i][0], p[i][1], r, transformPaint);
+        }
+    }
+
+    private int findTransformHandle(float sx, float sy) {
+        if (transformQuad == null) return -1;
+        float maxDist = dp(26);
+        float best = maxDist * maxDist;
+        int index = -1;
+        for (int i = 0; i < 4; i++) {
+            float[] p = imageToScreen(transformQuad[i * 2], transformQuad[i * 2 + 1]);
+            float dx = sx - p[0];
+            float dy = sy - p[1];
+            float d = dx * dx + dy * dy;
+            if (d < best) {
+                best = d;
+                index = i;
+            }
+        }
+        return index;
+    }
+
+    private boolean handleTransformTouch(MotionEvent event) {
+        switch (event.getActionMasked()) {
+            case MotionEvent.ACTION_DOWN:
+                activeTransformHandle = findTransformHandle(event.getX(), event.getY());
+                return true;
+            case MotionEvent.ACTION_MOVE:
+                if (activeTransformHandle >= 0) {
+                    float[] p = screenToImage(event.getX(), event.getY());
+                    transformQuad[activeTransformHandle * 2] = p[0];
+                    transformQuad[activeTransformHandle * 2 + 1] = p[1];
+                    invalidate();
+                }
+                return true;
+            case MotionEvent.ACTION_UP:
+            case MotionEvent.ACTION_CANCEL:
+                activeTransformHandle = -1;
+                invalidate();
+                return true;
+            default:
+                return true;
         }
     }
 
@@ -593,6 +694,10 @@ public class EditorCanvasView extends View {
             cancelStroke();
             gestureDetector.onTouchEvent(event);
             return true;
+        }
+
+        if ("transform_quad".equals(interactionMode)) {
+            return handleTransformTouch(event);
         }
 
         if (!isStrokeMode()) {
