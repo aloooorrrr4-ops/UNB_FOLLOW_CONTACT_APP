@@ -201,8 +201,7 @@ public final class LocalEditorEngine {
 
     public synchronized Bitmap apply(String operation, JSONObject params) {
         requireImage();
-        clearAdjustmentSession();
-        clearReusableAdjustment();
+        clearAdjustmentPipeline();
         String op = operation == null ? "" : operation.trim().toLowerCase();
         JSONObject p = params == null ? new JSONObject() : params;
 
