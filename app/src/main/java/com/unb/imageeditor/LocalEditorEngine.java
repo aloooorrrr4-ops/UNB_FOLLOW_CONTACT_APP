@@ -164,6 +164,7 @@ public final class LocalEditorEngine {
         bitmap = undo.removeLast();
         syncActiveLayer();
         selection = null;
+        selectionMask = null;
         return compositeLayers();
     }
 
@@ -176,6 +177,7 @@ public final class LocalEditorEngine {
         bitmap = redo.removeLast();
         syncActiveLayer();
         selection = null;
+        selectionMask = null;
         return compositeLayers();
     }
 
