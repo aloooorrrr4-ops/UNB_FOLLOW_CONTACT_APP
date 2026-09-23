@@ -752,10 +752,26 @@ public class ProfessionalEditorActivity extends Activity {
             float y0 = points[1];
             float x1 = points[points.length - 2];
             float y1 = points[points.length - 1];
+
             int x = Math.round(Math.min(x0, x1));
             int y = Math.round(Math.min(y0, y1));
             int w = Math.max(1, Math.round(Math.abs(x1 - x0)));
             int h = Math.max(1, Math.round(Math.abs(y1 - y0)));
+
+            if (cropAspectRatio > 0f) {
+                float current = w / (float) Math.max(1, h);
+                if (current > cropAspectRatio) {
+                    w = Math.max(1, Math.round(h * cropAspectRatio));
+                } else {
+                    h = Math.max(1, Math.round(w / cropAspectRatio));
+                }
+            }
+
+            if (localEngine.hasImage()) {
+                w = Math.min(w, Math.max(1, localEngine.width() - x));
+                h = Math.min(h, Math.max(1, localEngine.height() - y));
+            }
+
             applyRemote("crop", jsonOf("x", x, "y", y, "width", w, "height", h));
             return;
         }
