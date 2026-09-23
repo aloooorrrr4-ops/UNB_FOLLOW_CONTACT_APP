@@ -510,6 +510,7 @@ public class EditorCanvasView extends View {
     public void setBitmap(Bitmap bitmap) {
         this.bitmap = bitmap;
         clearTextOverlay();
+        clearImageOverlay();
         fitted = false;
         clearStrokePreview();
         post(() -> {
