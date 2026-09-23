@@ -1128,6 +1128,26 @@ public class ProfessionalEditorActivity extends Activity {
             return;
         }
 
+        if ("erase_fill".equals(activeTool)) {
+            if ("fill".equals(eraseFillMode)) {
+                applyRemote("fill_stroke", jsonOf(
+                        "points", pointsJson(points),
+                        "size", brushSize,
+                        "opacity", brushOpacity,
+                        "color", foregroundColor
+                ));
+            } else {
+                applyRemote("eraser", jsonOf(
+                        "points", pointsJson(points),
+                        "size", brushSize,
+                        "opacity", brushOpacity,
+                        "color", foregroundColor,
+                        "transparent", eraserTransparent
+                ));
+            }
+            return;
+        }
+
         if ("brush".equals(activeTool)) {
             applyRemote("paintbrush", jsonOf(
                     "points", pointsJson(points),
@@ -1138,8 +1158,8 @@ public class ProfessionalEditorActivity extends Activity {
             return;
         }
 
-        if ("pencil".equals(activeTool) || "eraser".equals(activeTool)) {
-            applyRemote(activeTool, jsonOf(
+        if ("pencil".equals(activeTool)) {
+            applyRemote("pencil", jsonOf(
                     "points", pointsJson(points),
                     "size", brushSize,
                     "opacity", brushOpacity,
@@ -2231,17 +2251,17 @@ public class ProfessionalEditorActivity extends Activity {
             case "أدوات":
                 showChoice("أدوات", new String[]{
                         "تحريك", "تحديد", "لاسو", "تحديد سحري", "حسب اللون",
-                        "فرشاة", "قلم", "ممحاة", "تدرج", "نص",
+                        "فرشاة", "قلم", "ممحاة/تعبئة", "تدرج", "نص",
                         "Clone", "Heal", "Smudge", "Dodge/Burn", "Color Picker"
                 }, index -> {
                     String[] ids = {
                             "move", "select", "free_select", "fuzzy_select", "color_select",
-                            "brush", "pencil", "eraser", "gradient", "text",
+                            "brush", "pencil", "erase_fill", "gradient", "text",
                             "clone", "heal", "smudge", "dodge_burn", "color_picker"
                     };
                     String[] names = {
                             "تحريك", "تحديد", "لاسو", "سحري", "حسب لون",
-                            "فرشاة", "قلم", "ممحاة", "تدرج", "نص",
+                            "فرشاة", "قلم", "ممحاة/تعبئة", "تدرج", "نص",
                             "استنساخ", "ترميم", "تلطيخ", "إضاءة", "لون"
                     };
                     if (index >= 0 && index < ids.length) showTool(ids[index], names[index], null);
