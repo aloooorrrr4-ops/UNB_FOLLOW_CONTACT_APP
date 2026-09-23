@@ -1631,6 +1631,40 @@ public final class LocalEditorEngine {
             for (int x = left; x < right; x += size) {
                 canvas.drawRect(x, top, Math.min(right, x + stripe), bottom, paint);
             }
+        } else if ("diagonal".equals(style)) {
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(Math.max(2f, size * 0.16f));
+            int span = (right - left) + (bottom - top);
+            for (int offset = -span; offset < span; offset += size) {
+                canvas.drawLine(left + offset, bottom, left + offset + (bottom - top), top, paint);
+            }
+            paint.setStyle(Paint.Style.FILL);
+        } else if ("cross".equals(style)) {
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(Math.max(2f, size * 0.14f));
+            for (int x = left; x <= right; x += size) {
+                canvas.drawLine(x, top, x, bottom, paint);
+            }
+            for (int y = top; y <= bottom; y += size) {
+                canvas.drawLine(left, y, right, y, paint);
+            }
+            paint.setStyle(Paint.Style.FILL);
+        } else if ("diamond".equals(style)) {
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(Math.max(2f, size * 0.12f));
+            float half = size / 2f;
+            for (float cy = top; cy <= bottom + size; cy += size) {
+                for (float cx = left; cx <= right + size; cx += size) {
+                    android.graphics.Path d = new android.graphics.Path();
+                    d.moveTo(cx, cy - half);
+                    d.lineTo(cx + half, cy);
+                    d.lineTo(cx, cy + half);
+                    d.lineTo(cx - half, cy);
+                    d.close();
+                    canvas.drawPath(d, paint);
+                }
+            }
+            paint.setStyle(Paint.Style.FILL);
         } else if ("dots".equals(style)) {
             float radius = Math.max(1f, size * 0.22f);
             for (int y = top + size / 2; y < bottom; y += size) {
@@ -1759,7 +1793,12 @@ public final class LocalEditorEngine {
 
         Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.SUBPIXEL_TEXT_FLAG);
         paint.setColor(foreground);
-        paint.setTypeface(Typeface.create("sans-serif", Typeface.NORMAL));
+        String fontFamily = p.optString("font", "sans-serif");
+        boolean bold = p.optBoolean("bold", false);
+        paint.setTypeface(Typeface.create(fontFamily,
+                bold ? Typeface.BOLD : Typeface.NORMAL));
+        paint.setTextScaleX(Math.max(0.5f, Math.min(2.0f,
+                (float) p.optDouble("width_scale", 1.0))));
 
         float requested = Math.max(6f, (float) p.optDouble("size", h * 0.72f));
         String[] lines = text.split("\\n", -1);
@@ -1805,22 +1844,40 @@ public final class LocalEditorEngine {
 
     private void addText(JSONObject p) {
         String text = p.optString("text", "");
-        if (text.isEmpty()) throw new IllegalArgumentException("النص فارغ");
+        if (text.trim().isEmpty()) throw new IllegalArgumentException("النص فارغ");
 
-        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.SUBPIXEL_TEXT_FLAG);
         paint.setColor(parseColor(p.optString("color", "#ffffff")));
-        paint.setTextSize(Math.max(4f, (float) p.optDouble("size", 42)));
-        paint.setTextAlign(Paint.Align.LEFT);
+        float size = Math.max(4f, (float) p.optDouble("size", 42));
+        paint.setTextSize(size);
+        paint.setTextAlign(Paint.Align.CENTER);
+        paint.setTypeface(Typeface.create(
+                p.optString("font", "sans-serif"),
+                p.optBoolean("bold", false) ? Typeface.BOLD : Typeface.NORMAL));
+        paint.setTextScaleX(Math.max(0.5f, Math.min(2.0f,
+                (float) p.optDouble("width_scale", 1.0))));
 
-        float x = (float) p.optDouble("x", 0);
-        float y = (float) p.optDouble("y", paint.getTextSize());
+        float x = (float) p.optDouble("x", bitmap.getWidth() / 2f);
+        float y = (float) p.optDouble("y", bitmap.getHeight() / 2f);
+        float scale = Math.max(0.15f, Math.min(8f,
+                (float) p.optDouble("scale", 1.0)));
+        float rotation = (float) p.optDouble("rotation", 0);
 
         Canvas canvas = new Canvas(bitmap);
         String[] lines = text.split("\\n", -1);
-        float line = paint.getTextSize() * 1.2f;
+        Paint.FontMetrics fm = paint.getFontMetrics();
+        float lineHeight = Math.max(size * 1.2f, fm.descent - fm.ascent);
+        float firstBaseline = -((lines.length - 1) * lineHeight) / 2f
+                - (fm.ascent + fm.descent) / 2f;
+
+        canvas.save();
+        canvas.translate(x, y);
+        canvas.rotate(rotation);
+        canvas.scale(scale, scale);
         for (int i = 0; i < lines.length; i++) {
-            canvas.drawText(lines[i], x, y + i * line, paint);
+            canvas.drawText(lines[i], 0f, firstBaseline + i * lineHeight, paint);
         }
+        canvas.restore();
     }
 
     private void selectColorBounds(int target, double threshold) {

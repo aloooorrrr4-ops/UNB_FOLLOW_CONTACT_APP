@@ -99,6 +99,11 @@ public class ProfessionalEditorActivity extends Activity {
     private int contrastValue = 0;
     private int saturationValue = 0;
     private String foregroundColor = "#ffffff";
+    private int textSize = 42;
+    private int textWidthPercent = 100;
+    private String textFontFamily = "sans-serif";
+    private String textFontLabel = "عربي حديث";
+    private boolean textBold = false;
     private final List<RectF> detectedTextRegions = new ArrayList<>();
     private RectF selectedTextRegion;
     private String recognizedText = "";
@@ -594,6 +599,7 @@ public class ProfessionalEditorActivity extends Activity {
             String canvasMode;
             if ("erase_fill".equals(id)) canvasMode = eraseFillMode;
             else if ("transform".equals(id) || "perspective".equals(id)) canvasMode = "transform_quad";
+            else if ("text".equals(id) && canvas.hasTextOverlay()) canvasMode = "text_place";
             else canvasMode = id;
             canvas.setInteractionMode(canvasMode);
             canvas.setPointerActionEnabled(pointerWorkEnabled);
@@ -708,40 +714,67 @@ public class ProfessionalEditorActivity extends Activity {
                         }));
             }
         } else if ("text".equals(id)) {
-            addSlider(toolOptions, "حجم الخط", 6, 300, 42, null);
-            addSlider(toolOptions, "تباعد الحروف", 0, 100, 0, null);
-            addSlider(toolOptions, "تباعد الأسطر", 0, 150, 20, null);
+            addLiveSlider(toolOptions, "حجم الخط", 6, 300, textSize, value -> {
+                textSize = value;
+                updateTextOverlayStyle();
+            });
+            addLiveSlider(toolOptions, "عرض الخط", 50, 200, textWidthPercent, value -> {
+                textWidthPercent = value;
+                updateTextOverlayStyle();
+            });
 
             toolOptions.addView(actionButton("+ إضافة نص", v ->
                     showAddTextDialog(lastImageTapX, lastImageTapY)));
+            toolOptions.addView(actionButton("✓ تثبيت النص", v -> commitTextOverlay()));
+            toolOptions.addView(actionButton("✕ إلغاء النص", v -> {
+                if (canvas != null) canvas.clearTextOverlay();
+                setStatus("تم إلغاء النص غير المثبت");
+            }));
+
+            toolOptions.addView(actionButton("الخط: " + textFontLabel, v ->
+                    showFontPickerDialog()));
+            toolOptions.addView(actionButton(textBold ? "عريض ✓" : "عريض", v -> {
+                textBold = !textBold;
+                updateTextOverlayStyle();
+                showTool("text", "نص", null);
+            }));
+
+            toolOptions.addView(actionButton("لون النص", v ->
+                    showColorPaletteDialog("لون النص", "text", "نص")));
+            toolOptions.addView(actionButton("التعرف على اللون", v ->
+                    startColorPickFor("text", "نص")));
+
             toolOptions.addView(actionButton("اكتشاف النصوص", v -> detectTextRegions()));
+            toolOptions.addView(actionButton("تحديد نص يدوي", v -> startManualTextSelection()));
             toolOptions.addView(actionButton("تحديد عند المؤشر", v -> selectTextAtPointer()));
             toolOptions.addView(actionButton("تعرف على المحدد", v -> recognizeSelectedText(false)));
             toolOptions.addView(actionButton("تعديل المحدد", v -> recognizeSelectedText(true)));
             toolOptions.addView(actionButton("قص المحدد", v -> cropSelectedTextRegion()));
             toolOptions.addView(actionButton("حذف المحدد", v -> deleteSelectedTextRegion()));
 
-            toolOptions.addView(actionButton("لون النص", v ->
-                    showColorPaletteDialog("لون النص", "text", "نص")));
-            toolOptions.addView(actionButton("التعرف على اللون", v ->
-                    startColorPickFor("text", "نص")));
-            toolOptions.addView(actionButton("الخطوط", v -> {
+            toolOptions.addView(actionButton("كل الخطوط العربية", v -> {
                 openInspectorTab("resources");
                 loadResources("fonts");
+            }));
+            toolOptions.addView(actionButton("النقوش والزخارف", v -> {
+                openInspectorTab("resources");
+                loadResources("patterns");
             }));
 
             addPointerModeControls(toolOptions);
 
             TextView textState = label(
-                    selectedTextRegion == null
-                            ? "اكتشف النصوص ثم حرّك المؤشر داخل النص المطلوب."
-                            : ("المحدد " + Math.round(selectedTextRegion.width()) + "×" +
-                               Math.round(selectedTextRegion.height()) +
-                               (recognizedText.isEmpty() ? "" :
-                                       " • OCR " + recognizedTextConfidence + "%")),
+                    canvas != null && canvas.hasTextOverlay()
+                            ? "النص غير مثبت: اسحب لتحريكه • المقبض السفلي للتكبير • العلوي للتدوير"
+                            : selectedTextRegion == null
+                                ? "إضافة نص: أنشئه ثم حرّكه وكبّره ودوّره قبل التثبيت."
+                                : ("المحدد " + Math.round(selectedTextRegion.width()) + "×" +
+                                   Math.round(selectedTextRegion.height()) +
+                                   (recognizedText.isEmpty() ? "" :
+                                           " • OCR " + recognizedTextConfidence + "%")),
                     11, MUTED, false);
             textState.setPadding(dp(10), 0, dp(10), 0);
-            toolOptions.addView(textState, new LinearLayout.LayoutParams(dp(260), dp(82)));
+            toolOptions.addView(textState, new LinearLayout.LayoutParams(dp(300), dp(82)));
         } else if ("color_picker".equals(id)) {
             addLiveSlider(toolOptions, "ارتفاع الرأس", 48, 160, pointerOffsetDp, value -> {
                 pointerOffsetDp = value;
@@ -1188,6 +1221,38 @@ public class ProfessionalEditorActivity extends Activity {
             return;
         }
 
+        if ("text_box".equals(activeTool)) {
+            if (points.length < 4) {
+                canvas.clearStrokePreview();
+                return;
+            }
+            float x0 = points[0];
+            float y0 = points[1];
+            float x1 = points[points.length - 2];
+            float y1 = points[points.length - 1];
+            RectF region = new RectF(
+                    Math.min(x0, x1),
+                    Math.min(y0, y1),
+                    Math.max(x0, x1),
+                    Math.max(y0, y1));
+            if (region.width() < 2f || region.height() < 2f) {
+                canvas.clearStrokePreview();
+                toast("ارسم إطارًا حول النص");
+                return;
+            }
+            selectedTextRegion = region;
+            recognizedText = "";
+            recognizedTextConfidence = 0;
+            detectedTextRegions.add(new RectF(region));
+            canvas.setDetectedTextRegions(detectedTextRegions);
+            canvas.setSelectedTextRegion(region);
+            canvas.setInteractionMode("text_select");
+            activeTool = "text_detect";
+            canvas.clearStrokePreview();
+            setStatus("تم تحديد النص يدويًا — يمكنك التعرف عليه أو تعديله أو قصه");
+            return;
+        }
+
         if ("text".equals(activeTool) && "text_select".equals(canvas.getInteractionMode())) {
             selectDetectedTextRegion(lastImageTapX, lastImageTapY);
             canvas.clearStrokePreview();
@@ -1417,6 +1482,17 @@ public class ProfessionalEditorActivity extends Activity {
         }
     }
 
+    private void startManualTextSelection() {
+        if (!localEngine.hasImage() || canvas == null) {
+            toast("افتح صورة أولاً");
+            return;
+        }
+        activeTool = "text_box";
+        canvas.setInteractionMode("select");
+        canvas.setPointerActionEnabled(true);
+        setStatus("اسحب مستطيلاً حول النص المطلوب");
+    }
+
     private void detectTextRegions() {
         if (!localEngine.hasImage() || busy) {
             if (!localEngine.hasImage()) toast("افتح صورة أولاً");
@@ -1437,6 +1513,7 @@ public class ProfessionalEditorActivity extends Activity {
                     selectedTextRegion = null;
                     recognizedText = "";
                     recognizedTextConfidence = 0;
+                    activeTool = "text_detect";
                     if (canvas != null) {
                         canvas.setDetectedTextRegions(regions);
                         canvas.setInteractionMode("text_select");
@@ -1630,6 +1707,9 @@ public class ProfessionalEditorActivity extends Activity {
                 "height", Math.max(1, Math.round(region.height())),
                 "text", replacement == null ? "" : replacement,
                 "size", size,
+                "font", textFontFamily,
+                "bold", textBold,
+                "width_scale", textWidthPercent / 100.0,
                 "color", foregroundColor,
                 "background", background
         ));
@@ -1713,7 +1793,7 @@ public class ProfessionalEditorActivity extends Activity {
     }
 
     private void showAddTextDialog(float x, float y) {
-        if (projectId == null) {
+        if (projectId == null || !localEngine.hasImage()) {
             toast("افتح صورة أولاً");
             return;
         }
@@ -1722,28 +1802,29 @@ public class ProfessionalEditorActivity extends Activity {
         box.setPadding(dp(18), dp(8), dp(18), 0);
 
         EditText textInput = new EditText(this);
-        textInput.setHint("اكتب النص");
+        textInput.setHint("اكتب أو الصق النص");
         textInput.setTextColor(TEXT);
         textInput.setHintTextColor(MUTED);
         textInput.setInputType(InputType.TYPE_CLASS_TEXT |
                 InputType.TYPE_TEXT_FLAG_MULTI_LINE);
         textInput.setMinLines(2);
+        textInput.setTextDirection(View.TEXT_DIRECTION_FIRST_STRONG);
         box.addView(textInput);
 
-        EditText sizeInput = new EditText(this);
-        sizeInput.setHint("حجم الخط");
-        sizeInput.setText("42");
-        sizeInput.setTextColor(TEXT);
-        sizeInput.setHintTextColor(MUTED);
-        sizeInput.setInputType(InputType.TYPE_CLASS_NUMBER |
-                InputType.TYPE_NUMBER_FLAG_DECIMAL);
-        box.addView(sizeInput);
+        TextView fontInfo = label(
+                "الخط: " + textFontLabel + " • الحجم " + textSize +
+                        " • العرض " + textWidthPercent + "%",
+                12, MUTED, false);
+        fontInfo.setPadding(0, dp(8), 0, dp(4));
+        fontInfo.setTypeface(Typeface.create(textFontFamily,
+                textBold ? Typeface.BOLD : Typeface.NORMAL));
+        box.addView(fontInfo);
 
         AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle("إضافة نص")
+                .setTitle("إضافة نص قابل للتحريك")
                 .setView(box)
                 .setNegativeButton("إلغاء", null)
-                .setPositiveButton("إضافة", null)
+                .setPositiveButton("وضع على الصورة", null)
                 .create();
 
         dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
@@ -1754,22 +1835,120 @@ public class ProfessionalEditorActivity extends Activity {
                         return;
                     }
 
-                    double size = 42;
-                    try {
-                        size = Double.parseDouble(sizeInput.getText().toString());
-                    } catch (Exception ignoredSize) {}
+                    float px = x;
+                    float py = y;
+                    if (px <= 0f && py <= 0f) {
+                        px = localEngine.width() / 2f;
+                        py = localEngine.height() / 2f;
+                    }
 
                     dialog.dismiss();
-                    applyRemote("add_text", jsonOf(
-                            "text", value,
-                            "x", Math.round(x),
-                            "y", Math.round(y),
-                            "size", size,
-                            "font", "Sans",
-                            "color", foregroundColor
-                    ));
+                    canvas.startTextOverlay(
+                            value,
+                            px,
+                            py,
+                            textSize,
+                            parseColorSafe(foregroundColor),
+                            textFontFamily,
+                            textBold,
+                            textWidthPercent / 100f);
+                    activeTool = "text";
+                    setStatus("حرّك النص ثم كبّره أو دوّره، وبعدها اضغط تثبيت النص");
+                    showTool("text", "نص", null);
                 }));
         dialog.show();
+    }
+
+    private void updateTextOverlayStyle() {
+        if (canvas == null || !canvas.hasTextOverlay()) return;
+        canvas.updateTextOverlayStyle(
+                textSize,
+                parseColorSafe(foregroundColor),
+                textFontFamily,
+                textBold,
+                textWidthPercent / 100f);
+    }
+
+    private void commitTextOverlay() {
+        if (canvas == null || !canvas.hasTextOverlay()) {
+            toast("أضف نصًا أولاً");
+            return;
+        }
+
+        JSONObject params = jsonOf(
+                "text", canvas.getTextOverlayText(),
+                "x", canvas.getTextOverlayX(),
+                "y", canvas.getTextOverlayY(),
+                "size", canvas.getTextOverlaySize(),
+                "scale", canvas.getTextOverlayScale(),
+                "rotation", canvas.getTextOverlayRotation(),
+                "font", canvas.getTextOverlayFont(),
+                "bold", canvas.isTextOverlayBold(),
+                "width_scale", canvas.getTextOverlayWidthScale(),
+                "color", String.format("#%08X", canvas.getTextOverlayColor())
+        );
+
+        canvas.clearTextOverlay();
+        applyRemote("add_text", params);
+        setStatus("تم إرسال النص للتثبيت على الطبقة");
+    }
+
+    private void showFontPickerDialog() {
+        final String[] labels = {
+                "عربي حديث", "عربي متوسط", "عربي كتابي", "عربي عريض",
+                "عربي رفيع", "عربي مضغوط", "أحادي المسافة"
+        };
+        final String[] families = {
+                "sans-serif", "sans-serif-medium", "serif", "sans-serif-black",
+                "sans-serif-light", "sans-serif-condensed", "monospace"
+        };
+
+        LinearLayout list = column();
+        list.setPadding(dp(12), dp(8), dp(12), dp(8));
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("اختيار الخط")
+                .setView(list)
+                .setNegativeButton("إغلاق", null)
+                .create();
+
+        for (int i = 0; i < labels.length; i++) {
+            final int index = i;
+            Button b = actionButton(labels[i] + "  —  أبجد هوز 123", v -> {
+                textFontLabel = labels[index];
+                textFontFamily = families[index];
+                updateTextOverlayStyle();
+                dialog.dismiss();
+                showTool("text", "نص", null);
+                setStatus("تم اختيار خط " + textFontLabel);
+            });
+            b.setTypeface(Typeface.create(families[i],
+                    textBold ? Typeface.BOLD : Typeface.NORMAL));
+            list.addView(b);
+        }
+        dialog.show();
+    }
+
+    private void addFontPresetButtons(LinearLayout parent) {
+        String[] labels = {
+                "عربي حديث", "عربي متوسط", "عربي كتابي",
+                "عربي عريض", "عربي رفيع", "عربي مضغوط"
+        };
+        String[] families = {
+                "sans-serif", "sans-serif-medium", "serif",
+                "sans-serif-black", "sans-serif-light", "sans-serif-condensed"
+        };
+        for (int i = 0; i < labels.length; i++) {
+            final int index = i;
+            Button b = actionButton(labels[i] + " — العربية ١٢٣", v -> {
+                textFontLabel = labels[index];
+                textFontFamily = families[index];
+                updateTextOverlayStyle();
+                setStatus("الخط الحالي: " + textFontLabel);
+            });
+            b.setTypeface(Typeface.create(families[i],
+                    textBold ? Typeface.BOLD : Typeface.NORMAL));
+            parent.addView(b);
+        }
     }
 
     private String toolHelp(String id) {
@@ -2265,7 +2444,8 @@ public class ProfessionalEditorActivity extends Activity {
             String text;
             switch (kind) {
                 case "fonts":
-                    text = "خطوط Android";
+                    addFontPresetButtons(resourceList);
+                    text = "اختر خطًا عربيًا وسيظهر مباشرة على النص غير المثبت";
                     break;
                 case "brushes":
                     text = "فرش محلية";
@@ -2274,25 +2454,8 @@ public class ProfessionalEditorActivity extends Activity {
                     text = "تدرجات";
                     break;
                 case "patterns":
-                    resourceList.addView(actionButton("مربعات", v ->
-                            applyRemote("pattern_fill", jsonOf(
-                                    "style", "checker",
-                                    "foreground", foregroundColor,
-                                    "background", "#000000",
-                                    "size", 24))));
-                    resourceList.addView(actionButton("خطوط", v ->
-                            applyRemote("pattern_fill", jsonOf(
-                                    "style", "stripes",
-                                    "foreground", foregroundColor,
-                                    "background", "#000000",
-                                    "size", 24))));
-                    resourceList.addView(actionButton("نقاط", v ->
-                            applyRemote("pattern_fill", jsonOf(
-                                    "style", "dots",
-                                    "foreground", foregroundColor,
-                                    "background", "#000000",
-                                    "size", 24))));
-                    text = "نقوش محلية جاهزة";
+                    addPatternButtons(resourceList);
+                    text = "نقوش وزخارف هندسية محلية";
                     break;
                 default:
                     text = "Palettes";
@@ -2318,7 +2481,8 @@ public class ProfessionalEditorActivity extends Activity {
         String message;
         switch (kind) {
             case "fonts":
-                message = "خطوط Android المحلية • دعم العربية متاح في طبقة النص الأساسية";
+                addFontPresetButtons(resourceList);
+                message = "معاينة واختيار خطوط عربية محلية للنص";
                 break;
             case "brushes":
                 message = "فرشاة • قلم • ممحاة تعمل محليًا الآن";
@@ -2327,31 +2491,53 @@ public class ProfessionalEditorActivity extends Activity {
                 message = "Linear Gradient يعمل محليًا الآن";
                 break;
             case "patterns":
-                resourceList.addView(actionButton("مربعات", v ->
-                        applyRemote("pattern_fill", jsonOf(
-                                "style", "checker",
-                                "foreground", foregroundColor,
-                                "background", "#000000",
-                                "size", 24))));
-                resourceList.addView(actionButton("خطوط", v ->
-                        applyRemote("pattern_fill", jsonOf(
-                                "style", "stripes",
-                                "foreground", foregroundColor,
-                                "background", "#000000",
-                                "size", 24))));
-                resourceList.addView(actionButton("نقاط", v ->
-                        applyRemote("pattern_fill", jsonOf(
-                                "style", "dots",
-                                "foreground", foregroundColor,
-                                "background", "#000000",
-                                "size", 24))));
-                message = "النقوش المحلية جاهزة وتطبق على الطبقة النشطة";
+                addPatternButtons(resourceList);
+                message = "النقوش والزخارف المحلية تطبق على الطبقة النشطة أو التحديد";
                 break;
             default:
                 message = "ألوان المقدمة والخلفية محلية بالكامل";
                 break;
         }
         resourceList.addView(label(message, 12, TEXT, false));
+    }
+
+    private void addPatternButtons(LinearLayout parent) {
+        parent.addView(actionButton("مربعات", v ->
+                applyRemote("pattern_fill", jsonOf(
+                        "style", "checker",
+                        "foreground", foregroundColor,
+                        "background", "#000000",
+                        "size", 24))));
+        parent.addView(actionButton("خطوط عمودية", v ->
+                applyRemote("pattern_fill", jsonOf(
+                        "style", "stripes",
+                        "foreground", foregroundColor,
+                        "background", "#000000",
+                        "size", 24))));
+        parent.addView(actionButton("خطوط مائلة", v ->
+                applyRemote("pattern_fill", jsonOf(
+                        "style", "diagonal",
+                        "foreground", foregroundColor,
+                        "background", "#000000",
+                        "size", 28))));
+        parent.addView(actionButton("شبكة متقاطعة", v ->
+                applyRemote("pattern_fill", jsonOf(
+                        "style", "cross",
+                        "foreground", foregroundColor,
+                        "background", "#000000",
+                        "size", 28))));
+        parent.addView(actionButton("معينات", v ->
+                applyRemote("pattern_fill", jsonOf(
+                        "style", "diamond",
+                        "foreground", foregroundColor,
+                        "background", "#000000",
+                        "size", 32))));
+        parent.addView(actionButton("نقاط", v ->
+                applyRemote("pattern_fill", jsonOf(
+                        "style", "dots",
+                        "foreground", foregroundColor,
+                        "background", "#000000",
+                        "size", 24))));
     }
 
     private void addContextTitle(LinearLayout parent, String text) {
