@@ -8,9 +8,11 @@ import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
+import android.graphics.Matrix;
 import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.media.ExifInterface;
 import android.net.Uri;
 import android.os.Bundle;
 import android.provider.OpenableColumns;
@@ -3064,6 +3066,12 @@ public class ProfessionalEditorActivity extends Activity {
                 runOnUiThread(() -> {
                     canvas.setBitmapPreserveViewport(frame);
                     canvas.clearImageOverlay();
+                    canvas.clearSelectionOverlay();
+                    canvas.clearDetectedTextRegions();
+                    detectedTextRegions.clear();
+                    selectedTextRegion = null;
+                    recognizedText = "";
+                    recognizedTextConfidence = 0;
                     pendingLayerImageName = "صورة إضافية";
                     setBusy(false);
                     setStatus("تمت إضافة الصورة كطبقة مستقلة");
@@ -3082,6 +3090,65 @@ public class ProfessionalEditorActivity extends Activity {
                 });
             }
         });
+    }
+
+    private Bitmap decodeBitmapRespectingExif(Uri uri, byte[] bytes) throws Exception {
+        Bitmap decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+        if (decoded == null) return null;
+
+        int orientation = ExifInterface.ORIENTATION_NORMAL;
+        try (InputStream in = getContentResolver().openInputStream(uri)) {
+            if (in != null) {
+                ExifInterface exif = new ExifInterface(in);
+                orientation = exif.getAttributeInt(
+                        ExifInterface.TAG_ORIENTATION,
+                        ExifInterface.ORIENTATION_NORMAL);
+            }
+        } catch (Exception ignored) {
+            // Non-JPEG/PNG sources may not expose EXIF. Use decoded pixels as-is.
+        }
+
+        Matrix matrix = new Matrix();
+        boolean transform = true;
+        switch (orientation) {
+            case ExifInterface.ORIENTATION_FLIP_HORIZONTAL:
+                matrix.setScale(-1f, 1f);
+                break;
+            case ExifInterface.ORIENTATION_ROTATE_180:
+                matrix.setRotate(180f);
+                break;
+            case ExifInterface.ORIENTATION_FLIP_VERTICAL:
+                matrix.setScale(1f, -1f);
+                break;
+            case ExifInterface.ORIENTATION_TRANSPOSE:
+                matrix.setRotate(90f);
+                matrix.postScale(-1f, 1f);
+                break;
+            case ExifInterface.ORIENTATION_ROTATE_90:
+                matrix.setRotate(90f);
+                break;
+            case ExifInterface.ORIENTATION_TRANSVERSE:
+                matrix.setRotate(-90f);
+                matrix.postScale(-1f, 1f);
+                break;
+            case ExifInterface.ORIENTATION_ROTATE_270:
+                matrix.setRotate(-90f);
+                break;
+            case ExifInterface.ORIENTATION_NORMAL:
+            case ExifInterface.ORIENTATION_UNDEFINED:
+            default:
+                transform = false;
+                break;
+        }
+
+        if (!transform) return decoded;
+
+        Bitmap corrected = Bitmap.createBitmap(
+                decoded, 0, 0, decoded.getWidth(), decoded.getHeight(), matrix, true);
+        if (corrected != decoded && !decoded.isRecycled()) {
+            decoded.recycle();
+        }
+        return corrected;
     }
 
     @Override
@@ -3115,7 +3182,7 @@ public class ProfessionalEditorActivity extends Activity {
                 try {
                     byte[] bytes = readAll(layerUri);
                     String name = queryName(layerUri);
-                    Bitmap decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+                    Bitmap decoded = decodeBitmapRespectingExif(layerUri, bytes);
                     if (decoded == null) throw new Exception("صيغة الصورة غير مدعومة");
 
                     runOnUiThread(() -> {
