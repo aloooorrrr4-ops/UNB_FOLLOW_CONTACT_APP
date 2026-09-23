@@ -696,7 +696,7 @@ public class EditorCanvasView extends View {
         } else {
             textOverlayPaint.setTypeface(android.graphics.Typeface.create(
                     textOverlayFont,
-                    textOverlayWeight >= 700
+                    textOverlayWeight >= 650
                             ? android.graphics.Typeface.BOLD
                             : android.graphics.Typeface.NORMAL));
         }
