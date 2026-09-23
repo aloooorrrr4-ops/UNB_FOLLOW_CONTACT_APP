@@ -196,6 +196,12 @@ public class EditorCanvasView extends View {
         post(this::fitToView);
     }
 
+    public void setBitmapPreserveViewport(Bitmap bitmap) {
+        this.bitmap = bitmap;
+        clearStrokePreview();
+        invalidate();
+    }
+
     public Bitmap getBitmap() {
         return bitmap;
     }
