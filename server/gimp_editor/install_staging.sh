@@ -62,9 +62,11 @@ cp "$SOURCE_DIR/systemd/unb-pro-editor-api.service" /etc/systemd/system/
 systemctl daemon-reload
 docker rm -f unb-stage-ai 2>/dev/null || true
 systemctl disable --now unb-pro-editor-api.service 2>/dev/null || true
-systemctl enable --now unb-gimp-scriptfu.service
+systemctl enable unb-gimp-scriptfu.service
+systemctl restart unb-gimp-scriptfu.service
 sleep 3
-systemctl enable --now unb-pro-editor-api.service
+systemctl enable unb-pro-editor-api.service
+systemctl restart unb-pro-editor-api.service
 sleep 3
 
 echo "[8/8] Health check..."
