@@ -39,6 +39,8 @@ import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class ProfessionalEditorActivity extends Activity {
 
@@ -54,7 +56,8 @@ public class ProfessionalEditorActivity extends Activity {
     private final int ACCENT = Color.rgb(61, 139, 255);
 
     private EditorCanvasView canvas;
-    private EditorApiClient api;
+    private final LocalEditorEngine localEngine = new LocalEditorEngine();
+    private final ExecutorService localExecutor = Executors.newSingleThreadExecutor();
     private String projectId;
     private byte[] sourceBytes;
     private String sourceName = "image.png";
@@ -95,13 +98,6 @@ public class ProfessionalEditorActivity extends Activity {
         getWindow().setStatusBarColor(Color.rgb(14, 16, 19));
         getWindow().setNavigationBarColor(Color.rgb(14, 16, 19));
 
-        SharedPreferences prefs = getSharedPreferences("editor_settings", MODE_PRIVATE);
-        String savedServer = prefs.getString("server_base", "http://91.98.126.167:18083");
-        if ("http://91.98.126.167:18085".equals(savedServer)) {
-            savedServer = "http://91.98.126.167:18083";
-            prefs.edit().putString("server_base", savedServer).apply();
-        }
-        api = new EditorApiClient(savedServer);
         desktopLayout = isDesktopLayout();
 
         LinearLayout root = column();
@@ -171,7 +167,7 @@ public class ProfessionalEditorActivity extends Activity {
 
         row.addView(actionButton("فتح", v -> chooseImage()));
         row.addView(actionButton("حفظ", v -> exportProject("png")));
-        row.addView(actionButton("سيرفر", v -> showServerDialog()));
+        row.addView(actionButton("محلي", v -> showServerDialog()));
         row.addView(verticalDivider());
         row.addView(actionButton("↶ تراجع", v -> remoteHistory("undo")));
         row.addView(actionButton("↷ إعادة", v -> remoteHistory("redo")));
@@ -1047,7 +1043,7 @@ public class ProfessionalEditorActivity extends Activity {
         row.setBackgroundColor(Color.rgb(16, 18, 21));
 
         statusText = label("جاهز", 12, MUTED, false);
-        projectText = label("بدون مشروع", 12, MUTED, false);
+        projectText = label("Offline • بدون صورة", 12, MUTED, false);
         zoomText = label("100%", 12, TEXT, true);
         zoomText.setGravity(Gravity.END);
 
