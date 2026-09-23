@@ -613,6 +613,8 @@ public class ProfessionalEditorActivity extends Activity {
                 pointerOffsetDp = value;
                 if (canvas != null) canvas.setPointerOffsetDp(pointerOffsetDp);
             });
+            toolOptions.addView(actionButton("اللون " + foregroundColor, v ->
+                    showTool("color_picker", "اختيار لون", null)));
 
             if ("clone".equals(id) || "heal".equals(id)) {
                 toolOptions.addView(actionButton("تحديد المصدر", v -> {
@@ -645,6 +647,22 @@ public class ProfessionalEditorActivity extends Activity {
                     toast("اتجاه النص سيصبح قابلًا للتبديل في محرك النص V2")));
             toolOptions.addView(actionButton("لون النص", v ->
                     toast("لون النص الحالي " + foregroundColor)));
+        } else if ("color_picker".equals(id)) {
+            addLiveSlider(toolOptions, "ارتفاع الرأس", 48, 160, pointerOffsetDp, value -> {
+                pointerOffsetDp = value;
+                if (canvas != null) canvas.setPointerOffsetDp(pointerOffsetDp);
+            });
+            TextView colorInfo = label("اللون الحالي  " + foregroundColor,
+                    desktopLayout ? 13 : 11, TEXT, true);
+            colorInfo.setPadding(dp(10), 0, dp(10), 0);
+            colorInfo.setBackground(rounded(parseColorSafe(foregroundColor), 8));
+            colorInfo.setTextColor(colorLuminance(parseColorSafe(foregroundColor)) > 150
+                    ? Color.BLACK : Color.WHITE);
+            toolOptions.addView(colorInfo, new LinearLayout.LayoutParams(dp(160), dp(72)));
+            TextView help = label("حرّك إصبعك من أسفل؛ رأس المؤشر فوق يلتقط اللون بدقة.",
+                    11, MUTED, false);
+            help.setPadding(dp(10), 0, dp(10), 0);
+            toolOptions.addView(help, new LinearLayout.LayoutParams(dp(240), dp(82)));
         } else if ("brightness_adjust".equals(id)) {
             addAdjustmentSlider(toolOptions, "السطوع", "brightness", brightnessValue,
                     value -> brightnessValue = value);
@@ -1014,6 +1032,12 @@ public class ProfessionalEditorActivity extends Activity {
         int h = Math.max(1, Math.round(selectedTextRegion.height()));
 
         applyRemote("crop", jsonOf("x", x, "y", y, "width", w, "height", h));
+    }
+
+    private int colorLuminance(int color) {
+        return Math.round(Color.red(color) * 0.299f +
+                Color.green(color) * 0.587f +
+                Color.blue(color) * 0.114f);
     }
 
     private int parseColorSafe(String color) {
