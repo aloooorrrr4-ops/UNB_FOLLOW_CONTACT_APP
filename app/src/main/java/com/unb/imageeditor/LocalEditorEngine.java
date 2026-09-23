@@ -1781,15 +1781,17 @@ public final class LocalEditorEngine {
         int h = Math.max(1, Math.min(p.optInt("height", 1), bitmap.getHeight() - y));
 
         String text = p.optString("text", "");
-        int background = parseColor(p.optString("background", "#ffffff"));
         int foreground = parseColor(p.optString("color", "#000000"));
 
-        Canvas canvas = new Canvas(bitmap);
-        Paint bg = new Paint(Paint.ANTI_ALIAS_FLAG);
-        bg.setColor(background);
-        canvas.drawRect(x, y, x + w, y + h, bg);
+        // Preserve the original artwork/background. The old implementation
+        // painted one flat rectangle over the whole OCR box, which destroyed
+        // gradients, logos and patterns behind the text. Instead, detect
+        // character-like high-contrast pixels and inpaint only those pixels.
+        eraseRasterTextPreserveBackground(x, y, w, h);
 
         if (text.trim().isEmpty()) return;
+
+        Canvas canvas = new Canvas(bitmap);
 
         Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.SUBPIXEL_TEXT_FLAG);
         paint.setColor(foreground);
@@ -1827,6 +1829,205 @@ public final class LocalEditorEngine {
             canvas.drawText(line, tx, baseline, paint);
             baseline += lineHeight;
         }
+    }
+
+    private void eraseRasterTextPreserveBackground(int left, int top, int width, int height) {
+        if (width < 2 || height < 2) return;
+
+        int count = width * height;
+        int[] src = new int[count];
+        bitmap.getPixels(src, 0, width, left, top, width, height);
+
+        int borderColor = estimateRegionBorderColor(src, width, height);
+        int radius = clamp(Math.round(height * 0.12f), 3, 12);
+
+        int[] localDiff = new int[count];
+        int[] borderDiff = new int[count];
+        double sum = 0.0;
+        double sumSq = 0.0;
+
+        for (int yy = 0; yy < height; yy++) {
+            for (int xx = 0; xx < width; xx++) {
+                int i = yy * width + xx;
+                int local = ringAverageColor(src, width, height, xx, yy, radius);
+                int dLocal = colorDistance(src[i], local);
+                int dBorder = colorDistance(src[i], borderColor);
+                localDiff[i] = dLocal;
+                borderDiff[i] = dBorder;
+                sum += dLocal;
+                sumSq += (double) dLocal * dLocal;
+            }
+        }
+
+        double mean = sum / Math.max(1, count);
+        double variance = Math.max(0.0, sumSq / Math.max(1, count) - mean * mean);
+        double std = Math.sqrt(variance);
+        int threshold = clamp((int) Math.round(mean + std * 1.15), 28, 78);
+
+        boolean[] mask = new boolean[count];
+        int masked = 0;
+        for (int i = 0; i < count; i++) {
+            if (localDiff[i] >= threshold && borderDiff[i] >= 24) {
+                mask[i] = true;
+                masked++;
+            }
+        }
+
+        // Tight boxes sometimes make the border estimate less distinct. Use a
+        // slightly more permissive pass only when the first pass found almost
+        // nothing, while still requiring clear separation from the border tone.
+        int minimumUsefulMask = Math.max(8, count / 1200);
+        if (masked < minimumUsefulMask) {
+            int relaxed = Math.max(22, threshold - 12);
+            for (int i = 0; i < count; i++) {
+                if (!mask[i] && localDiff[i] >= relaxed && borderDiff[i] >= 34) {
+                    mask[i] = true;
+                    masked++;
+                }
+            }
+        }
+
+        if (masked == 0) return;
+
+        // Include antialiased glyph edges without expanding far into artwork.
+        boolean[] expanded = mask.clone();
+        for (int yy = 1; yy < height - 1; yy++) {
+            for (int xx = 1; xx < width - 1; xx++) {
+                int i = yy * width + xx;
+                if (!mask[i]) continue;
+                for (int dy = -1; dy <= 1; dy++) {
+                    for (int dx = -1; dx <= 1; dx++) {
+                        expanded[(yy + dy) * width + (xx + dx)] = true;
+                    }
+                }
+            }
+        }
+        mask = expanded;
+
+        int[] out = src.clone();
+        boolean[] known = new boolean[count];
+        for (int i = 0; i < count; i++) known[i] = !mask[i];
+
+        // Wavefront inpainting copies only local surrounding artwork into the
+        // removed glyphs, so gradients and decorative backgrounds stay intact.
+        int maxPasses = Math.min(32, Math.max(width, height));
+        for (int pass = 0; pass < maxPasses; pass++) {
+            boolean changed = false;
+            int[] next = out.clone();
+            boolean[] nextKnown = known.clone();
+
+            for (int yy = 0; yy < height; yy++) {
+                for (int xx = 0; xx < width; xx++) {
+                    int i = yy * width + xx;
+                    if (known[i]) continue;
+
+                    long aa = 0, rr = 0, gg = 0, bb = 0;
+                    int samples = 0;
+                    for (int dy = -1; dy <= 1; dy++) {
+                        int ny = yy + dy;
+                        if (ny < 0 || ny >= height) continue;
+                        for (int dx = -1; dx <= 1; dx++) {
+                            if (dx == 0 && dy == 0) continue;
+                            int nx = xx + dx;
+                            if (nx < 0 || nx >= width) continue;
+                            int ni = ny * width + nx;
+                            if (!known[ni]) continue;
+                            int c = out[ni];
+                            aa += Color.alpha(c);
+                            rr += Color.red(c);
+                            gg += Color.green(c);
+                            bb += Color.blue(c);
+                            samples++;
+                        }
+                    }
+
+                    if (samples >= 2) {
+                        next[i] = Color.argb(
+                                (int) (aa / samples),
+                                (int) (rr / samples),
+                                (int) (gg / samples),
+                                (int) (bb / samples));
+                        nextKnown[i] = true;
+                        changed = true;
+                    }
+                }
+            }
+
+            out = next;
+            known = nextKnown;
+            if (!changed) break;
+        }
+
+        // Extremely thick isolated glyph centers are rare; if any remain,
+        // fill only those still-masked pixels with the region border estimate.
+        for (int i = 0; i < count; i++) {
+            if (!known[i]) out[i] = borderColor;
+        }
+
+        bitmap.setPixels(out, 0, width, left, top, width, height);
+    }
+
+    private int estimateRegionBorderColor(int[] px, int width, int height) {
+        long aa = 0, rr = 0, gg = 0, bb = 0;
+        int samples = 0;
+        int band = Math.max(1, Math.min(3, Math.min(width, height) / 8));
+
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                if (x >= band && x < width - band &&
+                        y >= band && y < height - band) {
+                    continue;
+                }
+                int c = px[y * width + x];
+                aa += Color.alpha(c);
+                rr += Color.red(c);
+                gg += Color.green(c);
+                bb += Color.blue(c);
+                samples++;
+            }
+        }
+
+        if (samples == 0) return Color.TRANSPARENT;
+        return Color.argb(
+                (int) (aa / samples),
+                (int) (rr / samples),
+                (int) (gg / samples),
+                (int) (bb / samples));
+    }
+
+    private int ringAverageColor(int[] px, int width, int height,
+                                 int x, int y, int radius) {
+        int[][] offsets = new int[][]{
+                {-radius, 0}, {radius, 0}, {0, -radius}, {0, radius},
+                {-radius, -radius}, {radius, -radius},
+                {-radius, radius}, {radius, radius}
+        };
+
+        long aa = 0, rr = 0, gg = 0, bb = 0;
+        int samples = 0;
+        for (int[] offset : offsets) {
+            int sx = clamp(x + offset[0], 0, width - 1);
+            int sy = clamp(y + offset[1], 0, height - 1);
+            int c = px[sy * width + sx];
+            aa += Color.alpha(c);
+            rr += Color.red(c);
+            gg += Color.green(c);
+            bb += Color.blue(c);
+            samples++;
+        }
+
+        return Color.argb(
+                (int) (aa / samples),
+                (int) (rr / samples),
+                (int) (gg / samples),
+                (int) (bb / samples));
+    }
+
+    private int colorDistance(int a, int b) {
+        int dr = Math.abs(Color.red(a) - Color.red(b));
+        int dg = Math.abs(Color.green(a) - Color.green(b));
+        int db = Math.abs(Color.blue(a) - Color.blue(b));
+        return (dr + dg + db) / 3;
     }
 
     private boolean containsRtl(String text) {
