@@ -1540,10 +1540,10 @@ public class ProfessionalEditorActivity extends Activity {
                     if (canvas != null) {
                         canvas.setDetectedTextRegions(regions);
                         canvas.setInteractionMode("text_select");
-                        // Keep the user's shared pointer safety preference.
-                        // Direct taps on OCR boxes still select non-destructively,
-                        // while dragged detached-pointer actions obey move-only.
-                        canvas.setPointerActionEnabled(pointerWorkEnabled);
+                        // Text detection becomes immediately actionable only
+                        // for the current text-select interaction. Do not mutate
+                        // the shared pointer preference used by brush/eraser/etc.
+                        canvas.setPointerActionEnabled(true);
                         canvas.showPointerNow();
                     }
                     setBusy(false);
@@ -1639,7 +1639,9 @@ public class ProfessionalEditorActivity extends Activity {
         if (best == null) {
             float bestScore = Float.MAX_VALUE;
             for (RectF region : detectedTextRegions) {
-                float halo = Math.max(4f, Math.min(14f, region.height() * 0.45f));
+                float zoom = canvas == null ? 1f : Math.max(0.05f, canvas.getZoom());
+                // Keep a finger-sized halo stable on screen regardless of zoom.
+                float halo = dp(16) / zoom;
                 RectF expanded = new RectF(
                         region.left - halo,
                         region.top - halo,
