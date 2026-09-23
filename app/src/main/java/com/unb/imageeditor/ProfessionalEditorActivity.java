@@ -555,6 +555,7 @@ public class ProfessionalEditorActivity extends Activity {
             activeToolButton = source;
             source.setBackground(rounded(ACCENT, 9));
         }
+
         activeTool = id;
         if (canvas != null) {
             canvas.setInteractionMode(id);
@@ -562,54 +563,141 @@ public class ProfessionalEditorActivity extends Activity {
         }
         if (toolOptions == null) return;
 
+        showInspector("properties");
+        if (!desktopLayout && phoneContextScroll != null) {
+            phoneContextScroll.post(() -> phoneContextScroll.scrollTo(0, 0));
+        }
+
         toolOptions.removeAllViews();
-        toolTitle = label("أداة: " + label, 17, TEXT, true);
-        toolOptions.addView(toolTitle);
+        toolTitle = label("أداة: " + label, desktopLayout ? 17 : 13, TEXT, true);
+        toolTitle.setGravity(Gravity.CENTER_VERTICAL);
+        if (!desktopLayout) {
+            toolTitle.setPadding(dp(10), 0, dp(10), 0);
+            toolTitle.setBackground(rounded(Color.rgb(31, 34, 39), 8));
+            toolOptions.addView(toolTitle, new LinearLayout.LayoutParams(
+                    dp(110), dp(82)));
+        } else {
+            toolOptions.addView(toolTitle);
+        }
 
         if (Arrays.asList("brush", "pencil", "eraser", "clone", "heal", "smudge", "dodge_burn").contains(id)) {
             addSlider(toolOptions, "الحجم", 1, 300, brushSize, value -> {
                 brushSize = value;
-                if (canvas != null) canvas.setStrokePreview(brushSize, parseColorSafe(foregroundColor));
+                if (canvas != null) {
+                    canvas.setStrokePreview(brushSize, parseColorSafe(foregroundColor));
+                }
             });
-            addSlider(toolOptions, "العتامة", 0, 100, brushOpacity, value -> brushOpacity = value);
+            addSlider(toolOptions, "العتامة", 0, 100, brushOpacity,
+                    value -> brushOpacity = value);
             addSlider(toolOptions, "الصلابة", 0, 100, 70, null);
             addSlider(toolOptions, "التباعد", 1, 200, 20, null);
+
             if ("clone".equals(id) || "heal".equals(id)) {
-                toolOptions.addView(actionButton("إعادة تحديد المصدر", v -> {
+                toolOptions.addView(actionButton("تحديد المصدر", v -> {
                     cloneSourceX = Float.NaN;
                     cloneSourceY = Float.NaN;
-                    setStatus("اسحب/المس نقطة المصدر أولاً ثم ارسم في المكان المطلوب");
+                    setStatus("المس نقطة المصدر ثم ارسم على الهدف");
+                }));
+            }
+
+            if ("eraser".equals(id)) {
+                toolOptions.addView(actionButton("مسح ناعم", v ->
+                        setStatus("الممحاة الناعمة • اضبط الحجم والعتامة")));
+                toolOptions.addView(actionButton("مسح كامل", v -> {
+                    brushOpacity = 100;
+                    setStatus("الممحاة 100%");
                 }));
             }
         } else if ("text".equals(id)) {
             addSlider(toolOptions, "حجم الخط", 6, 300, 42, null);
             addSlider(toolOptions, "تباعد الحروف", 0, 100, 0, null);
             addSlider(toolOptions, "تباعد الأسطر", 0, 150, 20, null);
+
             toolOptions.addView(actionButton("+ إضافة نص", v ->
                     showAddTextDialog(lastImageTapX, lastImageTapY)));
             toolOptions.addView(actionButton("الخطوط", v -> {
                 openInspectorTab("resources");
                 loadResources("fonts");
             }));
-            toolOptions.addView(actionButton("RTL / LTR", v -> toast("اتجاه النص ضمن الدفعة القادمة")));
+            toolOptions.addView(actionButton("RTL / LTR", v ->
+                    toast("اتجاه النص سيصبح قابلًا للتبديل في محرك النص V2")));
+            toolOptions.addView(actionButton("لون النص", v ->
+                    toast("لون النص الحالي " + foregroundColor)));
         } else if ("crop".equals(id)) {
-            toolOptions.addView(label("اسحب مستطيلاً على الصورة؛ عند رفع إصبعك يتم القص.", 13, MUTED, false));
+            cropAspectRatio = 0f;
+            toolOptions.addView(actionButton("يدوي", v -> {
+                cropAspectRatio = 0f;
+                setStatus("القص اليدوي: اسحب المستطيل بالحجم الذي تريد");
+            }));
+            toolOptions.addView(actionButton("1:1", v -> {
+                cropAspectRatio = 1f;
+                setStatus("القص بنسبة 1:1");
+            }));
+            toolOptions.addView(actionButton("4:3", v -> {
+                cropAspectRatio = 4f / 3f;
+                setStatus("القص بنسبة 4:3");
+            }));
+            toolOptions.addView(actionButton("16:9", v -> {
+                cropAspectRatio = 16f / 9f;
+                setStatus("القص بنسبة 16:9");
+            }));
+            toolOptions.addView(actionButton("9:16", v -> {
+                cropAspectRatio = 9f / 16f;
+                setStatus("القص بنسبة 9:16");
+            }));
+            TextView help = label("اسحب على الصورة لتنفيذ القص", 11, MUTED, false);
+            help.setPadding(dp(10), 0, dp(10), 0);
+            toolOptions.addView(help, new LinearLayout.LayoutParams(dp(190), dp(82)));
+        } else if ("select".equals(id)) {
+            toolOptions.addView(actionButton("مستطيل", v ->
+                    setStatus("اسحب لتحديد مستطيل")));
+            toolOptions.addView(actionButton("تحديد الكل", v ->
+                    applyRemote("select_all", new JSONObject())));
+            toolOptions.addView(actionButton("إلغاء", v ->
+                    applyRemote("select_none", new JSONObject())));
+            toolOptions.addView(actionButton("توسيع", v ->
+                    applyRemote("grow", json("steps", 5))));
+            toolOptions.addView(actionButton("تقليص", v ->
+                    applyRemote("shrink", json("steps", 5))));
         } else if ("transform".equals(id) || "perspective".equals(id)) {
-            toolOptions.addView(actionButton("خيارات التحويل", v ->
-                    toast("التحويل الحر المتقدم ضمن لوحة التحويل القادمة")));
-            toolOptions.addView(actionButton("إلغاء", v -> setStatus("تم إلغاء التحويل")));
+            toolOptions.addView(actionButton("تحريك", v ->
+                    setStatus("التحويل: تحريك")));
+            toolOptions.addView(actionButton("تدوير", v ->
+                    setStatus("التحويل: تدوير")));
+            toolOptions.addView(actionButton("تكبير/تصغير", v ->
+                    showResizeDialog()));
+            toolOptions.addView(actionButton("منظور", v ->
+                    toast("المنظور الحر ضمن محرك V2")));
+            toolOptions.addView(actionButton("إلغاء", v ->
+                    setStatus("تم إلغاء التحويل")));
         } else if ("gradient".equals(id) || "fill".equals(id)) {
             addSlider(toolOptions, "العتامة", 0, 100, 100, null);
-            toolOptions.addView(actionButton("لون المقدمة", v -> toast("منتقي الألوان")));
-            toolOptions.addView(actionButton("لون الخلفية", v -> toast("منتقي الألوان")));
+            toolOptions.addView(actionButton("لون المقدمة", v ->
+                    toast("اللون الحالي " + foregroundColor)));
+            toolOptions.addView(actionButton("لون الخلفية", v ->
+                    toast("منتقي لون الخلفية ضمن V2")));
+            if ("gradient".equals(id)) {
+                toolOptions.addView(actionButton("خطي", v ->
+                        setStatus("تدرج خطي")));
+                toolOptions.addView(actionButton("دائري", v ->
+                        toast("التدرج الدائري ضمن V2")));
+            }
         } else {
-            TextView help = label(toolHelp(id), 13, MUTED, false);
-            help.setPadding(0, dp(10), 0, dp(6));
-            toolOptions.addView(help);
+            TextView help = label(toolHelp(id), desktopLayout ? 13 : 11, MUTED, false);
+            help.setPadding(dp(10), dp(6), dp(10), dp(6));
+            if (desktopLayout) {
+                toolOptions.addView(help);
+            } else {
+                toolOptions.addView(help, new LinearLayout.LayoutParams(dp(260), dp(82)));
+            }
         }
 
-        toolOptions.addView(divider());
-        toolOptions.addView(label("ضبط سريع للصورة", 14, TEXT, true));
+        if (desktopLayout) {
+            toolOptions.addView(divider());
+            toolOptions.addView(label("ضبط سريع للصورة", 14, TEXT, true));
+        } else {
+            toolOptions.addView(verticalDivider());
+        }
 
         addSlider(toolOptions, "السطوع", -100, 100, 0,
                 value -> applyRemote("brightness", json("value", value)));
