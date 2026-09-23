@@ -591,6 +591,9 @@ public class ProfessionalEditorActivity extends Activity {
     }
 
     private void showTool(String id, String label, Button source) {
+        if (selectedTextColorPickPending && !"color_picker".equals(id)) {
+            clearPendingSelectedTextColorPick();
+        }
         if (source != null && activeToolButton != source) {
             if (activeToolButton != null) activeToolButton.setBackground(rounded(PANEL_2, 9));
             activeToolButton = source;
@@ -964,7 +967,9 @@ public class ProfessionalEditorActivity extends Activity {
         box.setPadding(dp(16), dp(10), dp(16), dp(6));
 
         GridLayout grid = new GridLayout(this);
-        grid.setColumnCount(6);
+        int screenWidthDp = getResources().getConfiguration().screenWidthDp;
+        int paletteColumns = screenWidthDp < 380 ? 4 : (screenWidthDp < 480 ? 5 : 6);
+        grid.setColumnCount(paletteColumns);
         int[] palette = {
                 0xFF000000, 0xFFFFFFFF, 0xFF757575, 0xFFFF1744, 0xFFFF9100, 0xFFFFFF00,
                 0xFF76FF03, 0xFF00E676, 0xFF1DE9B6, 0xFF00E5FF, 0xFF448AFF, 0xFF536DFE,
@@ -1049,10 +1054,19 @@ public class ProfessionalEditorActivity extends Activity {
                 }));
     }
 
+    private void clearPendingSelectedTextColorPick() {
+        selectedTextColorPickPending = false;
+        selectedTextDraftText = "";
+        selectedTextDraftSize = "";
+    }
+
     private void startColorPickFor(String returnTool, String returnLabel) {
+        clearPendingSelectedTextColorPick();
         colorPickerReturnTool = returnTool;
         colorPickerReturnLabel = returnLabel;
-        pointerWorkEnabled = false;
+
+        // Sampling is temporary and non-destructive. Do not overwrite the
+        // user's shared move-only / move+execute preference.
         showTool("color_picker", "اختيار لون", null);
         if (canvas != null) {
             canvas.setPointerActionEnabled(false);
@@ -1499,6 +1513,8 @@ public class ProfessionalEditorActivity extends Activity {
             String draftSize = selectedTextDraftSize;
             selectedTextDraftText = "";
             selectedTextDraftSize = "";
+            colorPickerReturnTool = null;
+            colorPickerReturnLabel = null;
             showTool("text", "نص", null);
             showEditRecognizedTextDialog(draftText, draftSize);
             setStatus("تم التقاط لون النص " + foregroundColor + " — اضغط استبدال للتطبيق");
@@ -1852,7 +1868,8 @@ public class ProfessionalEditorActivity extends Activity {
             colorPickerReturnLabel = null;
             dialog.dismiss();
 
-            pointerWorkEnabled = false;
+            // Disable execution only on the temporary picker canvas; keep the
+            // user's stored pointer preference for all other tools.
             showTool("color_picker", "اختيار لون النص", null);
             if (canvas != null) {
                 canvas.setPointerActionEnabled(false);
@@ -1904,7 +1921,9 @@ public class ProfessionalEditorActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
 
         GridLayout grid = new GridLayout(this);
-        grid.setColumnCount(6);
+        int screenWidthDp = getResources().getConfiguration().screenWidthDp;
+        int paletteColumns = screenWidthDp < 380 ? 4 : (screenWidthDp < 480 ? 5 : 6);
+        grid.setColumnCount(paletteColumns);
         int[] palette = {
                 0xFFFFFFFF, 0xFFBDBDBD, 0xFF757575, 0xFF212121, 0xFF000000, 0xFFFF1744,
                 0xFFFF5252, 0xFFFF8A80, 0xFFFF9100, 0xFFFFC400, 0xFFFFFF00, 0xFFCDDC39,
@@ -1913,17 +1932,20 @@ public class ProfessionalEditorActivity extends Activity {
         };
 
         final AlertDialog[] holder = new AlertDialog[1];
+        int swatchDp = screenWidthDp < 380 ? 42 : 44;
         for (int c : palette) {
             Button swatch = new Button(this);
             swatch.setText("");
+            String swatchHex = String.format("#%06X", 0xFFFFFF & c);
+            swatch.setContentDescription("لون " + swatchHex);
             swatch.setBackground(rounded(c, 7));
             GridLayout.LayoutParams lp = new GridLayout.LayoutParams();
-            lp.width = dp(44);
-            lp.height = dp(44);
+            lp.width = dp(swatchDp);
+            lp.height = dp(swatchDp);
             lp.setMargins(dp(3), dp(3), dp(3), dp(3));
             swatch.setLayoutParams(lp);
             swatch.setOnClickListener(v -> {
-                applyForegroundColor(String.format("#%06X", 0xFFFFFF & c));
+                applyForegroundColor(swatchHex);
                 updateSelectedTextColorPreview(preview);
                 updateSelectedTextColorPreview(current);
                 if (holder[0] != null) holder[0].dismiss();
