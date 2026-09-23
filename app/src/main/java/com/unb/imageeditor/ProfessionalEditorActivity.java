@@ -1030,6 +1030,26 @@ public class ProfessionalEditorActivity extends Activity {
     private void refreshLayers() {
         if (layerList == null) return;
         layerList.removeAllViews();
+
+        if (!desktopLayout) {
+            addContextTitle(layerList, "الطبقات");
+            layerList.addView(actionButton("+ طبقة", v ->
+                    toast("الطبقات المتعددة ضمن V2")));
+            layerList.addView(actionButton("+ مجموعة", v ->
+                    toast("مجموعات الطبقات ضمن V2")));
+            layerList.addView(actionButton("+ قناع", v ->
+                    toast("Layer Masks ضمن V2")));
+
+            if (localEngine.hasImage()) {
+                addContextCard(layerList,
+                        "◉ Background\n100% • " +
+                                localEngine.width() + "×" + localEngine.height());
+            } else {
+                addContextCard(layerList, "افتح صورة أولاً");
+            }
+            return;
+        }
+
         layerList.addView(label("الطبقات", 17, TEXT, true));
 
         LinearLayout actions = new LinearLayout(this);
@@ -1071,6 +1091,21 @@ public class ProfessionalEditorActivity extends Activity {
     private void refreshChannels() {
         if (channelList == null) return;
         channelList.removeAllViews();
+
+        if (!desktopLayout) {
+            addContextTitle(channelList, "القنوات");
+            if (!localEngine.hasImage()) {
+                addContextCard(channelList, "افتح صورة أولاً");
+                return;
+            }
+            addContextCard(channelList, "◉ RGB");
+            addContextCard(channelList, "R");
+            addContextCard(channelList, "G");
+            addContextCard(channelList, "B");
+            addContextCard(channelList, "Alpha");
+            return;
+        }
+
         channelList.addView(label("القنوات Channels", 17, TEXT, true));
 
         if (!localEngine.hasImage()) {
@@ -1086,6 +1121,16 @@ public class ProfessionalEditorActivity extends Activity {
     private void refreshPaths() {
         if (pathList == null) return;
         pathList.removeAllViews();
+
+        if (!desktopLayout) {
+            addContextTitle(pathList, "المسارات");
+            pathList.addView(actionButton("+ مسار", v ->
+                    toast("Bezier Paths ضمن V2")));
+            addContextCard(pathList, "تحويل النص لمسار");
+            addContextCard(pathList, "Bezier");
+            return;
+        }
+
         pathList.addView(label("المسارات Paths", 17, TEXT, true));
         pathList.addView(label(
                 "المحرك Offline يعمل الآن. مسارات Bezier والتحويل من النص إلى مسار ضمن V2.",
@@ -1095,6 +1140,37 @@ public class ProfessionalEditorActivity extends Activity {
     private void loadResources(String kind) {
         if (resourceList == null) return;
         resourceList.removeAllViews();
+
+        if (!desktopLayout) {
+            addContextTitle(resourceList, "الموارد");
+            resourceList.addView(actionButton("الخطوط", v -> loadResources("fonts")));
+            resourceList.addView(actionButton("الفرش", v -> loadResources("brushes")));
+            resourceList.addView(actionButton("التدرجات", v -> loadResources("gradients")));
+            resourceList.addView(actionButton("النقوش", v -> loadResources("patterns")));
+            resourceList.addView(actionButton("الألوان", v -> loadResources("palettes")));
+
+            String text;
+            switch (kind) {
+                case "fonts":
+                    text = "خطوط Android";
+                    break;
+                case "brushes":
+                    text = "فرش محلية";
+                    break;
+                case "gradients":
+                    text = "تدرجات";
+                    break;
+                case "patterns":
+                    text = "نقوش";
+                    break;
+                default:
+                    text = "Palettes";
+                    break;
+            }
+            addContextCard(resourceList, text);
+            return;
+        }
+
         resourceList.addView(label("الموارد المحلية", 17, TEXT, true));
 
         HorizontalScrollView picker = new HorizontalScrollView(this);
@@ -1127,6 +1203,26 @@ public class ProfessionalEditorActivity extends Activity {
                 break;
         }
         resourceList.addView(label(message, 12, TEXT, false));
+    }
+
+    private void addContextTitle(LinearLayout parent, String text) {
+        TextView title = label(text, 13, TEXT, true);
+        title.setGravity(Gravity.CENTER);
+        title.setPadding(dp(8), 0, dp(8), 0);
+        title.setBackground(rounded(Color.rgb(31, 34, 39), 8));
+        parent.addView(title, new LinearLayout.LayoutParams(dp(92), dp(82)));
+    }
+
+    private void addContextCard(LinearLayout parent, String text) {
+        TextView card = label(text, 11, TEXT, false);
+        card.setGravity(Gravity.CENTER);
+        card.setTextDirection(View.TEXT_DIRECTION_RTL);
+        card.setPadding(dp(10), dp(4), dp(10), dp(4));
+        card.setBackground(rounded(Color.rgb(35, 39, 45), 8));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(72));
+        lp.setMargins(dp(3), dp(5), dp(3), dp(5));
+        parent.addView(card, lp);
     }
 
     private void refreshRemotePanels() {
