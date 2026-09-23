@@ -94,7 +94,11 @@ public final class LocalEditorEngine {
 
         if (selectionOperation(op, p)) return bitmap;
 
-        Bitmap before = copy(bitmap);
+        Bitmap original = bitmap;
+        Bitmap before = copy(original);
+        // Work on a separate mutable frame. The Canvas can keep drawing the
+        // previous frame while a heavy local operation runs on the worker.
+        bitmap = copy(original);
         try {
             switch (op) {
                 case "rotate":
@@ -177,7 +181,7 @@ public final class LocalEditorEngine {
             redo.clear();
             return bitmap;
         } catch (RuntimeException e) {
-            bitmap = before;
+            bitmap = original;
             throw e;
         }
     }
