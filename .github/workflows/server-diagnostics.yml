@@ -17,7 +17,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          BASE="http://91.98.126.167:18083"
+          BASE="https://91.98.126.167"
 
           echo "=== HEALTH ==="
           HEALTH="$(curl --fail --show-error --silent "$BASE/health")"
