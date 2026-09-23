@@ -1122,9 +1122,32 @@ public class ProfessionalEditorActivity extends Activity {
     private void addHistory(String item) {
         history.add(0, item);
         if (history.size() > 30) history.remove(history.size() - 1);
+        addHistoryRowsOnly();
+    }
+
+    private void addHistoryRowsOnly() {
         if (historyList == null) return;
         historyList.removeAllViews();
-        historyList.addView(label("السجل", 17, TEXT, true));
+
+        TextView title = label("السجل", desktopLayout ? 17 : 13, TEXT, true);
+        title.setGravity(Gravity.CENTER_VERTICAL);
+        if (!desktopLayout) {
+            title.setPadding(dp(10), 0, dp(10), 0);
+            historyList.addView(title, new LinearLayout.LayoutParams(dp(90), dp(82)));
+            int limit = Math.min(history.size(), 8);
+            for (int i = 0; i < limit; i++) {
+                TextView row = label("• " + history.get(i), 11, TEXT, false);
+                row.setGravity(Gravity.CENTER_VERTICAL);
+                row.setPadding(dp(10), 0, dp(10), 0);
+                row.setBackground(rounded(Color.rgb(35, 39, 45), 8));
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(150), dp(72));
+                lp.setMargins(dp(3), dp(5), dp(3), dp(5));
+                historyList.addView(row, lp);
+            }
+            return;
+        }
+
+        historyList.addView(title);
         for (String h : history) {
             TextView row = label("• " + h, 13, TEXT, false);
             row.setPadding(dp(4), dp(7), dp(4), dp(7));
