@@ -126,6 +126,27 @@ public final class LocalEditorEngine {
                 : layers.get(0).bitmap.getHeight();
     }
 
+    public synchronized Bitmap selectionPreview() {
+        if (selectionMask == null || bitmap == null) return null;
+        int w = bitmap.getWidth();
+        int h = bitmap.getHeight();
+        if (selectionMask.length != w * h) return null;
+
+        Bitmap overlay = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+        int[] px = new int[selectionMask.length];
+        for (int i = 0; i < selectionMask.length; i++) {
+            int a = selectionMask[i] & 0xFF;
+            if (a == 0) {
+                px[i] = Color.TRANSPARENT;
+            } else {
+                int alpha = Math.max(24, Math.round(a * 0.28f));
+                px[i] = Color.argb(alpha, 65, 145, 255);
+            }
+        }
+        overlay.setPixels(px, 0, w, 0, 0, w, h);
+        return overlay;
+    }
+
     public synchronized int undoDepth() {
         return undo.size();
     }
