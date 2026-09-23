@@ -48,6 +48,7 @@ public class ProfessionalEditorActivity extends Activity {
 
     private static final int PICK_IMAGE = 4101;
     private static final int CREATE_EXPORT = 4102;
+    private static final int PICK_LAYER_IMAGE = 4103;
 
     private final int BG = Color.rgb(20, 22, 26);
     private final int PANEL = Color.rgb(28, 31, 36);
@@ -107,7 +108,8 @@ public class ProfessionalEditorActivity extends Activity {
     private int textWidthPercent = 100;
     private String textFontFamily = "sans-serif";
     private String textFontLabel = "عربي حديث";
-    private boolean textBold = false;
+    private int textWeight = 400;
+    private String pendingLayerImageName = "صورة إضافية";
     private final List<RectF> detectedTextRegions = new ArrayList<>();
     private RectF selectedTextRegion;
     private String recognizedText = "";
@@ -203,6 +205,7 @@ public class ProfessionalEditorActivity extends Activity {
         row.setLayoutDirection(View.LAYOUT_DIRECTION_RTL);
 
         row.addView(actionButton("فتح", v -> chooseImage()));
+        row.addView(actionButton("+ صورة", v -> chooseLayerImage()));
         row.addView(actionButton("حفظ", v -> exportProject("png")));
         row.addView(actionButton("محلي", v -> showServerDialog()));
         row.addView(verticalDivider());
@@ -619,6 +622,7 @@ public class ProfessionalEditorActivity extends Activity {
             if ("erase_fill".equals(id)) canvasMode = eraseFillMode;
             else if ("transform".equals(id) || "perspective".equals(id)) canvasMode = "transform_quad";
             else if ("text".equals(id) && canvas.hasTextOverlay()) canvasMode = "text_place";
+            else if ("image_layer".equals(id) && canvas.hasImageOverlay()) canvasMode = "image_place";
             else canvasMode = id;
             canvas.setInteractionMode(canvasMode);
             canvas.setPointerActionEnabled(pointerWorkEnabled);
@@ -741,6 +745,10 @@ public class ProfessionalEditorActivity extends Activity {
                 textWidthPercent = value;
                 updateTextOverlayStyle();
             });
+            addLiveSlider(toolOptions, "سماكة الخط", 100, 900, textWeight, value -> {
+                textWeight = value;
+                updateTextOverlayStyle();
+            });
 
             toolOptions.addView(actionButton("+ إضافة نص", v ->
                     showAddTextDialog(lastImageTapX, lastImageTapY)));
@@ -752,11 +760,6 @@ public class ProfessionalEditorActivity extends Activity {
 
             toolOptions.addView(actionButton("الخط: " + textFontLabel, v ->
                     showFontPickerDialog()));
-            toolOptions.addView(actionButton(textBold ? "عريض ✓" : "عريض", v -> {
-                textBold = !textBold;
-                updateTextOverlayStyle();
-                showTool("text", "نص", null);
-            }));
 
             toolOptions.addView(actionButton("لون النص", v ->
                     showColorPaletteDialog("لون النص", "text", "نص")));
@@ -794,6 +797,29 @@ public class ProfessionalEditorActivity extends Activity {
                     11, MUTED, false);
             textState.setPadding(dp(10), 0, dp(10), 0);
             toolOptions.addView(textState, new LinearLayout.LayoutParams(dp(300), dp(82)));
+        } else if ("image_layer".equals(id)) {
+            toolOptions.addView(actionButton("✓ تثبيت الصورة كطبقة", v ->
+                    commitImageOverlay()));
+            toolOptions.addView(actionButton("✕ إلغاء الصورة", v -> {
+                if (canvas != null) canvas.clearImageOverlay();
+                pendingLayerImageName = "صورة إضافية";
+                showTool("move", "تحريك", null);
+                setStatus("تم إلغاء الصورة الإضافية");
+            }));
+            toolOptions.addView(actionButton("+ اختيار صورة أخرى", v ->
+                    chooseLayerImage()));
+            toolOptions.addView(actionButton("فتح لوحة الطبقات", v -> {
+                openInspectorTab("layers");
+                refreshLayers();
+            }));
+
+            TextView imageHelp = label(
+                    canvas != null && canvas.hasImageOverlay()
+                            ? "اسحب الصورة نفسها للتحريك • المقبض السفلي للتكبير/التصغير • المقبض العلوي للتدوير • ثم ثبّتها كطبقة."
+                            : "اختر صورة إضافية لتظهر فوق الصورة الحالية كطبقة مستقلة.",
+                    11, MUTED, false);
+            imageHelp.setPadding(dp(10), 0, dp(10), 0);
+            toolOptions.addView(imageHelp, new LinearLayout.LayoutParams(dp(330), dp(82)));
         } else if ("color_picker".equals(id)) {
             addLiveSlider(toolOptions, "ارتفاع الرأس", 48, 160, pointerOffsetDp, value -> {
                 pointerOffsetDp = value;
@@ -2025,7 +2051,8 @@ public class ProfessionalEditorActivity extends Activity {
                 "size_ratio", sizeRatio,
                 "auto_match", true,
                 "font", textFontFamily,
-                "bold", textBold,
+                "weight", textWeight,
+                "bold", textWeight >= 700,
                 "width_scale", textWidthPercent / 100.0,
                 "color", foregroundColor,
                 "background", background
@@ -2139,11 +2166,10 @@ public class ProfessionalEditorActivity extends Activity {
 
         TextView fontInfo = label(
                 "الخط: " + textFontLabel + " • الحجم " + textSize +
-                        " • العرض " + textWidthPercent + "%",
+                        " • العرض " + textWidthPercent + "% • السماكة " + textWeight,
                 12, MUTED, false);
         fontInfo.setPadding(0, dp(8), 0, dp(4));
-        fontInfo.setTypeface(Typeface.create(textFontFamily,
-                textBold ? Typeface.BOLD : Typeface.NORMAL));
+        fontInfo.setTypeface(weightedTypeface(textFontFamily, textWeight));
         box.addView(fontInfo);
 
         AlertDialog dialog = new AlertDialog.Builder(this)
@@ -2176,7 +2202,7 @@ public class ProfessionalEditorActivity extends Activity {
                             textSize,
                             parseColorSafe(foregroundColor),
                             textFontFamily,
-                            textBold,
+                            textWeight,
                             textWidthPercent / 100f);
                     activeTool = "text";
                     setStatus("حرّك النص ثم كبّره أو دوّره، وبعدها اضغط تثبيت النص");
@@ -2191,7 +2217,7 @@ public class ProfessionalEditorActivity extends Activity {
                 textSize,
                 parseColorSafe(foregroundColor),
                 textFontFamily,
-                textBold,
+                textWeight,
                 textWidthPercent / 100f);
     }
 
@@ -2213,6 +2239,7 @@ public class ProfessionalEditorActivity extends Activity {
                 "scale", canvas.getTextOverlayScale(),
                 "rotation", canvas.getTextOverlayRotation(),
                 "font", canvas.getTextOverlayFont(),
+                "weight", canvas.getTextOverlayWeight(),
                 "bold", canvas.isTextOverlayBold(),
                 "width_scale", canvas.getTextOverlayWidthScale(),
                 "color", String.format("#%08X", canvas.getTextOverlayColor())
@@ -2250,8 +2277,7 @@ public class ProfessionalEditorActivity extends Activity {
                 showTool("text", "نص", null);
                 setStatus("تم اختيار خط " + textFontLabel);
             });
-            b.setTypeface(Typeface.create(families[i],
-                    textBold ? Typeface.BOLD : Typeface.NORMAL));
+            b.setTypeface(weightedTypeface(families[i], textWeight));
             list.addView(b);
         }
         dialog.show();
@@ -2274,10 +2300,21 @@ public class ProfessionalEditorActivity extends Activity {
                 updateTextOverlayStyle();
                 setStatus("الخط الحالي: " + textFontLabel);
             });
-            b.setTypeface(Typeface.create(families[i],
-                    textBold ? Typeface.BOLD : Typeface.NORMAL));
+            b.setTypeface(weightedTypeface(families[i], textWeight));
             parent.addView(b);
         }
+    }
+
+    private Typeface weightedTypeface(String family, int weight) {
+        String safeFamily = family == null || family.trim().isEmpty()
+                ? "sans-serif" : family;
+        Typeface base = Typeface.create(safeFamily, Typeface.NORMAL);
+        int safeWeight = Math.max(100, Math.min(900, weight));
+        if (android.os.Build.VERSION.SDK_INT >= 28) {
+            return Typeface.create(base, safeWeight, false);
+        }
+        return Typeface.create(safeFamily,
+                safeWeight >= 650 ? Typeface.BOLD : Typeface.NORMAL);
     }
 
     private String toolHelp(String id) {
@@ -2553,6 +2590,7 @@ public class ProfessionalEditorActivity extends Activity {
         layerList.addView(actionButton("+ طبقة", v ->
                 applyRemote("add_layer", jsonOf("name",
                         "Layer " + (localEngine.layerInfo().size() + 1)))));
+        layerList.addView(actionButton("+ صورة كطبقة", v -> chooseLayerImage()));
         layerList.addView(actionButton("نسخ", v ->
                 applyRemote("duplicate_layer", new JSONObject())));
         layerList.addView(actionButton("تسمية", v ->
@@ -2976,6 +3014,76 @@ public class ProfessionalEditorActivity extends Activity {
         startActivityForResult(intent, PICK_IMAGE);
     }
 
+    private void chooseLayerImage() {
+        if (busy) return;
+        if (!localEngine.hasImage()) {
+            toast("افتح الصورة الأساسية أولاً");
+            return;
+        }
+        if (canvas != null && canvas.hasImageOverlay()) {
+            new AlertDialog.Builder(this)
+                    .setTitle("توجد صورة إضافية غير مثبتة")
+                    .setMessage("ثبّت الصورة الحالية أو ألغِها قبل اختيار صورة أخرى.")
+                    .setNegativeButton("إغلاق", null)
+                    .setPositiveButton("تثبيت الحالية", (d, w) -> commitImageOverlay())
+                    .show();
+            return;
+        }
+
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("image/*");
+        startActivityForResult(intent, PICK_LAYER_IMAGE);
+    }
+
+    private void commitImageOverlay() {
+        if (canvas == null || !canvas.hasImageOverlay()) {
+            toast("أضف صورة ثانية أولاً");
+            return;
+        }
+        if (busy) return;
+
+        Bitmap overlay = canvas.getImageOverlayBitmap();
+        if (overlay == null) return;
+
+        final Bitmap source = overlay;
+        final float x = canvas.getImageOverlayX();
+        final float y = canvas.getImageOverlayY();
+        final float scale = canvas.getImageOverlayScale();
+        final float rotation = canvas.getImageOverlayRotation();
+        final String layerName = pendingLayerImageName;
+
+        setBusy(true);
+        canvas.setInteractionMode("move");
+        setStatus("جاري تثبيت الصورة كطبقة...");
+
+        localExecutor.execute(() -> {
+            try {
+                Bitmap frame = localEngine.addImageLayer(
+                        source, layerName, x, y, scale, rotation);
+                runOnUiThread(() -> {
+                    canvas.setBitmapPreserveViewport(frame);
+                    canvas.clearImageOverlay();
+                    pendingLayerImageName = "صورة إضافية";
+                    setBusy(false);
+                    setStatus("تمت إضافة الصورة كطبقة مستقلة");
+                    addHistory("إضافة صورة كطبقة");
+                    refreshRemotePanels();
+                    openInspectorTab("layers");
+                    refreshLayers();
+                    showTool("move", "تحريك", null);
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    setBusy(false);
+                    if (canvas != null) canvas.setInteractionMode("image_place");
+                    toast("تعذر إضافة الصورة: " + shortText(e.getMessage()));
+                    setStatus("فشل تثبيت الصورة الإضافية");
+                });
+            }
+        });
+    }
+
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
@@ -2994,6 +3102,38 @@ public class ProfessionalEditorActivity extends Activity {
                 }
             }
             pendingExportBytes = null;
+            return;
+        }
+
+        if (requestCode == PICK_LAYER_IMAGE) {
+            if (resultCode != RESULT_OK || data == null || data.getData() == null) return;
+            Uri layerUri = data.getData();
+            setBusy(true);
+            setStatus("جاري تجهيز الصورة الإضافية...");
+
+            localExecutor.execute(() -> {
+                try {
+                    byte[] bytes = readAll(layerUri);
+                    String name = queryName(layerUri);
+                    Bitmap decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+                    if (decoded == null) throw new Exception("صيغة الصورة غير مدعومة");
+
+                    runOnUiThread(() -> {
+                        pendingLayerImageName =
+                                name == null || name.trim().isEmpty() ? "صورة إضافية" : name;
+                        canvas.startImageOverlay(decoded);
+                        setBusy(false);
+                        showTool("image_layer", "صورة إضافية", null);
+                        setStatus("حرّك الصورة وكبّرها أو دوّرها ثم اضغط تثبيت الصورة كطبقة");
+                    });
+                } catch (Exception e) {
+                    runOnUiThread(() -> {
+                        setBusy(false);
+                        toast("تعذر فتح الصورة الإضافية: " + shortText(e.getMessage()));
+                        setStatus("فشل إضافة الصورة");
+                    });
+                }
+            });
             return;
         }
 
@@ -3054,6 +3194,12 @@ public class ProfessionalEditorActivity extends Activity {
                 canvas != null && canvas.hasTextOverlay()) {
             toast("ثبّت النص الحالي أو ألغِه قبل القص أو التدوير أو تغيير الحجم");
             setStatus("النص غير مثبت — ثبّته أو ألغِه قبل تغيير هندسة الصورة");
+            return;
+        }
+        if (isTransformGeometryOperation(operation) &&
+                canvas != null && canvas.hasImageOverlay()) {
+            toast("ثبّت الصورة الإضافية أو ألغِها قبل تغيير هندسة الصورة الأساسية");
+            setStatus("الصورة الإضافية غير مثبتة");
             return;
         }
 
@@ -3134,6 +3280,10 @@ public class ProfessionalEditorActivity extends Activity {
 
         if (canvas != null && canvas.hasTextOverlay()) {
             toast("ثبّت النص الحالي أو ألغِه قبل التراجع أو الإعادة");
+            return;
+        }
+        if (canvas != null && canvas.hasImageOverlay()) {
+            toast("ثبّت الصورة الإضافية أو ألغِها قبل التراجع أو الإعادة");
             return;
         }
 
@@ -3264,12 +3414,13 @@ public class ProfessionalEditorActivity extends Activity {
         switch (group) {
             case "ملف":
                 showChoice("ملف", new String[]{
-                        "فتح صورة", "حفظ PNG", "حفظ JPG", "حفظ WEBP"
+                        "فتح صورة", "إضافة صورة كطبقة", "حفظ PNG", "حفظ JPG", "حفظ WEBP"
                 }, index -> {
                     if (index == 0) chooseImage();
-                    else if (index == 1) exportProject("png");
-                    else if (index == 2) exportProject("jpg");
-                    else if (index == 3) exportProject("webp");
+                    else if (index == 1) chooseLayerImage();
+                    else if (index == 2) exportProject("png");
+                    else if (index == 3) exportProject("jpg");
+                    else if (index == 4) exportProject("webp");
                 });
                 break;
 
@@ -3324,19 +3475,21 @@ public class ProfessionalEditorActivity extends Activity {
 
             case "طبقة":
                 showChoice("طبقة", new String[]{
-                        "فتح لوحة الطبقات", "طبقة جديدة", "نسخ الطبقة",
+                        "فتح لوحة الطبقات", "إضافة صورة كطبقة", "طبقة جديدة", "نسخ الطبقة",
                         "حذف الطبقة", "دمج لأسفل", "Flatten"
                 }, index -> {
                     if (index == 0) {
                         openInspectorTab("layers");
                         refreshLayers();
                     } else if (index == 1) {
-                        applyRemote("add_layer", jsonOf("name", "Layer"));
+                        chooseLayerImage();
                     } else if (index == 2) {
-                        applyRemote("duplicate_layer", new JSONObject());
+                        applyRemote("add_layer", jsonOf("name", "Layer"));
                     } else if (index == 3) {
-                        applyRemote("delete_layer", new JSONObject());
+                        applyRemote("duplicate_layer", new JSONObject());
                     } else if (index == 4) {
+                        applyRemote("delete_layer", new JSONObject());
+                    } else if (index == 5) {
                         applyRemote("merge_down", new JSONObject());
                     } else {
                         applyRemote("flatten", new JSONObject());
