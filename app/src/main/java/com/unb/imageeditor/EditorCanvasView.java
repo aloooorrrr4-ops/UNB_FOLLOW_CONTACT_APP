@@ -78,6 +78,9 @@ public class EditorCanvasView extends View {
     private float pointerHeadY;
     private boolean pointerVisible = false;
     private boolean pointerActionEnabled = true;
+    private float textSelectDownX;
+    private float textSelectDownY;
+    private boolean textSelectDragged = false;
     private float[] transformQuad;
     private int activeTransformHandle = -1;
 
@@ -964,20 +967,46 @@ public class EditorCanvasView extends View {
         if ("text_select".equals(interactionMode)) {
             switch (event.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
-                case MotionEvent.ACTION_MOVE:
+                    textSelectDownX = event.getX();
+                    textSelectDownY = event.getY();
+                    textSelectDragged = false;
                     updateDetachedPointer(event.getX(), event.getY());
                     invalidate();
                     return true;
+
+                case MotionEvent.ACTION_MOVE:
+                    if (!textSelectDragged) {
+                        float dx = event.getX() - textSelectDownX;
+                        float dy = event.getY() - textSelectDownY;
+                        textSelectDragged = (dx * dx + dy * dy) > dp(8) * dp(8);
+                    }
+                    updateDetachedPointer(event.getX(), event.getY());
+                    invalidate();
+                    return true;
+
                 case MotionEvent.ACTION_UP:
                     updateDetachedPointer(event.getX(), event.getY());
-                    if (pointerActionEnabled && listener != null) {
-                        float[] p = getPointerImagePosition();
-                        if (p != null) listener.onTapImage(p[0], p[1]);
+                    if (listener != null) {
+                        if (!textSelectDragged) {
+                            // A deliberate tap on a detected box selects the
+                            // text under the finger directly. This avoids the
+                            // extra "select at pointer" step for normal use.
+                            float[] direct = screenToImage(event.getX(), event.getY());
+                            listener.onTapImage(direct[0], direct[1]);
+                        } else if (pointerActionEnabled) {
+                            // Dragging still uses the detached pointer head.
+                            float[] p = getPointerImagePosition();
+                            if (p != null) listener.onTapImage(p[0], p[1]);
+                        }
                     }
+                    textSelectDragged = false;
                     invalidate();
                     return true;
+
                 case MotionEvent.ACTION_CANCEL:
+                    textSelectDragged = false;
                     return true;
+
                 default:
                     return true;
             }
