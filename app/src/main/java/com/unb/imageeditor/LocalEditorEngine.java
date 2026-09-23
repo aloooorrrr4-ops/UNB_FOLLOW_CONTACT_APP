@@ -1849,6 +1849,7 @@ public final class LocalEditorEngine {
         Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.SUBPIXEL_TEXT_FLAG);
         paint.setColor(foreground);
         String fontFamily = p.optString("font", "sans-serif");
+        boolean explicitWeight = p.has("weight");
         int weight = clamp(p.optInt("weight",
                 p.optBoolean("bold", false) ? 700 : 400), 100, 900);
         paint.setTypeface(weightedTypeface(fontFamily, weight));
@@ -1875,7 +1876,7 @@ public final class LocalEditorEngine {
             targetInkWidth *= sizeRatio;
             targetStackHeight *= sizeRatio;
 
-            if (weight < 600 && originalProfile.density >= 0.24f) {
+            if (!explicitWeight && weight < 600 && originalProfile.density >= 0.24f) {
                 paint.setFakeBoldText(true);
             }
         } else {
