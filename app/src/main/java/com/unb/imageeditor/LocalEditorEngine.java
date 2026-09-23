@@ -259,8 +259,56 @@ public final class LocalEditorEngine {
                 case "color_balance":
                     colorBalance(p);
                     break;
+                case "curves":
+                    curves((float) p.optDouble("strength", 28));
+                    break;
                 case "equalize":
                     equalize();
+                    break;
+                case "clone":
+                    cloneHealStroke(p, false);
+                    break;
+                case "heal":
+                    cloneHealStroke(p, true);
+                    break;
+                case "smudge":
+                    smudgeStroke(p);
+                    break;
+                case "dodge_burn":
+                    dodgeBurnStroke(p);
+                    break;
+                case "gaussian_blur":
+                    boxBlur(Math.max(1, p.optInt("radius", 4)));
+                    break;
+                case "noise_reduction":
+                    boxBlur(Math.max(1, p.optInt("radius", 1)));
+                    break;
+                case "unsharp_mask":
+                    unsharp((float) p.optDouble("amount", 1.15),
+                            Math.max(1, p.optInt("radius", 2)));
+                    break;
+                case "bloom":
+                    bloom(Math.max(1, p.optInt("radius", 5)),
+                            (float) p.optDouble("strength", 0.35));
+                    break;
+                case "emboss":
+                    emboss();
+                    break;
+                case "edge":
+                    edgeDetect();
+                    break;
+                case "oilify":
+                    oilify();
+                    break;
+                case "pixelize":
+                case "mosaic":
+                    pixelize(Math.max(2, p.optInt("size", 12)));
+                    break;
+                case "motion_blur":
+                    motionBlur(Math.max(2, p.optInt("radius", 9)));
+                    break;
+                case "color_temperature":
+                    colorTemperature(p.optInt("value", 20));
                     break;
                 case "fill":
                     fill(parseColor(p.optString("color", "#000000")));
@@ -379,6 +427,41 @@ public final class LocalEditorEngine {
                 return true;
             case "feather":
             case "border":
+            case "select_polygon": {
+                JSONArray pts = p.optJSONArray("points");
+                if (pts == null || pts.length() < 6) return true;
+                float minX = bitmap.getWidth(), minY = bitmap.getHeight();
+                float maxX = 0, maxY = 0;
+                for (int i = 0; i + 1 < pts.length(); i += 2) {
+                    float x = (float) pts.optDouble(i);
+                    float y = (float) pts.optDouble(i + 1);
+                    minX = Math.min(minX, x);
+                    minY = Math.min(minY, y);
+                    maxX = Math.max(maxX, x);
+                    maxY = Math.max(maxY, y);
+                }
+                selection = new Rect(
+                        clamp(Math.round(minX), 0, bitmap.getWidth() - 1),
+                        clamp(Math.round(minY), 0, bitmap.getHeight() - 1),
+                        clamp(Math.round(maxX), 1, bitmap.getWidth()),
+                        clamp(Math.round(maxY), 1, bitmap.getHeight()));
+                return true;
+            }
+            case "select_color": {
+                int target = parseColor(p.optString("color", "#ffffff"));
+                selectColorBounds(target, p.optDouble("threshold", 0.15));
+                return true;
+            }
+            case "select_contiguous": {
+                int x = clamp((int) Math.round(p.optDouble("x", 0)), 0, bitmap.getWidth() - 1);
+                int y = clamp((int) Math.round(p.optDouble("y", 0)), 0, bitmap.getHeight() - 1);
+                int target = bitmap.getPixel(x, y);
+                selectColorBounds(target, p.optDouble("threshold", 0.15));
+                return true;
+            }
+            case "invert_selection":
+                selection = new Rect(0, 0, bitmap.getWidth(), bitmap.getHeight());
+                return true;
             case "sharpen_selection":
                 return true;
             default:
@@ -720,6 +803,397 @@ public final class LocalEditorEngine {
         for (int i = 0; i < lines.length; i++) {
             canvas.drawText(lines[i], x, y + i * line, paint);
         }
+    }
+
+    private void selectColorBounds(int target, double threshold) {
+        int[] px = pixels();
+        int tr = Color.red(target), tg = Color.green(target), tb = Color.blue(target);
+        double limit = Math.max(0.01, Math.min(1.0, threshold)) * 441.67295593;
+        double limitSq = limit * limit;
+
+        int minX = bitmap.getWidth(), minY = bitmap.getHeight();
+        int maxX = -1, maxY = -1;
+        int w = bitmap.getWidth();
+
+        for (int i = 0; i < px.length; i++) {
+            int c = px[i];
+            int dr = Color.red(c) - tr;
+            int dg = Color.green(c) - tg;
+            int db = Color.blue(c) - tb;
+            if (dr * dr + dg * dg + db * db > limitSq) continue;
+            int x = i % w;
+            int y = i / w;
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+        }
+
+        selection = maxX < 0 ? null :
+                new Rect(minX, minY, Math.min(w, maxX + 1),
+                        Math.min(bitmap.getHeight(), maxY + 1));
+    }
+
+    private void curves(float strength) {
+        float amount = Math.max(-100f, Math.min(100f, strength)) / 100f;
+        int[] px = pixels();
+        for (int i = 0; i < px.length; i++) {
+            int c = px[i];
+            px[i] = Color.argb(Color.alpha(c),
+                    curveValue(Color.red(c), amount),
+                    curveValue(Color.green(c), amount),
+                    curveValue(Color.blue(c), amount));
+        }
+        setPixels(px);
+    }
+
+    private int curveValue(int value, float amount) {
+        float n = value / 255f;
+        float smooth = n * n * (3f - 2f * n);
+        float out = amount >= 0
+                ? n + (smooth - n) * amount
+                : n + (n - smooth) * (-amount);
+        return clamp(Math.round(out * 255f), 0, 255);
+    }
+
+    private void cloneHealStroke(JSONObject p, boolean heal) {
+        JSONArray pts = p.optJSONArray("points");
+        if (pts == null || pts.length() < 2) return;
+
+        int w = bitmap.getWidth();
+        int h = bitmap.getHeight();
+        int radius = Math.max(1, Math.round((float) p.optDouble("size", 24) / 2f));
+        float opacity = Math.max(0f, Math.min(1f,
+                (float) p.optDouble("opacity", 100) / 100f));
+
+        float firstX = (float) pts.optDouble(0);
+        float firstY = (float) pts.optDouble(1);
+        float sourceX = (float) p.optDouble("source_x", firstX);
+        float sourceY = (float) p.optDouble("source_y", firstY);
+        int offsetX = Math.round(sourceX - firstX);
+        int offsetY = Math.round(sourceY - firstY);
+
+        int[] original = pixels();
+        int[] out = original.clone();
+
+        for (int i = 0; i + 1 < pts.length(); i += 2) {
+            int cx = Math.round((float) pts.optDouble(i));
+            int cy = Math.round((float) pts.optDouble(i + 1));
+
+            for (int dy = -radius; dy <= radius; dy++) {
+                int yy = cy + dy;
+                int sy = yy + offsetY;
+                if (yy < 0 || yy >= h || sy < 0 || sy >= h) continue;
+                for (int dx = -radius; dx <= radius; dx++) {
+                    if (dx * dx + dy * dy > radius * radius) continue;
+                    int xx = cx + dx;
+                    int sx = xx + offsetX;
+                    if (xx < 0 || xx >= w || sx < 0 || sx >= w) continue;
+
+                    int di = yy * w + xx;
+                    int si = sy * w + sx;
+                    int source = original[si];
+                    int dest = out[di];
+                    float local = opacity;
+                    if (heal) local *= 0.65f;
+                    out[di] = blend(dest, source, local);
+                }
+            }
+        }
+        setPixels(out);
+    }
+
+    private void smudgeStroke(JSONObject p) {
+        JSONArray pts = p.optJSONArray("points");
+        if (pts == null || pts.length() < 2) return;
+
+        int w = bitmap.getWidth();
+        int h = bitmap.getHeight();
+        int radius = Math.max(1, Math.round((float) p.optDouble("size", 24) / 2f));
+        float strength = Math.max(0.05f, Math.min(0.9f,
+                (float) p.optDouble("pressure", 50) / 100f));
+
+        int[] px = pixels();
+        for (int i = 0; i + 1 < pts.length(); i += 2) {
+            int cx = clamp(Math.round((float) pts.optDouble(i)), 0, w - 1);
+            int cy = clamp(Math.round((float) pts.optDouble(i + 1)), 0, h - 1);
+
+            long ar = 0, ag = 0, ab = 0, aa = 0, count = 0;
+            int sampleRadius = Math.max(1, radius / 2);
+            for (int dy = -sampleRadius; dy <= sampleRadius; dy++) {
+                int yy = cy + dy;
+                if (yy < 0 || yy >= h) continue;
+                for (int dx = -sampleRadius; dx <= sampleRadius; dx++) {
+                    int xx = cx + dx;
+                    if (xx < 0 || xx >= w || dx * dx + dy * dy > sampleRadius * sampleRadius) continue;
+                    int cc = px[yy * w + xx];
+                    aa += Color.alpha(cc);
+                    ar += Color.red(cc);
+                    ag += Color.green(cc);
+                    ab += Color.blue(cc);
+                    count++;
+                }
+            }
+            if (count == 0) continue;
+            int avg = Color.argb((int) (aa / count), (int) (ar / count),
+                    (int) (ag / count), (int) (ab / count));
+
+            for (int dy = -radius; dy <= radius; dy++) {
+                int yy = cy + dy;
+                if (yy < 0 || yy >= h) continue;
+                for (int dx = -radius; dx <= radius; dx++) {
+                    if (dx * dx + dy * dy > radius * radius) continue;
+                    int xx = cx + dx;
+                    if (xx < 0 || xx >= w) continue;
+                    int index = yy * w + xx;
+                    px[index] = blend(px[index], avg, strength);
+                }
+            }
+        }
+        setPixels(px);
+    }
+
+    private void dodgeBurnStroke(JSONObject p) {
+        JSONArray pts = p.optJSONArray("points");
+        if (pts == null || pts.length() < 2) return;
+
+        boolean burn = "burn".equalsIgnoreCase(p.optString("type", "dodge"));
+        int w = bitmap.getWidth();
+        int h = bitmap.getHeight();
+        int radius = Math.max(1, Math.round((float) p.optDouble("size", 24) / 2f));
+        float exposure = Math.max(0.01f, Math.min(1f,
+                (float) p.optDouble("exposure", 35) / 100f));
+
+        int[] px = pixels();
+        for (int i = 0; i + 1 < pts.length(); i += 2) {
+            int cx = Math.round((float) pts.optDouble(i));
+            int cy = Math.round((float) pts.optDouble(i + 1));
+            for (int dy = -radius; dy <= radius; dy++) {
+                int yy = cy + dy;
+                if (yy < 0 || yy >= h) continue;
+                for (int dx = -radius; dx <= radius; dx++) {
+                    if (dx * dx + dy * dy > radius * radius) continue;
+                    int xx = cx + dx;
+                    if (xx < 0 || xx >= w) continue;
+                    int index = yy * w + xx;
+                    int cc = px[index];
+                    int r = Color.red(cc), g = Color.green(cc), b = Color.blue(cc);
+                    if (burn) {
+                        r = Math.round(r * (1f - exposure * 0.35f));
+                        g = Math.round(g * (1f - exposure * 0.35f));
+                        b = Math.round(b * (1f - exposure * 0.35f));
+                    } else {
+                        r = Math.round(r + (255 - r) * exposure * 0.35f);
+                        g = Math.round(g + (255 - g) * exposure * 0.35f);
+                        b = Math.round(b + (255 - b) * exposure * 0.35f);
+                    }
+                    px[index] = Color.argb(Color.alpha(cc),
+                            clamp(r, 0, 255), clamp(g, 0, 255), clamp(b, 0, 255));
+                }
+            }
+        }
+        setPixels(px);
+    }
+
+    private void boxBlur(int radius) {
+        radius = Math.max(1, Math.min(30, radius));
+        int w = bitmap.getWidth();
+        int h = bitmap.getHeight();
+        int[] src = pixels();
+        int[] temp = new int[src.length];
+        int[] out = new int[src.length];
+
+        for (int y = 0; y < h; y++) {
+            long sa = 0, sr = 0, sg = 0, sb = 0;
+            for (int x = -radius; x <= radius; x++) {
+                int xx = clamp(x, 0, w - 1);
+                int c = src[y * w + xx];
+                sa += Color.alpha(c); sr += Color.red(c);
+                sg += Color.green(c); sb += Color.blue(c);
+            }
+            int window = radius * 2 + 1;
+            for (int x = 0; x < w; x++) {
+                temp[y * w + x] = Color.argb((int)(sa/window), (int)(sr/window),
+                        (int)(sg/window), (int)(sb/window));
+                int removeX = clamp(x - radius, 0, w - 1);
+                int addX = clamp(x + radius + 1, 0, w - 1);
+                int rem = src[y * w + removeX];
+                int add = src[y * w + addX];
+                sa += Color.alpha(add) - Color.alpha(rem);
+                sr += Color.red(add) - Color.red(rem);
+                sg += Color.green(add) - Color.green(rem);
+                sb += Color.blue(add) - Color.blue(rem);
+            }
+        }
+
+        for (int x = 0; x < w; x++) {
+            long sa = 0, sr = 0, sg = 0, sb = 0;
+            for (int y = -radius; y <= radius; y++) {
+                int yy = clamp(y, 0, h - 1);
+                int c = temp[yy * w + x];
+                sa += Color.alpha(c); sr += Color.red(c);
+                sg += Color.green(c); sb += Color.blue(c);
+            }
+            int window = radius * 2 + 1;
+            for (int y = 0; y < h; y++) {
+                out[y * w + x] = Color.argb((int)(sa/window), (int)(sr/window),
+                        (int)(sg/window), (int)(sb/window));
+                int removeY = clamp(y - radius, 0, h - 1);
+                int addY = clamp(y + radius + 1, 0, h - 1);
+                int rem = temp[removeY * w + x];
+                int add = temp[addY * w + x];
+                sa += Color.alpha(add) - Color.alpha(rem);
+                sr += Color.red(add) - Color.red(rem);
+                sg += Color.green(add) - Color.green(rem);
+                sb += Color.blue(add) - Color.blue(rem);
+            }
+        }
+        setPixels(out);
+    }
+
+    private void unsharp(float amount, int radius) {
+        int[] original = pixels();
+        Bitmap saved = bitmap;
+        boxBlur(radius);
+        int[] blurred = pixels();
+        bitmap = saved;
+        int[] out = original.clone();
+        float a = Math.max(0f, Math.min(3f, amount));
+
+        for (int i = 0; i < out.length; i++) {
+            int o = original[i], b = blurred[i];
+            out[i] = Color.argb(Color.alpha(o),
+                    clamp(Math.round(Color.red(o) + (Color.red(o)-Color.red(b))*a),0,255),
+                    clamp(Math.round(Color.green(o) + (Color.green(o)-Color.green(b))*a),0,255),
+                    clamp(Math.round(Color.blue(o) + (Color.blue(o)-Color.blue(b))*a),0,255));
+        }
+        setPixels(out);
+    }
+
+    private void bloom(int radius, float strength) {
+        int[] original = pixels();
+        Bitmap saved = bitmap;
+        boxBlur(radius);
+        int[] blurred = pixels();
+        bitmap = saved;
+        int[] out = original.clone();
+        float s = Math.max(0f, Math.min(1f, strength));
+        for (int i = 0; i < out.length; i++) {
+            int o = original[i], b = blurred[i];
+            int br = Color.red(b), bg = Color.green(b), bb = Color.blue(b);
+            if ((br + bg + bb) / 3 < 150) continue;
+            int glow = Color.rgb(br, bg, bb);
+            out[i] = blend(o, screen(o, glow), s);
+        }
+        setPixels(out);
+    }
+
+    private int screen(int a, int b) {
+        return Color.argb(Color.alpha(a),
+                255 - ((255-Color.red(a))*(255-Color.red(b))/255),
+                255 - ((255-Color.green(a))*(255-Color.green(b))/255),
+                255 - ((255-Color.blue(a))*(255-Color.blue(b))/255));
+    }
+
+    private void emboss() {
+        int w = bitmap.getWidth(), h = bitmap.getHeight();
+        int[] src = pixels(), out = src.clone();
+        for (int y = 1; y < h; y++) {
+            for (int x = 1; x < w; x++) {
+                int c = src[y*w+x], p = src[(y-1)*w+x-1];
+                out[y*w+x] = Color.argb(Color.alpha(c),
+                        clamp(128 + Color.red(c)-Color.red(p),0,255),
+                        clamp(128 + Color.green(c)-Color.green(p),0,255),
+                        clamp(128 + Color.blue(c)-Color.blue(p),0,255));
+            }
+        }
+        setPixels(out);
+    }
+
+    private void edgeDetect() {
+        int w = bitmap.getWidth(), h = bitmap.getHeight();
+        int[] src = pixels(), out = new int[src.length];
+        for (int y = 1; y < h-1; y++) {
+            for (int x = 1; x < w-1; x++) {
+                int gx = gray(src[(y-1)*w+x+1]) + 2*gray(src[y*w+x+1]) + gray(src[(y+1)*w+x+1])
+                        - gray(src[(y-1)*w+x-1]) - 2*gray(src[y*w+x-1]) - gray(src[(y+1)*w+x-1]);
+                int gy = gray(src[(y+1)*w+x-1]) + 2*gray(src[(y+1)*w+x]) + gray(src[(y+1)*w+x+1])
+                        - gray(src[(y-1)*w+x-1]) - 2*gray(src[(y-1)*w+x]) - gray(src[(y-1)*w+x+1]);
+                int v = clamp((int)Math.sqrt(gx*gx + gy*gy),0,255);
+                out[y*w+x] = Color.argb(Color.alpha(src[y*w+x]), v,v,v);
+            }
+        }
+        setPixels(out);
+    }
+
+    private int gray(int c) {
+        return (Color.red(c)*299 + Color.green(c)*587 + Color.blue(c)*114)/1000;
+    }
+
+    private void oilify() {
+        posterize(12);
+        boxBlur(1);
+    }
+
+    private void pixelize(int size) {
+        int w = bitmap.getWidth(), h = bitmap.getHeight();
+        int[] px = pixels();
+        for (int by = 0; by < h; by += size) {
+            for (int bx = 0; bx < w; bx += size) {
+                long aa=0, rr=0, gg=0, bb=0, count=0;
+                int yEnd = Math.min(h, by+size), xEnd = Math.min(w, bx+size);
+                for(int y=by;y<yEnd;y++) for(int x=bx;x<xEnd;x++){
+                    int c=px[y*w+x]; aa+=Color.alpha(c); rr+=Color.red(c);
+                    gg+=Color.green(c); bb+=Color.blue(c); count++;
+                }
+                int avg=Color.argb((int)(aa/count),(int)(rr/count),(int)(gg/count),(int)(bb/count));
+                for(int y=by;y<yEnd;y++) for(int x=bx;x<xEnd;x++) px[y*w+x]=avg;
+            }
+        }
+        setPixels(px);
+    }
+
+    private void motionBlur(int radius) {
+        int w=bitmap.getWidth(), h=bitmap.getHeight();
+        int[] src=pixels(), out=src.clone();
+        for(int y=0;y<h;y++){
+            long aa=0,rr=0,gg=0,bb=0;
+            int window=radius*2+1;
+            for(int x=-radius;x<=radius;x++){
+                int c=src[y*w+clamp(x,0,w-1)];
+                aa+=Color.alpha(c); rr+=Color.red(c); gg+=Color.green(c); bb+=Color.blue(c);
+            }
+            for(int x=0;x<w;x++){
+                out[y*w+x]=Color.argb((int)(aa/window),(int)(rr/window),(int)(gg/window),(int)(bb/window));
+                int rem=src[y*w+clamp(x-radius,0,w-1)];
+                int add=src[y*w+clamp(x+radius+1,0,w-1)];
+                aa+=Color.alpha(add)-Color.alpha(rem); rr+=Color.red(add)-Color.red(rem);
+                gg+=Color.green(add)-Color.green(rem); bb+=Color.blue(add)-Color.blue(rem);
+            }
+        }
+        setPixels(out);
+    }
+
+    private void colorTemperature(int value) {
+        int shift=clamp(value,-100,100);
+        int[] px=pixels();
+        for(int i=0;i<px.length;i++){
+            int c=px[i];
+            px[i]=Color.argb(Color.alpha(c),
+                    clamp(Color.red(c)+shift,0,255),
+                    Color.green(c),
+                    clamp(Color.blue(c)-shift,0,255));
+        }
+        setPixels(px);
+    }
+
+    private int blend(int base, int over, float amount) {
+        float a=Math.max(0f,Math.min(1f,amount));
+        return Color.argb(
+                clamp(Math.round(Color.alpha(base)*(1f-a)+Color.alpha(over)*a),0,255),
+                clamp(Math.round(Color.red(base)*(1f-a)+Color.red(over)*a),0,255),
+                clamp(Math.round(Color.green(base)*(1f-a)+Color.green(over)*a),0,255),
+                clamp(Math.round(Color.blue(base)*(1f-a)+Color.blue(over)*a),0,255));
     }
 
     private int[] pixels() {
