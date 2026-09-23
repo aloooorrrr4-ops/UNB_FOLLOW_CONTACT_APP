@@ -6,6 +6,7 @@ import android.graphics.Color;
 import android.graphics.ColorMatrix;
 import android.graphics.ColorMatrixColorFilter;
 import android.graphics.LinearGradient;
+import android.graphics.RadialGradient;
 import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.PorterDuff;
@@ -230,6 +231,9 @@ public final class LocalEditorEngine {
                 case "resize":
                 case "scale":
                     resize(p);
+                    break;
+                case "perspective":
+                    perspective(p);
                     break;
                 case "brightness":
                     brightness((float) p.optDouble("value", 0));
@@ -511,6 +515,43 @@ public final class LocalEditorEngine {
         selection = null;
     }
 
+    private void perspective(JSONObject p) {
+        int w = bitmap.getWidth();
+        int h = bitmap.getHeight();
+
+        float topInset = Math.max(0f, Math.min(w * 0.45f,
+                (float) p.optDouble("top_inset", w * 0.08f)));
+        float bottomInset = Math.max(0f, Math.min(w * 0.45f,
+                (float) p.optDouble("bottom_inset", 0f)));
+        float verticalShift = Math.max(-h * 0.35f, Math.min(h * 0.35f,
+                (float) p.optDouble("vertical_shift", 0f)));
+
+        float[] src = {
+                0f, 0f,
+                w, 0f,
+                w, h,
+                0f, h
+        };
+        float[] dst = {
+                topInset, verticalShift,
+                w - topInset, -verticalShift,
+                w - bottomInset, h,
+                bottomInset, h
+        };
+
+        Matrix matrix = new Matrix();
+        if (!matrix.setPolyToPoly(src, 0, dst, 0, 4)) {
+            throw new IllegalStateException("تعذر تطبيق المنظور");
+        }
+
+        Bitmap out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(out);
+        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+        canvas.drawBitmap(bitmap, matrix, paint);
+        bitmap = out;
+        selection = null;
+    }
+
     private void brightness(float value) {
         float offset = Math.max(-100f, Math.min(100f, value)) * 2.55f;
         matrix(new ColorMatrix(new float[]{
@@ -714,7 +755,15 @@ public final class LocalEditorEngine {
         int bg = parseColor(p.optString("background", "#000000"));
 
         Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        paint.setShader(new LinearGradient(x1, y1, x2, y2, fg, bg, Shader.TileMode.CLAMP));
+        if ("radial".equalsIgnoreCase(p.optString("type", "linear"))) {
+            float radius = Math.max(1f,
+                    (float) Math.hypot(x2 - x1, y2 - y1));
+            paint.setShader(new RadialGradient(
+                    x1, y1, radius, fg, bg, Shader.TileMode.CLAMP));
+        } else {
+            paint.setShader(new LinearGradient(
+                    x1, y1, x2, y2, fg, bg, Shader.TileMode.CLAMP));
+        }
         Canvas canvas = new Canvas(bitmap);
         Rect target = selection == null
                 ? new Rect(0, 0, bitmap.getWidth(), bitmap.getHeight())
