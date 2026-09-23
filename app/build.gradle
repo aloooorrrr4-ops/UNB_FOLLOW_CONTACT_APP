@@ -10,8 +10,8 @@ android {
         applicationId "com.unb.imageeditor"
         minSdk 26
         targetSdk 35
-        versionCode 37
-        versionName "1.6.4-alpha-text-inpaint-memory"
+        versionCode 38
+        versionName "1.6.5-alpha-text-size-match"
     }
 
     buildTypes {
