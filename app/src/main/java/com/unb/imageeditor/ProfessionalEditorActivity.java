@@ -629,18 +629,12 @@ public class ProfessionalEditorActivity extends Activity {
         } else if ("brightness_adjust".equals(id)) {
             addSlider(toolOptions, "السطوع", -100, 100, 0,
                     value -> applyRemote("brightness", json("value", value)));
-            toolOptions.addView(actionButton("إعادة 0", v ->
-                    showTool("brightness_adjust", "سطوع", source)));
         } else if ("contrast_adjust".equals(id)) {
             addSlider(toolOptions, "التباين", -100, 100, 0,
                     value -> applyRemote("contrast", json("value", value)));
-            toolOptions.addView(actionButton("إعادة 0", v ->
-                    showTool("contrast_adjust", "تباين", source)));
         } else if ("saturation_adjust".equals(id)) {
             addSlider(toolOptions, "التشبع", -100, 100, 0,
                     value -> applyRemote("saturation", json("value", value)));
-            toolOptions.addView(actionButton("إعادة 0", v ->
-                    showTool("saturation_adjust", "تشبع", source)));
         } else if ("crop".equals(id)) {
             cropAspectRatio = 0f;
             toolOptions.addView(actionButton("يدوي", v -> {
