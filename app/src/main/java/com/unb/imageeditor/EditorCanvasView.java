@@ -31,6 +31,10 @@ public class EditorCanvasView extends View {
             "dodge_burn", "gradient", "select", "free_select", "crop"
     ));
 
+    private static final Set<String> DAB_MODES = new HashSet<>(Arrays.asList(
+            "brush", "pencil", "eraser", "clone", "heal", "smudge", "dodge_burn"
+    ));
+
     private final Paint checkerA = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint checkerB = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint imagePaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
@@ -367,7 +371,7 @@ public class EditorCanvasView extends View {
             return;
         }
 
-        if (strokePoints.size() == 2) {
+        if (strokePoints.size() == 2 && DAB_MODES.contains(interactionMode)) {
             float x = strokePoints.get(0);
             float y = strokePoints.get(1);
             strokePoints.add(x + 0.01f);
