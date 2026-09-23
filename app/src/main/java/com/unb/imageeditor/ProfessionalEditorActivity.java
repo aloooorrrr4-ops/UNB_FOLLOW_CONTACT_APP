@@ -2399,7 +2399,8 @@ public class ProfessionalEditorActivity extends Activity {
             String text;
             switch (kind) {
                 case "fonts":
-                    text = "خطوط Android";
+                    addFontPresetButtons(resourceList);
+                    text = "اختر خطًا عربيًا وسيظهر مباشرة على النص غير المثبت";
                     break;
                 case "brushes":
                     text = "فرش محلية";
@@ -2408,25 +2409,8 @@ public class ProfessionalEditorActivity extends Activity {
                     text = "تدرجات";
                     break;
                 case "patterns":
-                    resourceList.addView(actionButton("مربعات", v ->
-                            applyRemote("pattern_fill", jsonOf(
-                                    "style", "checker",
-                                    "foreground", foregroundColor,
-                                    "background", "#000000",
-                                    "size", 24))));
-                    resourceList.addView(actionButton("خطوط", v ->
-                            applyRemote("pattern_fill", jsonOf(
-                                    "style", "stripes",
-                                    "foreground", foregroundColor,
-                                    "background", "#000000",
-                                    "size", 24))));
-                    resourceList.addView(actionButton("نقاط", v ->
-                            applyRemote("pattern_fill", jsonOf(
-                                    "style", "dots",
-                                    "foreground", foregroundColor,
-                                    "background", "#000000",
-                                    "size", 24))));
-                    text = "نقوش محلية جاهزة";
+                    addPatternButtons(resourceList);
+                    text = "نقوش وزخارف هندسية محلية";
                     break;
                 default:
                     text = "Palettes";
@@ -2452,7 +2436,8 @@ public class ProfessionalEditorActivity extends Activity {
         String message;
         switch (kind) {
             case "fonts":
-                message = "خطوط Android المحلية • دعم العربية متاح في طبقة النص الأساسية";
+                addFontPresetButtons(resourceList);
+                message = "معاينة واختيار خطوط عربية محلية للنص";
                 break;
             case "brushes":
                 message = "فرشاة • قلم • ممحاة تعمل محليًا الآن";
@@ -2461,31 +2446,53 @@ public class ProfessionalEditorActivity extends Activity {
                 message = "Linear Gradient يعمل محليًا الآن";
                 break;
             case "patterns":
-                resourceList.addView(actionButton("مربعات", v ->
-                        applyRemote("pattern_fill", jsonOf(
-                                "style", "checker",
-                                "foreground", foregroundColor,
-                                "background", "#000000",
-                                "size", 24))));
-                resourceList.addView(actionButton("خطوط", v ->
-                        applyRemote("pattern_fill", jsonOf(
-                                "style", "stripes",
-                                "foreground", foregroundColor,
-                                "background", "#000000",
-                                "size", 24))));
-                resourceList.addView(actionButton("نقاط", v ->
-                        applyRemote("pattern_fill", jsonOf(
-                                "style", "dots",
-                                "foreground", foregroundColor,
-                                "background", "#000000",
-                                "size", 24))));
-                message = "النقوش المحلية جاهزة وتطبق على الطبقة النشطة";
+                addPatternButtons(resourceList);
+                message = "النقوش والزخارف المحلية تطبق على الطبقة النشطة أو التحديد";
                 break;
             default:
                 message = "ألوان المقدمة والخلفية محلية بالكامل";
                 break;
         }
         resourceList.addView(label(message, 12, TEXT, false));
+    }
+
+    private void addPatternButtons(LinearLayout parent) {
+        parent.addView(actionButton("مربعات", v ->
+                applyRemote("pattern_fill", jsonOf(
+                        "style", "checker",
+                        "foreground", foregroundColor,
+                        "background", "#000000",
+                        "size", 24))));
+        parent.addView(actionButton("خطوط عمودية", v ->
+                applyRemote("pattern_fill", jsonOf(
+                        "style", "stripes",
+                        "foreground", foregroundColor,
+                        "background", "#000000",
+                        "size", 24))));
+        parent.addView(actionButton("خطوط مائلة", v ->
+                applyRemote("pattern_fill", jsonOf(
+                        "style", "diagonal",
+                        "foreground", foregroundColor,
+                        "background", "#000000",
+                        "size", 28))));
+        parent.addView(actionButton("شبكة متقاطعة", v ->
+                applyRemote("pattern_fill", jsonOf(
+                        "style", "cross",
+                        "foreground", foregroundColor,
+                        "background", "#000000",
+                        "size", 28))));
+        parent.addView(actionButton("معينات", v ->
+                applyRemote("pattern_fill", jsonOf(
+                        "style", "diamond",
+                        "foreground", foregroundColor,
+                        "background", "#000000",
+                        "size", 32))));
+        parent.addView(actionButton("نقاط", v ->
+                applyRemote("pattern_fill", jsonOf(
+                        "style", "dots",
+                        "foreground", foregroundColor,
+                        "background", "#000000",
+                        "size", 24))));
     }
 
     private void addContextTitle(LinearLayout parent, String text) {
