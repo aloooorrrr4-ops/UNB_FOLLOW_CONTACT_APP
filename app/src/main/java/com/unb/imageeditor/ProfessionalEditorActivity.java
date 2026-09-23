@@ -4,7 +4,6 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Context;
 import android.content.Intent;
-import android.content.SharedPreferences;
 import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -39,6 +38,8 @@ import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class ProfessionalEditorActivity extends Activity {
 
@@ -54,7 +55,8 @@ public class ProfessionalEditorActivity extends Activity {
     private final int ACCENT = Color.rgb(61, 139, 255);
 
     private EditorCanvasView canvas;
-    private EditorApiClient api;
+    private final LocalEditorEngine localEngine = new LocalEditorEngine();
+    private final ExecutorService localExecutor = Executors.newSingleThreadExecutor();
     private String projectId;
     private byte[] sourceBytes;
     private String sourceName = "image.png";
@@ -95,13 +97,6 @@ public class ProfessionalEditorActivity extends Activity {
         getWindow().setStatusBarColor(Color.rgb(14, 16, 19));
         getWindow().setNavigationBarColor(Color.rgb(14, 16, 19));
 
-        SharedPreferences prefs = getSharedPreferences("editor_settings", MODE_PRIVATE);
-        String savedServer = prefs.getString("server_base", "http://91.98.126.167:18083");
-        if ("http://91.98.126.167:18085".equals(savedServer)) {
-            savedServer = "http://91.98.126.167:18083";
-            prefs.edit().putString("server_base", savedServer).apply();
-        }
-        api = new EditorApiClient(savedServer);
         desktopLayout = isDesktopLayout();
 
         LinearLayout root = column();
@@ -171,7 +166,7 @@ public class ProfessionalEditorActivity extends Activity {
 
         row.addView(actionButton("فتح", v -> chooseImage()));
         row.addView(actionButton("حفظ", v -> exportProject("png")));
-        row.addView(actionButton("سيرفر", v -> showServerDialog()));
+        row.addView(actionButton("محلي", v -> showServerDialog()));
         row.addView(verticalDivider());
         row.addView(actionButton("↶ تراجع", v -> remoteHistory("undo")));
         row.addView(actionButton("↷ إعادة", v -> remoteHistory("redo")));
@@ -820,165 +815,67 @@ public class ProfessionalEditorActivity extends Activity {
         LinearLayout actions = new LinearLayout(this);
         actions.setOrientation(LinearLayout.HORIZONTAL);
         actions.addView(actionButton("+ طبقة", v ->
-                applyRemote("add_layer", jsonOf("name", "Layer"))),
+                toast("الطبقات المتعددة قادمة في المحرك المحلي V2")),
                 new LinearLayout.LayoutParams(0, dp(44), 1f));
         actions.addView(actionButton("+ مجموعة", v ->
-                applyRemote("add_group", jsonOf("name", "Group"))),
+                toast("مجموعات الطبقات قادمة في V2")),
                 new LinearLayout.LayoutParams(0, dp(44), 1f));
         actions.addView(actionButton("+ قناع", v ->
-                applyRemote("add_mask", jsonOf("type", "white"))),
+                toast("Layer Masks قادمة في V2")),
                 new LinearLayout.LayoutParams(0, dp(44), 1f));
         layerList.addView(actions);
 
-        if (projectId == null) {
+        if (!localEngine.hasImage()) {
             layerList.addView(label("افتح صورة لعرض الطبقات", 13, MUTED, false));
             return;
         }
 
-        api.getProjectSection(projectId, "layers", new EditorApiClient.Callback<JSONObject>() {
-            @Override
-            public void onSuccess(JSONObject value) {
-                runOnUiThread(() -> renderLayers(value.optJSONArray("layers")));
-            }
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(7), dp(5), dp(7), dp(5));
+        row.setBackground(rounded(Color.rgb(44, 49, 57), 8));
 
-            @Override
-            public void onError(String message) {
-                runOnUiThread(() -> layerList.addView(
-                        label("تعذر قراءة الطبقات: " + shortText(message), 12, MUTED, false)));
-            }
-        });
-    }
+        Button eye = flatButton("◉", 14);
+        TextView name = label("▤ Background", 13, TEXT, false);
+        TextView meta = label("100%  •  " + localEngine.width() + "×" + localEngine.height(),
+                11, MUTED, false);
+        meta.setGravity(Gravity.END);
 
-    private void renderLayers(JSONArray items) {
-        if (layerList == null || items == null) return;
-        while (layerList.getChildCount() > 2) layerList.removeViewAt(2);
-
-        for (int i = 0; i < items.length(); i++) {
-            JSONObject item = items.optJSONObject(i);
-            if (item == null) continue;
-
-            int id = item.optInt("id");
-            String nameText = item.optString("name", "Layer");
-            boolean visible = item.optBoolean("visible", true);
-            boolean group = item.optBoolean("is_group", false);
-            double opacity = item.optDouble("opacity", 100.0);
-            JSONObject mask = item.optJSONObject("mask");
-
-            LinearLayout row = new LinearLayout(this);
-            row.setOrientation(LinearLayout.HORIZONTAL);
-            row.setGravity(Gravity.CENTER_VERTICAL);
-            row.setPadding(dp(7), dp(5), dp(7), dp(5));
-            row.setBackground(rounded(Color.rgb(44, 49, 57), 8));
-
-            Button eye = flatButton(visible ? "◉" : "○", 14);
-            eye.setOnClickListener(v -> applyRemote("visibility",
-                    jsonOf("layer_id", id, "visible", !visible)));
-
-            String prefix = group ? "▣ " : "▤ ";
-            TextView name = label(prefix + nameText, 13, TEXT, false);
-            TextView meta = label(Math.round(opacity) + "%" + (mask == null ? "" : "  M"), 11, MUTED, false);
-            meta.setGravity(Gravity.END);
-
-            row.addView(eye, new LinearLayout.LayoutParams(dp(42), dp(36)));
-            row.addView(name, new LinearLayout.LayoutParams(0, dp(36), 1f));
-            row.addView(meta, new LinearLayout.LayoutParams(dp(76), dp(36)));
-
-            row.setOnLongClickListener(v -> {
-                toast("Layer #" + id + " • " + nameText);
-                return true;
-            });
-
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            lp.bottomMargin = dp(5);
-            layerList.addView(row, lp);
-        }
+        row.addView(eye, new LinearLayout.LayoutParams(dp(42), dp(36)));
+        row.addView(name, new LinearLayout.LayoutParams(0, dp(36), 1f));
+        row.addView(meta, new LinearLayout.LayoutParams(dp(132), dp(36)));
+        layerList.addView(row);
     }
 
     private void refreshChannels() {
         if (channelList == null) return;
         channelList.removeAllViews();
         channelList.addView(label("القنوات Channels", 17, TEXT, true));
-        channelList.addView(actionButton("+ قناة", v ->
-                applyRemote("add_channel", jsonOf("name", "Channel", "color", "#000000", "opacity", 50))));
 
-        if (projectId == null) {
-            channelList.addView(label("افتح مشروعًا لعرض القنوات", 13, MUTED, false));
+        if (!localEngine.hasImage()) {
+            channelList.addView(label("افتح صورة لعرض القنوات", 13, MUTED, false));
             return;
         }
 
-        api.getProjectSection(projectId, "channels", new EditorApiClient.Callback<JSONObject>() {
-            @Override
-            public void onSuccess(JSONObject value) {
-                runOnUiThread(() -> {
-                    JSONArray items = value.optJSONArray("channels");
-                    if (items == null) return;
-                    for (int i = 0; i < items.length(); i++) {
-                        JSONObject item = items.optJSONObject(i);
-                        if (item == null) continue;
-                        int id = item.optInt("id");
-                        boolean visible = item.optBoolean("visible", false);
-                        String n = item.optString("name", "Channel");
-                        Button row = actionButton((visible ? "◉ " : "○ ") + n, v ->
-                                applyRemote("channel_visibility",
-                                        jsonOf("channel_id", id, "visible", !visible)));
-                        channelList.addView(row);
-                    }
-                });
-            }
-
-            @Override
-            public void onError(String message) {
-                runOnUiThread(() -> channelList.addView(
-                        label("تعذر قراءة القنوات: " + shortText(message), 12, MUTED, false)));
-            }
-        });
+        channelList.addView(label("◉ RGB", 13, TEXT, false));
+        channelList.addView(label("   R  •  G  •  B  •  Alpha", 12, MUTED, false));
+        channelList.addView(label("قنوات Alpha المخصصة ستضاف في V2.", 12, MUTED, false));
     }
 
     private void refreshPaths() {
         if (pathList == null) return;
         pathList.removeAllViews();
         pathList.addView(label("المسارات Paths", 17, TEXT, true));
-        pathList.addView(actionButton("+ مسار", v ->
-                applyRemote("add_path", jsonOf("name", "Path"))));
-
-        if (projectId == null) {
-            pathList.addView(label("افتح مشروعًا لعرض المسارات", 13, MUTED, false));
-            return;
-        }
-
-        api.getProjectSection(projectId, "paths", new EditorApiClient.Callback<JSONObject>() {
-            @Override
-            public void onSuccess(JSONObject value) {
-                runOnUiThread(() -> {
-                    JSONArray items = value.optJSONArray("paths");
-                    if (items == null) return;
-                    for (int i = 0; i < items.length(); i++) {
-                        JSONObject item = items.optJSONObject(i);
-                        if (item == null) continue;
-                        int id = item.optInt("id");
-                        boolean visible = item.optBoolean("visible", false);
-                        String n = item.optString("name", "Path");
-                        Button row = actionButton((visible ? "◉ " : "○ ") + n, v ->
-                                applyRemote("path_visibility",
-                                        jsonOf("path_id", id, "visible", !visible)));
-                        pathList.addView(row);
-                    }
-                });
-            }
-
-            @Override
-            public void onError(String message) {
-                runOnUiThread(() -> pathList.addView(
-                        label("تعذر قراءة المسارات: " + shortText(message), 12, MUTED, false)));
-            }
-        });
+        pathList.addView(label(
+                "المحرك Offline يعمل الآن. مسارات Bezier والتحويل من النص إلى مسار ضمن V2.",
+                12, MUTED, false));
     }
 
     private void loadResources(String kind) {
         if (resourceList == null) return;
         resourceList.removeAllViews();
-        resourceList.addView(label("موارد GIMP", 17, TEXT, true));
+        resourceList.addView(label("الموارد المحلية", 17, TEXT, true));
 
         HorizontalScrollView picker = new HorizontalScrollView(this);
         LinearLayout buttons = new LinearLayout(this);
@@ -991,33 +888,25 @@ public class ProfessionalEditorActivity extends Activity {
         picker.addView(buttons);
         resourceList.addView(picker);
 
-        api.getResources(kind, new EditorApiClient.Callback<JSONObject>() {
-            @Override
-            public void onSuccess(JSONObject value) {
-                runOnUiThread(() -> {
-                    JSONArray items = value.optJSONArray("items");
-                    if (items == null) return;
-                    int limit = Math.min(items.length(), 80);
-                    for (int i = 0; i < limit; i++) {
-                        JSONObject item = items.optJSONObject(i);
-                        if (item == null) continue;
-                        TextView row = label(item.optString("name", "Resource"), 12, TEXT, false);
-                        row.setPadding(dp(4), dp(6), dp(4), dp(6));
-                        resourceList.addView(row);
-                    }
-                    if (items.length() > limit) {
-                        resourceList.addView(label("+" + (items.length() - limit) +
-                                " مورد إضافي", 11, MUTED, false));
-                    }
-                });
-            }
-
-            @Override
-            public void onError(String message) {
-                runOnUiThread(() -> resourceList.addView(
-                        label("تعذر قراءة الموارد: " + shortText(message), 12, MUTED, false)));
-            }
-        });
+        String message;
+        switch (kind) {
+            case "fonts":
+                message = "خطوط Android المحلية • دعم العربية متاح في طبقة النص الأساسية";
+                break;
+            case "brushes":
+                message = "فرشاة • قلم • ممحاة تعمل محليًا الآن";
+                break;
+            case "gradients":
+                message = "Linear Gradient يعمل محليًا الآن";
+                break;
+            case "patterns":
+                message = "مكتبة النقوش المحلية ستضاف في V2";
+                break;
+            default:
+                message = "ألوان المقدمة والخلفية محلية بالكامل";
+                break;
+        }
+        resourceList.addView(label(message, 12, TEXT, false));
     }
 
     private void refreshRemotePanels() {
@@ -1047,7 +936,7 @@ public class ProfessionalEditorActivity extends Activity {
         row.setBackgroundColor(Color.rgb(16, 18, 21));
 
         statusText = label("جاهز", 12, MUTED, false);
-        projectText = label("بدون مشروع", 12, MUTED, false);
+        projectText = label("Offline • بدون صورة", 12, MUTED, false);
         zoomText = label("100%", 12, TEXT, true);
         zoomText.setGravity(Gravity.END);
 
@@ -1059,76 +948,21 @@ public class ProfessionalEditorActivity extends Activity {
     }
 
     private void showServerDialog() {
-        EditText input = new EditText(this);
-        input.setSingleLine(true);
-        input.setText(api.getServerBase());
-        input.setHint("http://IP:PORT");
-        input.setTextColor(TEXT);
-        input.setHintTextColor(MUTED);
+        String imageInfo = localEngine.hasImage()
+                ? localEngine.width() + "×" + localEngine.height() +
+                  "  •  Undo " + localEngine.undoDepth() +
+                  "  •  Redo " + localEngine.redoDepth()
+                : "لا توجد صورة مفتوحة";
 
         new AlertDialog.Builder(this)
-                .setTitle("عنوان سيرفر GIMP")
-                .setMessage("يمكن تغييره بدون إعادة بناء التطبيق.")
-                .setView(input)
-                .setNegativeButton("إلغاء", null)
-                .setNeutralButton("اختبار", null)
-                .setPositiveButton("حفظ", null)
-                .create();
-
-        AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle("عنوان سيرفر GIMP")
-                .setMessage("يمكن تغييره بدون إعادة بناء التطبيق.")
-                .setView(input)
-                .setNegativeButton("إلغاء", null)
-                .setNeutralButton("اختبار", null)
-                .setPositiveButton("حفظ", null)
-                .create();
-
-        dialog.setOnShowListener(ignored -> {
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
-                String value = input.getText().toString().trim();
-                if (value.isEmpty()) {
-                    input.setError("أدخل عنوان السيرفر");
-                    return;
-                }
-                api.setServerBase(value);
-                getSharedPreferences("editor_settings", MODE_PRIVATE)
-                        .edit().putString("server_base", api.getServerBase()).apply();
-                dialog.dismiss();
-                setStatus("تم حفظ السيرفر — جاري الاختبار...");
-                pingServer();
-            });
-
-            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> {
-                String value = input.getText().toString().trim();
-                if (value.isEmpty()) {
-                    input.setError("أدخل عنوان السيرفر");
-                    return;
-                }
-                String old = api.getServerBase();
-                api.setServerBase(value);
-                setStatus("جاري اختبار " + value);
-                api.health(new EditorApiClient.Callback<JSONObject>() {
-                    @Override
-                    public void onSuccess(JSONObject response) {
-                        runOnUiThread(() -> {
-                            setStatus("السيرفر يعمل: " + value);
-                            toast("الاتصال ناجح");
-                        });
-                    }
-
-                    @Override
-                    public void onError(String message) {
-                        runOnUiThread(() -> {
-                            api.setServerBase(old);
-                            setStatus("فشل الاتصال: " + shortText(message));
-                            toast("السيرفر غير متصل");
-                        });
-                    }
-                });
-            });
-        });
-        dialog.show();
+                .setTitle("UNB Pro Editor • Offline")
+                .setMessage("المحرر يعمل داخل الهاتف بالكامل.\n\n" +
+                        imageInfo + "\n\n" +
+                        "لا يوجد سيرفر، لا رفع صور، ولا يحتاج إنترنت.")
+                .setNegativeButton("إغلاق", null)
+                .setPositiveButton("معلومات المحرك", (d, w) ->
+                        toast("LocalEditorEngine • Android Canvas/Bitmap"))
+                .show();
     }
 
     private void chooseImage() {
@@ -1164,124 +998,127 @@ public class ProfessionalEditorActivity extends Activity {
                 data == null || data.getData() == null) return;
 
         Uri uri = data.getData();
-        try {
-            sourceBytes = readAll(uri);
-            sourceName = queryName(uri);
-            Bitmap bitmap = BitmapFactory.decodeByteArray(sourceBytes, 0, sourceBytes.length);
-            if (bitmap == null) throw new Exception("صيغة الصورة غير مدعومة");
-            canvas.setBitmap(bitmap);
-            setStatus("جاري إنشاء مشروع على السيرفر...");
-            setBusy(true);
+        setBusy(true);
+        setStatus("جاري فتح الصورة محليًا...");
 
-            api.createProject(sourceBytes, sourceName, new EditorApiClient.Callback<EditorApiClient.Project>() {
-                @Override
-                public void onSuccess(EditorApiClient.Project p) {
-                    runOnUiThread(() -> {
-                        projectId = p.id;
-                        if (p.preview != null) canvas.setBitmap(p.preview);
-                        projectText.setText("Project " + projectId.substring(0, Math.min(8, projectId.length())));
-                        setBusy(false);
-                        setStatus("المشروع متصل بالسيرفر");
-                        addHistory("فتح " + sourceName);
-                        refreshRemotePanels();
-                    });
-                }
+        localExecutor.execute(() -> {
+            try {
+                byte[] bytes = readAll(uri);
+                String name = queryName(uri);
+                Bitmap decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+                if (decoded == null) throw new Exception("صيغة الصورة غير مدعومة");
 
-                @Override
-                public void onError(String message) {
-                    runOnUiThread(() -> {
-                        setBusy(false);
-                        if (message != null && message.contains("404")) {
-                            setStatus("الصورة مفتوحة محليًا — السيرفر ما زال على المحرك القديم");
-                            if (projectText != null) projectText.setText("بانتظار تحديث المحرك");
-                        } else {
-                            setStatus("الصورة محليًا — السيرفر: " + shortText(message));
-                        }
-                        addHistory("فتح محلي " + sourceName);
-                        refreshLayers();
-                    });
-                }
-            });
-        } catch (Exception e) {
-            toast("تعذر فتح الصورة: " + e.getMessage());
-        }
+                localEngine.open(decoded);
+                Bitmap frame = localEngine.current();
+
+                runOnUiThread(() -> {
+                    sourceBytes = bytes;
+                    sourceName = name;
+                    projectId = "LOCAL";
+                    canvas.setBitmap(frame);
+                    projectText.setText("Offline • " +
+                            localEngine.width() + "×" + localEngine.height());
+                    setBusy(false);
+                    setStatus("المحرر المحلي جاهز — بدون سيرفر");
+                    addHistory("فتح " + sourceName);
+                    refreshRemotePanels();
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    setBusy(false);
+                    toast("تعذر فتح الصورة: " + e.getMessage());
+                    setStatus("فشل فتح الصورة");
+                });
+            }
+        });
     }
 
     private void applyRemote(String operation, JSONObject params) {
-        if (projectId == null) {
-            toast("افتح صورة وانتظر إنشاء المشروع على السيرفر");
+        if (!localEngine.hasImage()) {
+            toast("افتح صورة أولاً");
             return;
         }
         if (busy) return;
 
         setBusy(true);
-        setStatus("تنفيذ " + operation + " على السيرفر...");
+        setStatus("تنفيذ " + operation + " محليًا...");
 
-        api.applyOperation(projectId, operation, params,
-                new EditorApiClient.Callback<Bitmap>() {
-                    @Override
-                    public void onSuccess(Bitmap value) {
-                        runOnUiThread(() -> {
-                            canvas.setBitmap(value);
-                            setBusy(false);
-                            setStatus("تم " + operation);
-                            addHistory(operation);
-                            refreshRemotePanels();
-                        });
-                    }
-
-                    @Override
-                    public void onError(String message) {
-                        runOnUiThread(() -> {
-                            if (canvas != null) canvas.clearStrokePreview();
-                            setBusy(false);
-                            setStatus("فشل: " + shortText(message));
-                        });
-                    }
+        localExecutor.execute(() -> {
+            try {
+                Bitmap value = localEngine.apply(operation, params);
+                runOnUiThread(() -> {
+                    canvas.setBitmap(value);
+                    if (canvas != null) canvas.clearStrokePreview();
+                    setBusy(false);
+                    projectId = "LOCAL";
+                    projectText.setText("Offline • " +
+                            localEngine.width() + "×" + localEngine.height());
+                    setStatus("تم " + operation + " محليًا");
+                    addHistory(operation);
+                    refreshRemotePanels();
                 });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    if (canvas != null) canvas.clearStrokePreview();
+                    setBusy(false);
+                    setStatus("غير متاح بعد: " + shortText(e.getMessage()));
+                    toast(shortText(e.getMessage()));
+                });
+            }
+        });
     }
 
     private void remoteHistory(String action) {
-        if (projectId == null || busy) return;
-        setBusy(true);
-        setStatus("جاري " + action + "...");
+        if (!localEngine.hasImage() || busy) return;
 
-        api.history(projectId, action, new EditorApiClient.Callback<Bitmap>() {
-            @Override
-            public void onSuccess(Bitmap value) {
+        setBusy(true);
+        setStatus("جاري " + action + " محليًا...");
+
+        localExecutor.execute(() -> {
+            try {
+                Bitmap value = "redo".equals(action)
+                        ? localEngine.redo()
+                        : localEngine.undo();
+
                 runOnUiThread(() -> {
                     canvas.setBitmap(value);
                     setBusy(false);
-                    setStatus("تم " + action);
+                    projectText.setText("Offline • " +
+                            localEngine.width() + "×" + localEngine.height());
+                    setStatus("تم " + action + " محليًا");
                     addHistory(action);
                     refreshRemotePanels();
                 });
-            }
-
-            @Override
-            public void onError(String message) {
+            } catch (Exception e) {
                 runOnUiThread(() -> {
                     setBusy(false);
-                    setStatus("فشل: " + shortText(message));
+                    setStatus(shortText(e.getMessage()));
+                    toast(shortText(e.getMessage()));
                 });
             }
         });
     }
 
     private void exportProject(String format) {
-        if (projectId == null) {
-            toast("لا يوجد مشروع للحفظ");
+        if (!localEngine.hasImage()) {
+            toast("لا توجد صورة للحفظ");
             return;
         }
         if (busy) return;
 
         String fmt = format == null ? "png" : format.toLowerCase();
-        setBusy(true);
-        setStatus("جاري التصدير من GIMP بصيغة " + fmt.toUpperCase() + "...");
+        if (!("png".equals(fmt) || "jpg".equals(fmt) ||
+                "jpeg".equals(fmt) || "webp".equals(fmt))) {
+            toast("هذه الصيغة ستضاف في المحرك المحلي القادم");
+            return;
+        }
 
-        api.exportProject(projectId, fmt, new EditorApiClient.Callback<byte[]>() {
-            @Override
-            public void onSuccess(byte[] value) {
+        setBusy(true);
+        setStatus("جاري التصدير محليًا بصيغة " + fmt.toUpperCase() + "...");
+
+        localExecutor.execute(() -> {
+            try {
+                byte[] value = localEngine.export(fmt, 95);
                 runOnUiThread(() -> {
                     setBusy(false);
                     pendingExportBytes = value;
@@ -1291,11 +1128,14 @@ public class ProfessionalEditorActivity extends Activity {
                     String mime;
                     switch (fmt) {
                         case "jpg":
-                        case "jpeg": mime = "image/jpeg"; break;
-                        case "webp": mime = "image/webp"; break;
-                        case "tiff": mime = "image/tiff"; break;
-                        case "xcf": mime = "application/octet-stream"; break;
-                        default: mime = "image/png";
+                        case "jpeg":
+                            mime = "image/jpeg";
+                            break;
+                        case "webp":
+                            mime = "image/webp";
+                            break;
+                        default:
+                            mime = "image/png";
                     }
 
                     Intent save = new Intent(Intent.ACTION_CREATE_DOCUMENT);
@@ -1304,13 +1144,10 @@ public class ProfessionalEditorActivity extends Activity {
                     save.putExtra(Intent.EXTRA_TITLE, pendingExportName);
                     startActivityForResult(save, CREATE_EXPORT);
                 });
-            }
-
-            @Override
-            public void onError(String message) {
+            } catch (Exception e) {
                 runOnUiThread(() -> {
                     setBusy(false);
-                    setStatus("فشل التصدير: " + shortText(message));
+                    setStatus("فشل التصدير: " + shortText(e.getMessage()));
                     toast("فشل التصدير");
                 });
             }
@@ -1318,48 +1155,10 @@ public class ProfessionalEditorActivity extends Activity {
     }
 
     private void pingServer() {
-        api.health(new EditorApiClient.Callback<JSONObject>() {
-            @Override
-            public void onSuccess(JSONObject value) {
-                String service = value.optString("service", "");
-                api.getJson("/api/editor/capabilities", new EditorApiClient.Callback<JSONObject>() {
-                    @Override
-                    public void onSuccess(JSONObject capabilities) {
-                        runOnUiThread(() -> {
-                            setStatus("محرك UNB Pro Editor متصل");
-                            if (projectText != null && projectId == null) {
-                                projectText.setText("السيرفر جاهز");
-                            }
-                        });
-                    }
-
-                    @Override
-                    public void onError(String message) {
-                        runOnUiThread(() -> {
-                            if ("UNB GIMP API".equalsIgnoreCase(service) ||
-                                    (message != null && message.contains("404"))) {
-                                setStatus("السيرفر متصل — محرك GIMP القديم ما زال يعمل");
-                                if (projectText != null && projectId == null) {
-                                    projectText.setText("بانتظار تحديث المحرك");
-                                }
-                            } else {
-                                setStatus("السيرفر متصل لكن واجهة المحرر غير جاهزة");
-                            }
-                        });
-                    }
-                });
-            }
-
-            @Override
-            public void onError(String message) {
-                runOnUiThread(() -> {
-                    setStatus("واجهة جاهزة — تعذر الاتصال بالسيرفر");
-                    if (projectText != null && projectId == null) {
-                        projectText.setText("بدون اتصال");
-                    }
-                });
-            }
-        });
+        setStatus("UNB Pro Editor • Offline 100%");
+        if (projectText != null && !localEngine.hasImage()) {
+            projectText.setText("Offline • بدون صورة");
+        }
     }
 
     private void showMenuGroup(String group) {
@@ -1613,6 +1412,12 @@ public class ProfessionalEditorActivity extends Activity {
                     }
                 })
                 .show();
+    }
+
+    @Override
+    protected void onDestroy() {
+        localExecutor.shutdownNow();
+        super.onDestroy();
     }
 
     @Override
