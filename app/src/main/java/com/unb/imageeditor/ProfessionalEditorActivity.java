@@ -91,6 +91,7 @@ public class ProfessionalEditorActivity extends Activity {
 
     private final List<String> history = new ArrayList<>();
     private boolean busy = false;
+    private String pendingHistoryAction = null;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -1407,6 +1408,7 @@ public class ProfessionalEditorActivity extends Activity {
                     setStatus("تم " + operation + " محليًا");
                     addHistory(operation);
                     refreshRemotePanels();
+                    flushPendingHistory();
                 });
             } catch (Exception e) {
                 runOnUiThread(() -> {
@@ -1414,13 +1416,21 @@ public class ProfessionalEditorActivity extends Activity {
                     setBusy(false);
                     setStatus("غير متاح بعد: " + shortText(e.getMessage()));
                     toast(shortText(e.getMessage()));
+                    flushPendingHistory();
                 });
             }
         });
     }
 
     private void remoteHistory(String action) {
-        if (!localEngine.hasImage() || busy) return;
+        if (!localEngine.hasImage()) return;
+
+        if (busy) {
+            pendingHistoryAction = action;
+            setStatus(("redo".equals(action) ? "الإعادة" : "التراجع") +
+                    " سيتم فور انتهاء العملية الحالية");
+            return;
+        }
 
         setBusy(true);
         setStatus("جاري " + action + " محليًا...");
@@ -1448,6 +1458,13 @@ public class ProfessionalEditorActivity extends Activity {
                 });
             }
         });
+    }
+
+    private void flushPendingHistory() {
+        if (busy || pendingHistoryAction == null) return;
+        String action = pendingHistoryAction;
+        pendingHistoryAction = null;
+        remoteHistory(action);
     }
 
     private void exportProject(String format) {
