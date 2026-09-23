@@ -518,7 +518,9 @@ public class ProfessionalEditorActivity extends Activity {
 
     private void openInspectorTab(String tab) {
         showInspector(tab);
-        setPhoneInspectorExpanded(true);
+        if (!desktopLayout && phoneContextScroll != null) {
+            phoneContextScroll.post(() -> phoneContextScroll.scrollTo(0, 0));
+        }
     }
 
     private void setPhoneInspectorExpanded(boolean expanded) {
@@ -870,25 +872,43 @@ public class ProfessionalEditorActivity extends Activity {
 
     private void addSlider(LinearLayout parent, String title,
                            int min, int max, int initial, SliderCommit commit) {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setGravity(Gravity.CENTER_VERTICAL);
+        card.setPadding(dp(8), dp(4), dp(8), dp(2));
+        if (!desktopLayout) {
+            card.setBackground(rounded(Color.rgb(35, 39, 45), 8));
+        }
+
         LinearLayout header = new LinearLayout(this);
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
 
-        TextView name = label(title, 13, MUTED, false);
-        TextView value = label(String.valueOf(initial), 13, TEXT, true);
+        TextView name = label(title, desktopLayout ? 13 : 11, MUTED, false);
+        TextView value = label(String.valueOf(initial), desktopLayout ? 13 : 11, TEXT, true);
         value.setGravity(Gravity.END);
 
         header.addView(name, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        header.addView(value, new LinearLayout.LayoutParams(dp(60),
+        header.addView(value, new LinearLayout.LayoutParams(dp(desktopLayout ? 60 : 42),
                 ViewGroup.LayoutParams.WRAP_CONTENT));
-        parent.addView(header);
+        card.addView(header);
 
         SeekBar seek = new SeekBar(this);
         seek.setMax(max - min);
         seek.setProgress(initial - min);
-        parent.addView(seek, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(42)));
+        card.addView(seek, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(desktopLayout ? 42 : 34)));
+
+        LinearLayout.LayoutParams cardLp;
+        if (desktopLayout) {
+            cardLp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        } else {
+            cardLp = new LinearLayout.LayoutParams(dp(150), dp(82));
+            cardLp.setMargins(dp(3), 0, dp(3), 0);
+        }
+        parent.addView(card, cardLp);
 
         seek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             int current = initial;
