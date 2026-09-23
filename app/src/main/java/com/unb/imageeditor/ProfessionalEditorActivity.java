@@ -816,165 +816,67 @@ public class ProfessionalEditorActivity extends Activity {
         LinearLayout actions = new LinearLayout(this);
         actions.setOrientation(LinearLayout.HORIZONTAL);
         actions.addView(actionButton("+ طبقة", v ->
-                applyRemote("add_layer", jsonOf("name", "Layer"))),
+                toast("الطبقات المتعددة قادمة في المحرك المحلي V2")),
                 new LinearLayout.LayoutParams(0, dp(44), 1f));
         actions.addView(actionButton("+ مجموعة", v ->
-                applyRemote("add_group", jsonOf("name", "Group"))),
+                toast("مجموعات الطبقات قادمة في V2")),
                 new LinearLayout.LayoutParams(0, dp(44), 1f));
         actions.addView(actionButton("+ قناع", v ->
-                applyRemote("add_mask", jsonOf("type", "white"))),
+                toast("Layer Masks قادمة في V2")),
                 new LinearLayout.LayoutParams(0, dp(44), 1f));
         layerList.addView(actions);
 
-        if (projectId == null) {
+        if (!localEngine.hasImage()) {
             layerList.addView(label("افتح صورة لعرض الطبقات", 13, MUTED, false));
             return;
         }
 
-        api.getProjectSection(projectId, "layers", new EditorApiClient.Callback<JSONObject>() {
-            @Override
-            public void onSuccess(JSONObject value) {
-                runOnUiThread(() -> renderLayers(value.optJSONArray("layers")));
-            }
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(7), dp(5), dp(7), dp(5));
+        row.setBackground(rounded(Color.rgb(44, 49, 57), 8));
 
-            @Override
-            public void onError(String message) {
-                runOnUiThread(() -> layerList.addView(
-                        label("تعذر قراءة الطبقات: " + shortText(message), 12, MUTED, false)));
-            }
-        });
-    }
+        Button eye = flatButton("◉", 14);
+        TextView name = label("▤ Background", 13, TEXT, false);
+        TextView meta = label("100%  •  " + localEngine.width() + "×" + localEngine.height(),
+                11, MUTED, false);
+        meta.setGravity(Gravity.END);
 
-    private void renderLayers(JSONArray items) {
-        if (layerList == null || items == null) return;
-        while (layerList.getChildCount() > 2) layerList.removeViewAt(2);
-
-        for (int i = 0; i < items.length(); i++) {
-            JSONObject item = items.optJSONObject(i);
-            if (item == null) continue;
-
-            int id = item.optInt("id");
-            String nameText = item.optString("name", "Layer");
-            boolean visible = item.optBoolean("visible", true);
-            boolean group = item.optBoolean("is_group", false);
-            double opacity = item.optDouble("opacity", 100.0);
-            JSONObject mask = item.optJSONObject("mask");
-
-            LinearLayout row = new LinearLayout(this);
-            row.setOrientation(LinearLayout.HORIZONTAL);
-            row.setGravity(Gravity.CENTER_VERTICAL);
-            row.setPadding(dp(7), dp(5), dp(7), dp(5));
-            row.setBackground(rounded(Color.rgb(44, 49, 57), 8));
-
-            Button eye = flatButton(visible ? "◉" : "○", 14);
-            eye.setOnClickListener(v -> applyRemote("visibility",
-                    jsonOf("layer_id", id, "visible", !visible)));
-
-            String prefix = group ? "▣ " : "▤ ";
-            TextView name = label(prefix + nameText, 13, TEXT, false);
-            TextView meta = label(Math.round(opacity) + "%" + (mask == null ? "" : "  M"), 11, MUTED, false);
-            meta.setGravity(Gravity.END);
-
-            row.addView(eye, new LinearLayout.LayoutParams(dp(42), dp(36)));
-            row.addView(name, new LinearLayout.LayoutParams(0, dp(36), 1f));
-            row.addView(meta, new LinearLayout.LayoutParams(dp(76), dp(36)));
-
-            row.setOnLongClickListener(v -> {
-                toast("Layer #" + id + " • " + nameText);
-                return true;
-            });
-
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            lp.bottomMargin = dp(5);
-            layerList.addView(row, lp);
-        }
+        row.addView(eye, new LinearLayout.LayoutParams(dp(42), dp(36)));
+        row.addView(name, new LinearLayout.LayoutParams(0, dp(36), 1f));
+        row.addView(meta, new LinearLayout.LayoutParams(dp(132), dp(36)));
+        layerList.addView(row);
     }
 
     private void refreshChannels() {
         if (channelList == null) return;
         channelList.removeAllViews();
         channelList.addView(label("القنوات Channels", 17, TEXT, true));
-        channelList.addView(actionButton("+ قناة", v ->
-                applyRemote("add_channel", jsonOf("name", "Channel", "color", "#000000", "opacity", 50))));
 
-        if (projectId == null) {
-            channelList.addView(label("افتح مشروعًا لعرض القنوات", 13, MUTED, false));
+        if (!localEngine.hasImage()) {
+            channelList.addView(label("افتح صورة لعرض القنوات", 13, MUTED, false));
             return;
         }
 
-        api.getProjectSection(projectId, "channels", new EditorApiClient.Callback<JSONObject>() {
-            @Override
-            public void onSuccess(JSONObject value) {
-                runOnUiThread(() -> {
-                    JSONArray items = value.optJSONArray("channels");
-                    if (items == null) return;
-                    for (int i = 0; i < items.length(); i++) {
-                        JSONObject item = items.optJSONObject(i);
-                        if (item == null) continue;
-                        int id = item.optInt("id");
-                        boolean visible = item.optBoolean("visible", false);
-                        String n = item.optString("name", "Channel");
-                        Button row = actionButton((visible ? "◉ " : "○ ") + n, v ->
-                                applyRemote("channel_visibility",
-                                        jsonOf("channel_id", id, "visible", !visible)));
-                        channelList.addView(row);
-                    }
-                });
-            }
-
-            @Override
-            public void onError(String message) {
-                runOnUiThread(() -> channelList.addView(
-                        label("تعذر قراءة القنوات: " + shortText(message), 12, MUTED, false)));
-            }
-        });
+        channelList.addView(label("◉ RGB", 13, TEXT, false));
+        channelList.addView(label("   R  •  G  •  B  •  Alpha", 12, MUTED, false));
+        channelList.addView(label("قنوات Alpha المخصصة ستضاف في V2.", 12, MUTED, false));
     }
 
     private void refreshPaths() {
         if (pathList == null) return;
         pathList.removeAllViews();
         pathList.addView(label("المسارات Paths", 17, TEXT, true));
-        pathList.addView(actionButton("+ مسار", v ->
-                applyRemote("add_path", jsonOf("name", "Path"))));
-
-        if (projectId == null) {
-            pathList.addView(label("افتح مشروعًا لعرض المسارات", 13, MUTED, false));
-            return;
-        }
-
-        api.getProjectSection(projectId, "paths", new EditorApiClient.Callback<JSONObject>() {
-            @Override
-            public void onSuccess(JSONObject value) {
-                runOnUiThread(() -> {
-                    JSONArray items = value.optJSONArray("paths");
-                    if (items == null) return;
-                    for (int i = 0; i < items.length(); i++) {
-                        JSONObject item = items.optJSONObject(i);
-                        if (item == null) continue;
-                        int id = item.optInt("id");
-                        boolean visible = item.optBoolean("visible", false);
-                        String n = item.optString("name", "Path");
-                        Button row = actionButton((visible ? "◉ " : "○ ") + n, v ->
-                                applyRemote("path_visibility",
-                                        jsonOf("path_id", id, "visible", !visible)));
-                        pathList.addView(row);
-                    }
-                });
-            }
-
-            @Override
-            public void onError(String message) {
-                runOnUiThread(() -> pathList.addView(
-                        label("تعذر قراءة المسارات: " + shortText(message), 12, MUTED, false)));
-            }
-        });
+        pathList.addView(label(
+                "المحرك Offline يعمل الآن. مسارات Bezier والتحويل من النص إلى مسار ضمن V2.",
+                12, MUTED, false));
     }
 
     private void loadResources(String kind) {
         if (resourceList == null) return;
         resourceList.removeAllViews();
-        resourceList.addView(label("موارد GIMP", 17, TEXT, true));
+        resourceList.addView(label("الموارد المحلية", 17, TEXT, true));
 
         HorizontalScrollView picker = new HorizontalScrollView(this);
         LinearLayout buttons = new LinearLayout(this);
@@ -987,33 +889,25 @@ public class ProfessionalEditorActivity extends Activity {
         picker.addView(buttons);
         resourceList.addView(picker);
 
-        api.getResources(kind, new EditorApiClient.Callback<JSONObject>() {
-            @Override
-            public void onSuccess(JSONObject value) {
-                runOnUiThread(() -> {
-                    JSONArray items = value.optJSONArray("items");
-                    if (items == null) return;
-                    int limit = Math.min(items.length(), 80);
-                    for (int i = 0; i < limit; i++) {
-                        JSONObject item = items.optJSONObject(i);
-                        if (item == null) continue;
-                        TextView row = label(item.optString("name", "Resource"), 12, TEXT, false);
-                        row.setPadding(dp(4), dp(6), dp(4), dp(6));
-                        resourceList.addView(row);
-                    }
-                    if (items.length() > limit) {
-                        resourceList.addView(label("+" + (items.length() - limit) +
-                                " مورد إضافي", 11, MUTED, false));
-                    }
-                });
-            }
-
-            @Override
-            public void onError(String message) {
-                runOnUiThread(() -> resourceList.addView(
-                        label("تعذر قراءة الموارد: " + shortText(message), 12, MUTED, false)));
-            }
-        });
+        String message;
+        switch (kind) {
+            case "fonts":
+                message = "خطوط Android المحلية • دعم العربية متاح في طبقة النص الأساسية";
+                break;
+            case "brushes":
+                message = "فرشاة • قلم • ممحاة تعمل محليًا الآن";
+                break;
+            case "gradients":
+                message = "Linear Gradient يعمل محليًا الآن";
+                break;
+            case "patterns":
+                message = "مكتبة النقوش المحلية ستضاف في V2";
+                break;
+            default:
+                message = "ألوان المقدمة والخلفية محلية بالكامل";
+                break;
+        }
+        resourceList.addView(label(message, 12, TEXT, false));
     }
 
     private void refreshRemotePanels() {
