@@ -76,6 +76,7 @@ public class ProfessionalEditorActivity extends Activity {
     private boolean desktopLayout = false;
     private View phoneInspectorPanel;
     private ScrollView inspectorBodyScroll;
+    private HorizontalScrollView phoneContextScroll;
     private boolean phoneInspectorExpanded = false;
     private float lastImageTapX = 0f;
     private float lastImageTapY = 0f;
@@ -84,6 +85,7 @@ public class ProfessionalEditorActivity extends Activity {
     private String foregroundColor = "#ffffff";
     private float cloneSourceX = Float.NaN;
     private float cloneSourceY = Float.NaN;
+    private float cropAspectRatio = 0f;
     private byte[] pendingExportBytes;
     private String pendingExportName = "export.png";
 
@@ -213,17 +215,16 @@ public class ProfessionalEditorActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, 1f));
 
         middle.addView(dividerVertical());
-        middle.addView(buildToolRail(), new LinearLayout.LayoutParams(dp(60),
+        middle.addView(buildToolRail(), new LinearLayout.LayoutParams(dp(64),
                 ViewGroup.LayoutParams.MATCH_PARENT));
 
         root.addView(middle, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
         root.addView(divider());
-        phoneInspectorPanel = buildInspector();
+        phoneInspectorPanel = buildPhoneContextPanel();
         root.addView(phoneInspectorPanel, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
-        setPhoneInspectorExpanded(false);
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(104)));
         return root;
     }
 
@@ -297,8 +298,47 @@ public class ProfessionalEditorActivity extends Activity {
         addTool(rail, "color_picker", "لون");
         addTool(rail, "zoom", "تكبير");
 
+        if (!desktopLayout) {
+            TextView split = label("—", 10, MUTED, false);
+            split.setGravity(Gravity.CENTER);
+            rail.addView(split, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(20)));
+
+            addRailPanelButton(rail, "خصائص", "properties");
+            addRailPanelButton(rail, "طبقات", "layers");
+            addRailPanelButton(rail, "قنوات", "channels");
+            addRailPanelButton(rail, "مسارات", "paths");
+            addRailPanelButton(rail, "موارد", "resources");
+            addRailPanelButton(rail, "سجل", "history");
+        }
+
         scroll.addView(rail);
         return scroll;
+    }
+
+    private void addRailPanelButton(LinearLayout rail, String title, String tab) {
+        Button b = new Button(this);
+        b.setText(title);
+        b.setTextSize(9.5f);
+        b.setTextColor(MUTED);
+        b.setAllCaps(false);
+        b.setGravity(Gravity.CENTER);
+        b.setPadding(dp(2), dp(2), dp(2), dp(2));
+        b.setBackground(rounded(Color.rgb(31, 34, 39), 9));
+
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(40));
+        lp.bottomMargin = dp(4);
+        rail.addView(b, lp);
+
+        b.setOnClickListener(v -> {
+            openInspectorTab(tab);
+            if ("layers".equals(tab)) refreshLayers();
+            else if ("channels".equals(tab)) refreshChannels();
+            else if ("paths".equals(tab)) refreshPaths();
+            else if ("resources".equals(tab)) loadResources("fonts");
+            else if ("history".equals(tab)) addHistoryRowsOnly();
+        });
     }
 
     private void addTool(LinearLayout rail, String id, String label) {
@@ -328,6 +368,62 @@ public class ProfessionalEditorActivity extends Activity {
         });
 
         if ("move".equals(id)) activeToolButton = b;
+    }
+
+    private View buildPhoneContextPanel() {
+        LinearLayout panel = column();
+        panel.setBackgroundColor(PANEL);
+        panel.setPadding(dp(4), dp(4), dp(4), dp(4));
+
+        phoneContextScroll = new HorizontalScrollView(this);
+        phoneContextScroll.setHorizontalScrollBarEnabled(false);
+        phoneContextScroll.setFillViewport(false);
+
+        LinearLayout host = column();
+
+        toolOptions = new LinearLayout(this);
+        toolOptions.setOrientation(LinearLayout.HORIZONTAL);
+        toolOptions.setGravity(Gravity.CENTER_VERTICAL);
+
+        layerList = new LinearLayout(this);
+        layerList.setOrientation(LinearLayout.HORIZONTAL);
+        layerList.setGravity(Gravity.CENTER_VERTICAL);
+
+        channelList = new LinearLayout(this);
+        channelList.setOrientation(LinearLayout.HORIZONTAL);
+        channelList.setGravity(Gravity.CENTER_VERTICAL);
+
+        pathList = new LinearLayout(this);
+        pathList.setOrientation(LinearLayout.HORIZONTAL);
+        pathList.setGravity(Gravity.CENTER_VERTICAL);
+
+        resourceList = new LinearLayout(this);
+        resourceList.setOrientation(LinearLayout.HORIZONTAL);
+        resourceList.setGravity(Gravity.CENTER_VERTICAL);
+
+        historyList = new LinearLayout(this);
+        historyList.setOrientation(LinearLayout.HORIZONTAL);
+        historyList.setGravity(Gravity.CENTER_VERTICAL);
+
+        host.addView(toolOptions, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(94)));
+        host.addView(layerList, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(94)));
+        host.addView(channelList, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(94)));
+        host.addView(pathList, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(94)));
+        host.addView(resourceList, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(94)));
+        host.addView(historyList, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(94)));
+
+        phoneContextScroll.addView(host);
+        panel.addView(phoneContextScroll, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        showInspector("properties");
+        return panel;
     }
 
     private View buildInspector() {
@@ -422,7 +518,9 @@ public class ProfessionalEditorActivity extends Activity {
 
     private void openInspectorTab(String tab) {
         showInspector(tab);
-        setPhoneInspectorExpanded(true);
+        if (!desktopLayout && phoneContextScroll != null) {
+            phoneContextScroll.post(() -> phoneContextScroll.scrollTo(0, 0));
+        }
     }
 
     private void setPhoneInspectorExpanded(boolean expanded) {
@@ -457,6 +555,7 @@ public class ProfessionalEditorActivity extends Activity {
             activeToolButton = source;
             source.setBackground(rounded(ACCENT, 9));
         }
+
         activeTool = id;
         if (canvas != null) {
             canvas.setInteractionMode(id);
@@ -464,54 +563,141 @@ public class ProfessionalEditorActivity extends Activity {
         }
         if (toolOptions == null) return;
 
+        showInspector("properties");
+        if (!desktopLayout && phoneContextScroll != null) {
+            phoneContextScroll.post(() -> phoneContextScroll.scrollTo(0, 0));
+        }
+
         toolOptions.removeAllViews();
-        toolTitle = label("أداة: " + label, 17, TEXT, true);
-        toolOptions.addView(toolTitle);
+        toolTitle = label("أداة: " + label, desktopLayout ? 17 : 13, TEXT, true);
+        toolTitle.setGravity(Gravity.CENTER_VERTICAL);
+        if (!desktopLayout) {
+            toolTitle.setPadding(dp(10), 0, dp(10), 0);
+            toolTitle.setBackground(rounded(Color.rgb(31, 34, 39), 8));
+            toolOptions.addView(toolTitle, new LinearLayout.LayoutParams(
+                    dp(110), dp(82)));
+        } else {
+            toolOptions.addView(toolTitle);
+        }
 
         if (Arrays.asList("brush", "pencil", "eraser", "clone", "heal", "smudge", "dodge_burn").contains(id)) {
             addSlider(toolOptions, "الحجم", 1, 300, brushSize, value -> {
                 brushSize = value;
-                if (canvas != null) canvas.setStrokePreview(brushSize, parseColorSafe(foregroundColor));
+                if (canvas != null) {
+                    canvas.setStrokePreview(brushSize, parseColorSafe(foregroundColor));
+                }
             });
-            addSlider(toolOptions, "العتامة", 0, 100, brushOpacity, value -> brushOpacity = value);
+            addSlider(toolOptions, "العتامة", 0, 100, brushOpacity,
+                    value -> brushOpacity = value);
             addSlider(toolOptions, "الصلابة", 0, 100, 70, null);
             addSlider(toolOptions, "التباعد", 1, 200, 20, null);
+
             if ("clone".equals(id) || "heal".equals(id)) {
-                toolOptions.addView(actionButton("إعادة تحديد المصدر", v -> {
+                toolOptions.addView(actionButton("تحديد المصدر", v -> {
                     cloneSourceX = Float.NaN;
                     cloneSourceY = Float.NaN;
-                    setStatus("اسحب/المس نقطة المصدر أولاً ثم ارسم في المكان المطلوب");
+                    setStatus("المس نقطة المصدر ثم ارسم على الهدف");
+                }));
+            }
+
+            if ("eraser".equals(id)) {
+                toolOptions.addView(actionButton("مسح ناعم", v ->
+                        setStatus("الممحاة الناعمة • اضبط الحجم والعتامة")));
+                toolOptions.addView(actionButton("مسح كامل", v -> {
+                    brushOpacity = 100;
+                    setStatus("الممحاة 100%");
                 }));
             }
         } else if ("text".equals(id)) {
             addSlider(toolOptions, "حجم الخط", 6, 300, 42, null);
             addSlider(toolOptions, "تباعد الحروف", 0, 100, 0, null);
             addSlider(toolOptions, "تباعد الأسطر", 0, 150, 20, null);
+
             toolOptions.addView(actionButton("+ إضافة نص", v ->
                     showAddTextDialog(lastImageTapX, lastImageTapY)));
             toolOptions.addView(actionButton("الخطوط", v -> {
                 openInspectorTab("resources");
                 loadResources("fonts");
             }));
-            toolOptions.addView(actionButton("RTL / LTR", v -> toast("اتجاه النص ضمن الدفعة القادمة")));
+            toolOptions.addView(actionButton("RTL / LTR", v ->
+                    toast("اتجاه النص سيصبح قابلًا للتبديل في محرك النص V2")));
+            toolOptions.addView(actionButton("لون النص", v ->
+                    toast("لون النص الحالي " + foregroundColor)));
         } else if ("crop".equals(id)) {
-            toolOptions.addView(label("اسحب مستطيلاً على الصورة؛ عند رفع إصبعك يتم القص.", 13, MUTED, false));
+            cropAspectRatio = 0f;
+            toolOptions.addView(actionButton("يدوي", v -> {
+                cropAspectRatio = 0f;
+                setStatus("القص اليدوي: اسحب المستطيل بالحجم الذي تريد");
+            }));
+            toolOptions.addView(actionButton("1:1", v -> {
+                cropAspectRatio = 1f;
+                setStatus("القص بنسبة 1:1");
+            }));
+            toolOptions.addView(actionButton("4:3", v -> {
+                cropAspectRatio = 4f / 3f;
+                setStatus("القص بنسبة 4:3");
+            }));
+            toolOptions.addView(actionButton("16:9", v -> {
+                cropAspectRatio = 16f / 9f;
+                setStatus("القص بنسبة 16:9");
+            }));
+            toolOptions.addView(actionButton("9:16", v -> {
+                cropAspectRatio = 9f / 16f;
+                setStatus("القص بنسبة 9:16");
+            }));
+            TextView help = label("اسحب على الصورة لتنفيذ القص", 11, MUTED, false);
+            help.setPadding(dp(10), 0, dp(10), 0);
+            toolOptions.addView(help, new LinearLayout.LayoutParams(dp(190), dp(82)));
+        } else if ("select".equals(id)) {
+            toolOptions.addView(actionButton("مستطيل", v ->
+                    setStatus("اسحب لتحديد مستطيل")));
+            toolOptions.addView(actionButton("تحديد الكل", v ->
+                    applyRemote("select_all", new JSONObject())));
+            toolOptions.addView(actionButton("إلغاء", v ->
+                    applyRemote("select_none", new JSONObject())));
+            toolOptions.addView(actionButton("توسيع", v ->
+                    applyRemote("grow", json("steps", 5))));
+            toolOptions.addView(actionButton("تقليص", v ->
+                    applyRemote("shrink", json("steps", 5))));
         } else if ("transform".equals(id) || "perspective".equals(id)) {
-            toolOptions.addView(actionButton("خيارات التحويل", v ->
-                    toast("التحويل الحر المتقدم ضمن لوحة التحويل القادمة")));
-            toolOptions.addView(actionButton("إلغاء", v -> setStatus("تم إلغاء التحويل")));
+            toolOptions.addView(actionButton("تحريك", v ->
+                    setStatus("التحويل: تحريك")));
+            toolOptions.addView(actionButton("تدوير", v ->
+                    setStatus("التحويل: تدوير")));
+            toolOptions.addView(actionButton("تكبير/تصغير", v ->
+                    showResizeDialog()));
+            toolOptions.addView(actionButton("منظور", v ->
+                    toast("المنظور الحر ضمن محرك V2")));
+            toolOptions.addView(actionButton("إلغاء", v ->
+                    setStatus("تم إلغاء التحويل")));
         } else if ("gradient".equals(id) || "fill".equals(id)) {
             addSlider(toolOptions, "العتامة", 0, 100, 100, null);
-            toolOptions.addView(actionButton("لون المقدمة", v -> toast("منتقي الألوان")));
-            toolOptions.addView(actionButton("لون الخلفية", v -> toast("منتقي الألوان")));
+            toolOptions.addView(actionButton("لون المقدمة", v ->
+                    toast("اللون الحالي " + foregroundColor)));
+            toolOptions.addView(actionButton("لون الخلفية", v ->
+                    toast("منتقي لون الخلفية ضمن V2")));
+            if ("gradient".equals(id)) {
+                toolOptions.addView(actionButton("خطي", v ->
+                        setStatus("تدرج خطي")));
+                toolOptions.addView(actionButton("دائري", v ->
+                        toast("التدرج الدائري ضمن V2")));
+            }
         } else {
-            TextView help = label(toolHelp(id), 13, MUTED, false);
-            help.setPadding(0, dp(10), 0, dp(6));
-            toolOptions.addView(help);
+            TextView help = label(toolHelp(id), desktopLayout ? 13 : 11, MUTED, false);
+            help.setPadding(dp(10), dp(6), dp(10), dp(6));
+            if (desktopLayout) {
+                toolOptions.addView(help);
+            } else {
+                toolOptions.addView(help, new LinearLayout.LayoutParams(dp(260), dp(82)));
+            }
         }
 
-        toolOptions.addView(divider());
-        toolOptions.addView(label("ضبط سريع للصورة", 14, TEXT, true));
+        if (desktopLayout) {
+            toolOptions.addView(divider());
+            toolOptions.addView(label("ضبط سريع للصورة", 14, TEXT, true));
+        } else {
+            toolOptions.addView(verticalDivider());
+        }
 
         addSlider(toolOptions, "السطوع", -100, 100, 0,
                 value -> applyRemote("brightness", json("value", value)));
@@ -566,10 +752,26 @@ public class ProfessionalEditorActivity extends Activity {
             float y0 = points[1];
             float x1 = points[points.length - 2];
             float y1 = points[points.length - 1];
+
             int x = Math.round(Math.min(x0, x1));
             int y = Math.round(Math.min(y0, y1));
             int w = Math.max(1, Math.round(Math.abs(x1 - x0)));
             int h = Math.max(1, Math.round(Math.abs(y1 - y0)));
+
+            if (cropAspectRatio > 0f) {
+                float current = w / (float) Math.max(1, h);
+                if (current > cropAspectRatio) {
+                    w = Math.max(1, Math.round(h * cropAspectRatio));
+                } else {
+                    h = Math.max(1, Math.round(w / cropAspectRatio));
+                }
+            }
+
+            if (localEngine.hasImage()) {
+                w = Math.min(w, Math.max(1, localEngine.width() - x));
+                h = Math.min(h, Math.max(1, localEngine.height() - y));
+            }
+
             applyRemote("crop", jsonOf("x", x, "y", y, "width", w, "height", h));
             return;
         }
@@ -774,25 +976,43 @@ public class ProfessionalEditorActivity extends Activity {
 
     private void addSlider(LinearLayout parent, String title,
                            int min, int max, int initial, SliderCommit commit) {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setGravity(Gravity.CENTER_VERTICAL);
+        card.setPadding(dp(8), dp(4), dp(8), dp(2));
+        if (!desktopLayout) {
+            card.setBackground(rounded(Color.rgb(35, 39, 45), 8));
+        }
+
         LinearLayout header = new LinearLayout(this);
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
 
-        TextView name = label(title, 13, MUTED, false);
-        TextView value = label(String.valueOf(initial), 13, TEXT, true);
+        TextView name = label(title, desktopLayout ? 13 : 11, MUTED, false);
+        TextView value = label(String.valueOf(initial), desktopLayout ? 13 : 11, TEXT, true);
         value.setGravity(Gravity.END);
 
         header.addView(name, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        header.addView(value, new LinearLayout.LayoutParams(dp(60),
+        header.addView(value, new LinearLayout.LayoutParams(dp(desktopLayout ? 60 : 42),
                 ViewGroup.LayoutParams.WRAP_CONTENT));
-        parent.addView(header);
+        card.addView(header);
 
         SeekBar seek = new SeekBar(this);
         seek.setMax(max - min);
         seek.setProgress(initial - min);
-        parent.addView(seek, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(42)));
+        card.addView(seek, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(desktopLayout ? 42 : 34)));
+
+        LinearLayout.LayoutParams cardLp;
+        if (desktopLayout) {
+            cardLp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        } else {
+            cardLp = new LinearLayout.LayoutParams(dp(150), dp(82));
+            cardLp.setMargins(dp(3), 0, dp(3), 0);
+        }
+        parent.addView(card, cardLp);
 
         seek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             int current = initial;
@@ -810,6 +1030,26 @@ public class ProfessionalEditorActivity extends Activity {
     private void refreshLayers() {
         if (layerList == null) return;
         layerList.removeAllViews();
+
+        if (!desktopLayout) {
+            addContextTitle(layerList, "الطبقات");
+            layerList.addView(actionButton("+ طبقة", v ->
+                    toast("الطبقات المتعددة ضمن V2")));
+            layerList.addView(actionButton("+ مجموعة", v ->
+                    toast("مجموعات الطبقات ضمن V2")));
+            layerList.addView(actionButton("+ قناع", v ->
+                    toast("Layer Masks ضمن V2")));
+
+            if (localEngine.hasImage()) {
+                addContextCard(layerList,
+                        "◉ Background\n100% • " +
+                                localEngine.width() + "×" + localEngine.height());
+            } else {
+                addContextCard(layerList, "افتح صورة أولاً");
+            }
+            return;
+        }
+
         layerList.addView(label("الطبقات", 17, TEXT, true));
 
         LinearLayout actions = new LinearLayout(this);
@@ -851,6 +1091,21 @@ public class ProfessionalEditorActivity extends Activity {
     private void refreshChannels() {
         if (channelList == null) return;
         channelList.removeAllViews();
+
+        if (!desktopLayout) {
+            addContextTitle(channelList, "القنوات");
+            if (!localEngine.hasImage()) {
+                addContextCard(channelList, "افتح صورة أولاً");
+                return;
+            }
+            addContextCard(channelList, "◉ RGB");
+            addContextCard(channelList, "R");
+            addContextCard(channelList, "G");
+            addContextCard(channelList, "B");
+            addContextCard(channelList, "Alpha");
+            return;
+        }
+
         channelList.addView(label("القنوات Channels", 17, TEXT, true));
 
         if (!localEngine.hasImage()) {
@@ -866,6 +1121,16 @@ public class ProfessionalEditorActivity extends Activity {
     private void refreshPaths() {
         if (pathList == null) return;
         pathList.removeAllViews();
+
+        if (!desktopLayout) {
+            addContextTitle(pathList, "المسارات");
+            pathList.addView(actionButton("+ مسار", v ->
+                    toast("Bezier Paths ضمن V2")));
+            addContextCard(pathList, "تحويل النص لمسار");
+            addContextCard(pathList, "Bezier");
+            return;
+        }
+
         pathList.addView(label("المسارات Paths", 17, TEXT, true));
         pathList.addView(label(
                 "المحرك Offline يعمل الآن. مسارات Bezier والتحويل من النص إلى مسار ضمن V2.",
@@ -875,6 +1140,37 @@ public class ProfessionalEditorActivity extends Activity {
     private void loadResources(String kind) {
         if (resourceList == null) return;
         resourceList.removeAllViews();
+
+        if (!desktopLayout) {
+            addContextTitle(resourceList, "الموارد");
+            resourceList.addView(actionButton("الخطوط", v -> loadResources("fonts")));
+            resourceList.addView(actionButton("الفرش", v -> loadResources("brushes")));
+            resourceList.addView(actionButton("التدرجات", v -> loadResources("gradients")));
+            resourceList.addView(actionButton("النقوش", v -> loadResources("patterns")));
+            resourceList.addView(actionButton("الألوان", v -> loadResources("palettes")));
+
+            String text;
+            switch (kind) {
+                case "fonts":
+                    text = "خطوط Android";
+                    break;
+                case "brushes":
+                    text = "فرش محلية";
+                    break;
+                case "gradients":
+                    text = "تدرجات";
+                    break;
+                case "patterns":
+                    text = "نقوش";
+                    break;
+                default:
+                    text = "Palettes";
+                    break;
+            }
+            addContextCard(resourceList, text);
+            return;
+        }
+
         resourceList.addView(label("الموارد المحلية", 17, TEXT, true));
 
         HorizontalScrollView picker = new HorizontalScrollView(this);
@@ -909,6 +1205,26 @@ public class ProfessionalEditorActivity extends Activity {
         resourceList.addView(label(message, 12, TEXT, false));
     }
 
+    private void addContextTitle(LinearLayout parent, String text) {
+        TextView title = label(text, 13, TEXT, true);
+        title.setGravity(Gravity.CENTER);
+        title.setPadding(dp(8), 0, dp(8), 0);
+        title.setBackground(rounded(Color.rgb(31, 34, 39), 8));
+        parent.addView(title, new LinearLayout.LayoutParams(dp(92), dp(82)));
+    }
+
+    private void addContextCard(LinearLayout parent, String text) {
+        TextView card = label(text, 11, TEXT, false);
+        card.setGravity(Gravity.CENTER);
+        card.setTextDirection(View.TEXT_DIRECTION_RTL);
+        card.setPadding(dp(10), dp(4), dp(10), dp(4));
+        card.setBackground(rounded(Color.rgb(35, 39, 45), 8));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(72));
+        lp.setMargins(dp(3), dp(5), dp(3), dp(5));
+        parent.addView(card, lp);
+    }
+
     private void refreshRemotePanels() {
         refreshLayers();
         refreshChannels();
@@ -918,9 +1234,32 @@ public class ProfessionalEditorActivity extends Activity {
     private void addHistory(String item) {
         history.add(0, item);
         if (history.size() > 30) history.remove(history.size() - 1);
+        addHistoryRowsOnly();
+    }
+
+    private void addHistoryRowsOnly() {
         if (historyList == null) return;
         historyList.removeAllViews();
-        historyList.addView(label("السجل", 17, TEXT, true));
+
+        TextView title = label("السجل", desktopLayout ? 17 : 13, TEXT, true);
+        title.setGravity(Gravity.CENTER_VERTICAL);
+        if (!desktopLayout) {
+            title.setPadding(dp(10), 0, dp(10), 0);
+            historyList.addView(title, new LinearLayout.LayoutParams(dp(90), dp(82)));
+            int limit = Math.min(history.size(), 8);
+            for (int i = 0; i < limit; i++) {
+                TextView row = label("• " + history.get(i), 11, TEXT, false);
+                row.setGravity(Gravity.CENTER_VERTICAL);
+                row.setPadding(dp(10), 0, dp(10), 0);
+                row.setBackground(rounded(Color.rgb(35, 39, 45), 8));
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(150), dp(72));
+                lp.setMargins(dp(3), dp(5), dp(3), dp(5));
+                historyList.addView(row, lp);
+            }
+            return;
+        }
+
+        historyList.addView(title);
         for (String h : history) {
             TextView row = label("• " + h, 13, TEXT, false);
             row.setPadding(dp(4), dp(7), dp(4), dp(7));
