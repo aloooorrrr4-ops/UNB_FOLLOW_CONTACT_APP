@@ -50,6 +50,9 @@ public class EditorCanvasView extends View {
     private final Paint selectedTextRegionPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint transformPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint transformHandlePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint textOverlayPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.SUBPIXEL_TEXT_FLAG);
+    private final Paint textOverlayBoxPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint textOverlayHandlePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Matrix drawMatrix = new Matrix();
     private final Matrix inverse = new Matrix();
 
@@ -77,6 +80,26 @@ public class EditorCanvasView extends View {
     private boolean pointerActionEnabled = true;
     private float[] transformQuad;
     private int activeTransformHandle = -1;
+
+    // Editable text overlay. It stays separate from the bitmap until the user
+    // explicitly commits it, so move/scale/rotate remain non-destructive.
+    private String textOverlayText;
+    private float textOverlayX;
+    private float textOverlayY;
+    private float textOverlaySize = 42f;
+    private float textOverlayScale = 1f;
+    private float textOverlayRotation = 0f;
+    private float textOverlayWidthScale = 1f;
+    private int textOverlayColor = Color.WHITE;
+    private String textOverlayFont = "sans-serif";
+    private boolean textOverlayBold = false;
+    private int textOverlayGesture = 0; // 1 move, 2 scale, 3 rotate
+    private float textOverlayStartTouchX;
+    private float textOverlayStartTouchY;
+    private float textOverlayStartX;
+    private float textOverlayStartY;
+    private float textOverlayStartScale;
+    private float textOverlayStartRotation;
 
     private final ScaleGestureDetector scaleDetector;
     private final GestureDetector gestureDetector;
@@ -119,6 +142,12 @@ public class EditorCanvasView extends View {
 
         transformHandlePaint.setStyle(Paint.Style.FILL);
         transformHandlePaint.setColor(Color.WHITE);
+
+        textOverlayBoxPaint.setStyle(Paint.Style.STROKE);
+        textOverlayBoxPaint.setStrokeWidth(dp(1.5f));
+        textOverlayBoxPaint.setColor(Color.rgb(255, 196, 64));
+        textOverlayHandlePaint.setStyle(Paint.Style.FILL);
+        textOverlayHandlePaint.setColor(Color.WHITE);
 
         pointerOffsetPx = dp(92);
 
@@ -197,6 +226,11 @@ public class EditorCanvasView extends View {
         if ("transform_quad".equals(interactionMode)) {
             pointerVisible = false;
             post(this::resetTransformQuad);
+        } else if ("text_place".equals(interactionMode)) {
+            pointerVisible = false;
+            transformQuad = null;
+            activeTransformHandle = -1;
+            invalidate();
         } else if (usesDetachedPointer()) {
             post(this::ensurePointerVisibleAtCenter);
         } else {
@@ -231,6 +265,61 @@ public class EditorCanvasView extends View {
         if (!pointerVisible || bitmap == null) return null;
         return screenToImage(pointerHeadX, pointerHeadY);
     }
+
+
+    public void startTextOverlay(String text, float x, float y, float size, int color,
+                                 String fontFamily, boolean bold, float widthScale) {
+        if (bitmap == null || text == null || text.trim().isEmpty()) return;
+        textOverlayText = text;
+        textOverlayX = clamp(x, 0f, bitmap.getWidth());
+        textOverlayY = clamp(y, 0f, bitmap.getHeight());
+        textOverlaySize = Math.max(6f, size);
+        textOverlayScale = 1f;
+        textOverlayRotation = 0f;
+        textOverlayColor = color;
+        textOverlayFont = fontFamily == null || fontFamily.trim().isEmpty()
+                ? "sans-serif" : fontFamily;
+        textOverlayBold = bold;
+        textOverlayWidthScale = clamp(widthScale, 0.5f, 2.0f);
+        setInteractionMode("text_place");
+        invalidate();
+    }
+
+    public boolean hasTextOverlay() {
+        return textOverlayText != null && !textOverlayText.isEmpty();
+    }
+
+    public void clearTextOverlay() {
+        textOverlayText = null;
+        textOverlayGesture = 0;
+        invalidate();
+    }
+
+    public void updateTextOverlayStyle(float size, int color, String fontFamily,
+                                       boolean bold, float widthScale) {
+        if (!hasTextOverlay()) return;
+        textOverlaySize = Math.max(6f, size);
+        textOverlayColor = color;
+        if (fontFamily != null && !fontFamily.trim().isEmpty()) {
+            textOverlayFont = fontFamily;
+        }
+        textOverlayBold = bold;
+        textOverlayWidthScale = clamp(widthScale, 0.5f, 2.0f);
+        invalidate();
+    }
+
+    // text, x, y, baseSize, scale, rotation, widthScale, color are read through
+    // dedicated getters to avoid coupling the Activity to View internals.
+    public String getTextOverlayText() { return textOverlayText; }
+    public float getTextOverlayX() { return textOverlayX; }
+    public float getTextOverlayY() { return textOverlayY; }
+    public float getTextOverlaySize() { return textOverlaySize; }
+    public float getTextOverlayScale() { return textOverlayScale; }
+    public float getTextOverlayRotation() { return textOverlayRotation; }
+    public float getTextOverlayWidthScale() { return textOverlayWidthScale; }
+    public int getTextOverlayColor() { return textOverlayColor; }
+    public String getTextOverlayFont() { return textOverlayFont; }
+    public boolean isTextOverlayBold() { return textOverlayBold; }
 
     public void resetTransformQuad() {
         if (bitmap == null) return;
@@ -401,6 +490,7 @@ public class EditorCanvasView extends View {
         canvas.drawRect(r, borderPaint);
 
         drawTextRegions(canvas);
+        drawTextOverlay(canvas);
         drawTransformQuad(canvas);
         drawStrokePreview(canvas);
         drawDetachedPointer(canvas);
@@ -441,6 +531,157 @@ public class EditorCanvasView extends View {
             RectF selected = new RectF(selectedTextRegion);
             drawMatrix.mapRect(selected);
             canvas.drawRect(selected, selectedTextRegionPaint);
+        }
+    }
+
+
+    private void configureTextOverlayPaint() {
+        textOverlayPaint.setColor(textOverlayColor);
+        textOverlayPaint.setTextSize(textOverlaySize);
+        textOverlayPaint.setTextScaleX(textOverlayWidthScale);
+        textOverlayPaint.setTextAlign(Paint.Align.CENTER);
+        textOverlayPaint.setTypeface(android.graphics.Typeface.create(
+                textOverlayFont,
+                textOverlayBold ? android.graphics.Typeface.BOLD : android.graphics.Typeface.NORMAL));
+    }
+
+    private RectF textOverlayLocalBounds() {
+        configureTextOverlayPaint();
+        String[] lines = textOverlayText == null ? new String[]{""}
+                : textOverlayText.split("\\n", -1);
+        float maxWidth = 1f;
+        for (String line : lines) {
+            maxWidth = Math.max(maxWidth, textOverlayPaint.measureText(line));
+        }
+        Paint.FontMetrics fm = textOverlayPaint.getFontMetrics();
+        float lineHeight = Math.max(textOverlaySize * 1.2f, fm.descent - fm.ascent);
+        float height = Math.max(lineHeight, lineHeight * lines.length);
+        float pad = Math.max(4f, textOverlaySize * 0.12f);
+        return new RectF(-maxWidth / 2f - pad, -height / 2f - pad,
+                maxWidth / 2f + pad, height / 2f + pad);
+    }
+
+    private void drawTextOverlay(Canvas canvas) {
+        if (!hasTextOverlay()) return;
+        configureTextOverlayPaint();
+        RectF bounds = textOverlayLocalBounds();
+        String[] lines = textOverlayText.split("\\n", -1);
+        Paint.FontMetrics fm = textOverlayPaint.getFontMetrics();
+        float lineHeight = Math.max(textOverlaySize * 1.2f, fm.descent - fm.ascent);
+        float firstBaseline = -((lines.length - 1) * lineHeight) / 2f
+                - (fm.ascent + fm.descent) / 2f;
+
+        canvas.save();
+        canvas.concat(drawMatrix);
+        canvas.translate(textOverlayX, textOverlayY);
+        canvas.rotate(textOverlayRotation);
+        canvas.scale(textOverlayScale, textOverlayScale);
+
+        for (int i = 0; i < lines.length; i++) {
+            canvas.drawText(lines[i], 0f, firstBaseline + i * lineHeight, textOverlayPaint);
+        }
+        canvas.drawRect(bounds, textOverlayBoxPaint);
+
+        float handleRadius = Math.max(7f / Math.max(zoom, 0.1f),
+                textOverlaySize * 0.09f);
+        canvas.drawCircle(bounds.right, bounds.bottom, handleRadius, textOverlayHandlePaint);
+        canvas.drawCircle(bounds.right, bounds.top, handleRadius, textOverlayHandlePaint);
+        canvas.restore();
+    }
+
+    private float[] textOverlayScreenPoint(float localX, float localY) {
+        float cos = (float) Math.cos(Math.toRadians(textOverlayRotation));
+        float sin = (float) Math.sin(Math.toRadians(textOverlayRotation));
+        float sx = localX * textOverlayScale;
+        float sy = localY * textOverlayScale;
+        float ix = textOverlayX + sx * cos - sy * sin;
+        float iy = textOverlayY + sx * sin + sy * cos;
+        return imageToScreen(ix, iy);
+    }
+
+    private float textOverlayScreenDistance(float sx, float sy, float localX, float localY) {
+        float[] p = textOverlayScreenPoint(localX, localY);
+        return (float) Math.hypot(sx - p[0], sy - p[1]);
+    }
+
+    private boolean isPointInsideTextOverlay(float sx, float sy) {
+        float[] p = screenToImage(sx, sy);
+        float dx = p[0] - textOverlayX;
+        float dy = p[1] - textOverlayY;
+        float rad = (float) Math.toRadians(-textOverlayRotation);
+        float cos = (float) Math.cos(rad);
+        float sin = (float) Math.sin(rad);
+        float lx = (dx * cos - dy * sin) / Math.max(0.05f, textOverlayScale);
+        float ly = (dx * sin + dy * cos) / Math.max(0.05f, textOverlayScale);
+        return textOverlayLocalBounds().contains(lx, ly);
+    }
+
+    private boolean handleTextOverlayTouch(MotionEvent event) {
+        if (!hasTextOverlay()) return true;
+        RectF b = textOverlayLocalBounds();
+        float sx = event.getX();
+        float sy = event.getY();
+
+        switch (event.getActionMasked()) {
+            case MotionEvent.ACTION_DOWN: {
+                float hit = dp(30);
+                if (textOverlayScreenDistance(sx, sy, b.right, b.bottom) <= hit) {
+                    textOverlayGesture = 2;
+                } else if (textOverlayScreenDistance(sx, sy, b.right, b.top) <= hit) {
+                    textOverlayGesture = 3;
+                } else if (isPointInsideTextOverlay(sx, sy)) {
+                    textOverlayGesture = 1;
+                } else {
+                    textOverlayGesture = 0;
+                }
+
+                textOverlayStartTouchX = sx;
+                textOverlayStartTouchY = sy;
+                textOverlayStartX = textOverlayX;
+                textOverlayStartY = textOverlayY;
+                textOverlayStartScale = textOverlayScale;
+                textOverlayStartRotation = textOverlayRotation;
+                invalidate();
+                return true;
+            }
+
+            case MotionEvent.ACTION_MOVE: {
+                if (textOverlayGesture == 1) {
+                    float[] from = screenToImage(textOverlayStartTouchX, textOverlayStartTouchY);
+                    float[] to = screenToImage(sx, sy);
+                    textOverlayX = clamp(textOverlayStartX + (to[0] - from[0]),
+                            0f, bitmap.getWidth());
+                    textOverlayY = clamp(textOverlayStartY + (to[1] - from[1]),
+                            0f, bitmap.getHeight());
+                } else if (textOverlayGesture == 2) {
+                    float[] center = imageToScreen(textOverlayStartX, textOverlayStartY);
+                    float startDist = Math.max(dp(12),
+                            (float) Math.hypot(textOverlayStartTouchX - center[0],
+                                    textOverlayStartTouchY - center[1]));
+                    float nowDist = (float) Math.hypot(sx - center[0], sy - center[1]);
+                    textOverlayScale = clamp(textOverlayStartScale * nowDist / startDist,
+                            0.15f, 8f);
+                } else if (textOverlayGesture == 3) {
+                    float[] center = imageToScreen(textOverlayStartX, textOverlayStartY);
+                    float startAngle = (float) Math.toDegrees(Math.atan2(
+                            textOverlayStartTouchY - center[1],
+                            textOverlayStartTouchX - center[0]));
+                    float nowAngle = (float) Math.toDegrees(Math.atan2(
+                            sy - center[1], sx - center[0]));
+                    textOverlayRotation = textOverlayStartRotation + (nowAngle - startAngle);
+                }
+                invalidate();
+                return true;
+            }
+
+            case MotionEvent.ACTION_UP:
+            case MotionEvent.ACTION_CANCEL:
+                textOverlayGesture = 0;
+                invalidate();
+                return true;
+
+            default:
+                return true;
         }
     }
 
@@ -689,6 +930,10 @@ public class EditorCanvasView extends View {
     public boolean onTouchEvent(MotionEvent event) {
         if (bitmap == null) return true;
 
+        if ("text_place".equals(interactionMode)) {
+            return handleTextOverlayTouch(event);
+        }
+
         scaleDetector.onTouchEvent(event);
 
         if (event.getPointerCount() >= 2 || scaleDetector.isInProgress()) {
@@ -700,6 +945,28 @@ public class EditorCanvasView extends View {
 
         if ("transform_quad".equals(interactionMode)) {
             return handleTransformTouch(event);
+        }
+
+        if ("text_select".equals(interactionMode)) {
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                case MotionEvent.ACTION_MOVE:
+                    updateDetachedPointer(event.getX(), event.getY());
+                    invalidate();
+                    return true;
+                case MotionEvent.ACTION_UP:
+                    updateDetachedPointer(event.getX(), event.getY());
+                    if (listener != null) {
+                        float[] p = getPointerImagePosition();
+                        if (p != null) listener.onTapImage(p[0], p[1]);
+                    }
+                    invalidate();
+                    return true;
+                case MotionEvent.ACTION_CANCEL:
+                    return true;
+                default:
+                    return true;
+            }
         }
 
         if (!isStrokeMode()) {
