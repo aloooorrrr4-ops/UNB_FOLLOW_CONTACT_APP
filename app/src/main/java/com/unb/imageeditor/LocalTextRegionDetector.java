@@ -18,7 +18,7 @@ import java.util.List;
 public final class LocalTextRegionDetector {
 
     private static final int MAX_DIMENSION = 1200;
-    private static final int CELL = 6;
+    private static final int CELL = 4;
 
     public List<RectF> detect(Bitmap source) {
         List<RectF> empty = new ArrayList<>();
@@ -54,7 +54,7 @@ public final class LocalTextRegionDetector {
             for (int x = 1; x < w - 1; x++) {
                 int gx = Math.abs(gray[row + x + 1] - gray[row + x - 1]);
                 int gy = Math.abs(gray[row + w + x] - gray[row - w + x]);
-                if (gx + gy < 48) continue;
+                if (gx + gy < 40) continue;
                 int cx = x / CELL;
                 int cy = y / CELL;
                 edgeCounts[cy * cols + cx]++;
@@ -63,23 +63,22 @@ public final class LocalTextRegionDetector {
 
         boolean[] active = new boolean[cols * rows];
         for (int i = 0; i < active.length; i++) {
-            active[i] = edgeCounts[i] >= 3;
+            active[i] = edgeCounts[i] >= 2;
         }
 
-        // Character strokes are separated by small gaps. Grow horizontally
-        // more than vertically so neighboring glyphs form words/lines.
+        // Keep the fallback detector conservative. Earlier versions expanded
+        // three cells horizontally and one vertically, which merged several
+        // independent labels/numbers into one giant rectangle. Tesseract is
+        // now the primary detector, so this fallback only bridges tiny
+        // horizontal gaps between nearby strokes.
         boolean[] grown = new boolean[active.length];
         for (int cy = 0; cy < rows; cy++) {
             for (int cx = 0; cx < cols; cx++) {
                 if (!active[cy * cols + cx]) continue;
-                for (int dy = -1; dy <= 1; dy++) {
-                    int yy = cy + dy;
-                    if (yy < 0 || yy >= rows) continue;
-                    for (int dx = -3; dx <= 3; dx++) {
-                        int xx = cx + dx;
-                        if (xx < 0 || xx >= cols) continue;
-                        grown[yy * cols + xx] = true;
-                    }
+                for (int dx = -1; dx <= 1; dx++) {
+                    int xx = cx + dx;
+                    if (xx < 0 || xx >= cols) continue;
+                    grown[cy * cols + xx] = true;
                 }
             }
         }
@@ -131,8 +130,8 @@ public final class LocalTextRegionDetector {
             int bw = right - left;
             int bh = bottom - top;
 
-            if (cellCount < 2 || edgeCount < 8) continue;
-            if (bw < 12 || bh < 6) continue;
+            if (cellCount < 2 || edgeCount < 5) continue;
+            if (bw < 8 || bh < 5) continue;
             if (bh > h * 0.35f || bw > w * 0.96f && bh > h * 0.25f) continue;
             if (bw * bh > w * h * 0.42f) continue;
 
@@ -149,7 +148,8 @@ public final class LocalTextRegionDetector {
             boxes.add(box);
         }
 
-        mergeNearbyLines(boxes, source.getWidth(), source.getHeight());
+        // Do not merge nearby rows/labels here. Word-level OCR handles normal
+        // grouping, while the fallback should stay granular.
         boxes.sort(Comparator
                 .comparingDouble((RectF r) -> r.top)
                 .thenComparingDouble(r -> r.left));
