@@ -31,11 +31,18 @@ public class EditorCanvasView extends View {
             "dodge_burn", "gradient", "select", "free_select", "crop"
     ));
 
+    private static final Set<String> DETACHED_POINTER_MODES = new HashSet<>(Arrays.asList(
+            "brush", "pencil", "eraser", "clone", "heal", "smudge",
+            "dodge_burn", "gradient", "select", "free_select", "crop"
+    ));
+
     private final Paint checkerA = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint checkerB = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint imagePaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
     private final Paint borderPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint strokePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint pointerPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint pointerGuidePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Matrix drawMatrix = new Matrix();
     private final Matrix inverse = new Matrix();
 
@@ -51,6 +58,12 @@ public class EditorCanvasView extends View {
     private String interactionMode = "move";
     private float previewStrokeSize = 28f;
     private int previewStrokeColor = Color.WHITE;
+    private float pointerOffsetPx;
+    private float pointerTouchX;
+    private float pointerTouchY;
+    private float pointerHeadX;
+    private float pointerHeadY;
+    private boolean pointerVisible = false;
 
     private final ScaleGestureDetector scaleDetector;
     private final GestureDetector gestureDetector;
@@ -70,6 +83,16 @@ public class EditorCanvasView extends View {
         strokePaint.setStrokeCap(Paint.Cap.ROUND);
         strokePaint.setStrokeJoin(Paint.Join.ROUND);
         strokePaint.setColor(previewStrokeColor);
+
+        pointerPaint.setStyle(Paint.Style.STROKE);
+        pointerPaint.setStrokeWidth(dp(1.6f));
+        pointerPaint.setColor(Color.WHITE);
+
+        pointerGuidePaint.setStyle(Paint.Style.STROKE);
+        pointerGuidePaint.setStrokeWidth(dp(1));
+        pointerGuidePaint.setColor(Color.argb(110, 220, 225, 235));
+
+        pointerOffsetPx = dp(92);
 
         scaleDetector = new ScaleGestureDetector(context,
                 new ScaleGestureDetector.SimpleOnScaleGestureListener() {
@@ -141,6 +164,7 @@ public class EditorCanvasView extends View {
 
     public void setInteractionMode(String mode) {
         interactionMode = mode == null ? "move" : mode;
+        pointerVisible = false;
         clearStrokePreview();
     }
 
@@ -157,6 +181,11 @@ public class EditorCanvasView extends View {
     public void clearStrokePreview() {
         drawingStroke = false;
         strokePoints.clear();
+        invalidate();
+    }
+
+    public void setPointerOffsetDp(float offsetDp) {
+        pointerOffsetPx = dp(Math.max(36f, Math.min(180f, offsetDp)));
         invalidate();
     }
 
@@ -255,6 +284,59 @@ public class EditorCanvasView extends View {
         canvas.drawRect(r, borderPaint);
 
         drawStrokePreview(canvas);
+        drawDetachedPointer(canvas);
+    }
+
+    private void drawDetachedPointer(Canvas canvas) {
+        if (!pointerVisible || !usesDetachedPointer()) return;
+
+        canvas.drawLine(pointerTouchX, pointerTouchY, pointerHeadX, pointerHeadY,
+                pointerGuidePaint);
+
+        boolean paintTool = "brush".equals(interactionMode) ||
+                "pencil".equals(interactionMode) ||
+                "eraser".equals(interactionMode) ||
+                "clone".equals(interactionMode) ||
+                "heal".equals(interactionMode) ||
+                "smudge".equals(interactionMode) ||
+                "dodge_burn".equals(interactionMode);
+
+        if (paintTool) {
+            float radius = Math.max(dp(3), (previewStrokeSize * zoom) / 2f);
+            pointerPaint.setColor("eraser".equals(interactionMode)
+                    ? Color.rgb(255, 105, 105)
+                    : previewStrokeColor);
+            pointerPaint.setStrokeWidth(dp(1.6f));
+            canvas.drawCircle(pointerHeadX, pointerHeadY, radius, pointerPaint);
+            canvas.drawLine(pointerHeadX - dp(4), pointerHeadY,
+                    pointerHeadX + dp(4), pointerHeadY, pointerPaint);
+            canvas.drawLine(pointerHeadX, pointerHeadY - dp(4),
+                    pointerHeadX, pointerHeadY + dp(4), pointerPaint);
+        } else {
+            pointerPaint.setColor(Color.WHITE);
+            pointerPaint.setStrokeWidth(dp(1.5f));
+            float r = dp(10);
+            canvas.drawCircle(pointerHeadX, pointerHeadY, r, pointerPaint);
+            canvas.drawLine(pointerHeadX - r - dp(4), pointerHeadY,
+                    pointerHeadX + r + dp(4), pointerHeadY, pointerPaint);
+            canvas.drawLine(pointerHeadX, pointerHeadY - r - dp(4),
+                    pointerHeadX, pointerHeadY + r + dp(4), pointerPaint);
+        }
+
+        Paint touch = pointerGuidePaint;
+        canvas.drawCircle(pointerTouchX, pointerTouchY, dp(5), touch);
+    }
+
+    private void updateDetachedPointer(float touchX, float touchY) {
+        pointerTouchX = touchX;
+        pointerTouchY = touchY;
+        pointerHeadX = touchX;
+        pointerHeadY = touchY - pointerOffsetPx;
+        pointerVisible = usesDetachedPointer();
+    }
+
+    private boolean usesDetachedPointer() {
+        return DETACHED_POINTER_MODES.contains(interactionMode);
     }
 
     private void drawStrokePreview(Canvas canvas) {
@@ -346,7 +428,8 @@ public class EditorCanvasView extends View {
     }
 
     private void addStrokePoint(float screenX, float screenY) {
-        float[] p = screenToImage(screenX, screenY);
+        float workingY = usesDetachedPointer() ? screenY - pointerOffsetPx : screenY;
+        float[] p = screenToImage(screenX, workingY);
         if (strokePoints.size() >= 2) {
             float px = strokePoints.get(strokePoints.size() - 2);
             float py = strokePoints.get(strokePoints.size() - 1);
@@ -376,6 +459,7 @@ public class EditorCanvasView extends View {
     private void cancelStroke() {
         drawingStroke = false;
         strokePoints.clear();
+        pointerVisible = false;
         invalidate();
     }
 
@@ -400,12 +484,14 @@ public class EditorCanvasView extends View {
             case MotionEvent.ACTION_DOWN:
                 strokePoints.clear();
                 drawingStroke = true;
+                updateDetachedPointer(event.getX(), event.getY());
                 addStrokePoint(event.getX(), event.getY());
                 invalidate();
                 return true;
 
             case MotionEvent.ACTION_MOVE:
                 if (!drawingStroke) return true;
+                updateDetachedPointer(event.getX(), event.getY());
                 for (int i = 0; i < event.getHistorySize(); i++) {
                     addStrokePoint(event.getHistoricalX(i), event.getHistoricalY(i));
                 }
@@ -415,9 +501,12 @@ public class EditorCanvasView extends View {
 
             case MotionEvent.ACTION_UP:
                 if (drawingStroke) {
+                    updateDetachedPointer(event.getX(), event.getY());
                     addStrokePoint(event.getX(), event.getY());
                     finishStroke();
                 }
+                pointerVisible = false;
+                invalidate();
                 return true;
 
             case MotionEvent.ACTION_CANCEL:
