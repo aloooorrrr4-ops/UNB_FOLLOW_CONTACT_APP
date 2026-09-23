@@ -18,7 +18,7 @@ import java.util.List;
 public final class LocalTextRegionDetector {
 
     private static final int MAX_DIMENSION = 1200;
-    private static final int CELL = 8;
+    private static final int CELL = 6;
 
     public List<RectF> detect(Bitmap source) {
         List<RectF> empty = new ArrayList<>();
@@ -54,7 +54,7 @@ public final class LocalTextRegionDetector {
             for (int x = 1; x < w - 1; x++) {
                 int gx = Math.abs(gray[row + x + 1] - gray[row + x - 1]);
                 int gy = Math.abs(gray[row + w + x] - gray[row - w + x]);
-                if (gx + gy < 72) continue;
+                if (gx + gy < 48) continue;
                 int cx = x / CELL;
                 int cy = y / CELL;
                 edgeCounts[cy * cols + cx]++;
@@ -63,7 +63,7 @@ public final class LocalTextRegionDetector {
 
         boolean[] active = new boolean[cols * rows];
         for (int i = 0; i < active.length; i++) {
-            active[i] = edgeCounts[i] >= 5;
+            active[i] = edgeCounts[i] >= 3;
         }
 
         // Character strokes are separated by small gaps. Grow horizontally
@@ -75,7 +75,7 @@ public final class LocalTextRegionDetector {
                 for (int dy = -1; dy <= 1; dy++) {
                     int yy = cy + dy;
                     if (yy < 0 || yy >= rows) continue;
-                    for (int dx = -2; dx <= 2; dx++) {
+                    for (int dx = -3; dx <= 3; dx++) {
                         int xx = cx + dx;
                         if (xx < 0 || xx >= cols) continue;
                         grown[yy * cols + xx] = true;
@@ -131,8 +131,8 @@ public final class LocalTextRegionDetector {
             int bw = right - left;
             int bh = bottom - top;
 
-            if (cellCount < 3 || edgeCount < 12) continue;
-            if (bw < 18 || bh < 7) continue;
+            if (cellCount < 2 || edgeCount < 8) continue;
+            if (bw < 12 || bh < 6) continue;
             if (bh > h * 0.35f || bw > w * 0.96f && bh > h * 0.25f) continue;
             if (bw * bh > w * h * 0.42f) continue;
 
@@ -174,8 +174,8 @@ public final class LocalTextRegionDetector {
                     float minHeight = Math.max(1f, Math.min(a.height(), b.height()));
                     float gap = Math.max(0f, Math.max(a.left, b.left) - Math.min(a.right, b.right));
 
-                    boolean sameLine = verticalOverlap / minHeight > 0.45f &&
-                            gap < Math.max(a.height(), b.height()) * 2.2f;
+                    boolean sameLine = verticalOverlap / minHeight > 0.35f &&
+                            gap < Math.max(a.height(), b.height()) * 3.0f;
 
                     if (!sameLine) continue;
 
