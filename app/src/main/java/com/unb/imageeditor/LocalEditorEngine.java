@@ -1631,6 +1631,40 @@ public final class LocalEditorEngine {
             for (int x = left; x < right; x += size) {
                 canvas.drawRect(x, top, Math.min(right, x + stripe), bottom, paint);
             }
+        } else if ("diagonal".equals(style)) {
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(Math.max(2f, size * 0.16f));
+            int span = (right - left) + (bottom - top);
+            for (int offset = -span; offset < span; offset += size) {
+                canvas.drawLine(left + offset, bottom, left + offset + (bottom - top), top, paint);
+            }
+            paint.setStyle(Paint.Style.FILL);
+        } else if ("cross".equals(style)) {
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(Math.max(2f, size * 0.14f));
+            for (int x = left; x <= right; x += size) {
+                canvas.drawLine(x, top, x, bottom, paint);
+            }
+            for (int y = top; y <= bottom; y += size) {
+                canvas.drawLine(left, y, right, y, paint);
+            }
+            paint.setStyle(Paint.Style.FILL);
+        } else if ("diamond".equals(style)) {
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(Math.max(2f, size * 0.12f));
+            float half = size / 2f;
+            for (float cy = top; cy <= bottom + size; cy += size) {
+                for (float cx = left; cx <= right + size; cx += size) {
+                    android.graphics.Path d = new android.graphics.Path();
+                    d.moveTo(cx, cy - half);
+                    d.lineTo(cx + half, cy);
+                    d.lineTo(cx, cy + half);
+                    d.lineTo(cx - half, cy);
+                    d.close();
+                    canvas.drawPath(d, paint);
+                }
+            }
+            paint.setStyle(Paint.Style.FILL);
         } else if ("dots".equals(style)) {
             float radius = Math.max(1f, size * 0.22f);
             for (int y = top + size / 2; y < bottom; y += size) {
