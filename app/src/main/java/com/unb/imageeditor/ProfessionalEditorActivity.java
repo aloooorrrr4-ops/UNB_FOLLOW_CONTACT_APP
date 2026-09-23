@@ -76,6 +76,7 @@ public class ProfessionalEditorActivity extends Activity {
     private boolean desktopLayout = false;
     private View phoneInspectorPanel;
     private ScrollView inspectorBodyScroll;
+    private HorizontalScrollView phoneContextScroll;
     private boolean phoneInspectorExpanded = false;
     private float lastImageTapX = 0f;
     private float lastImageTapY = 0f;
@@ -84,6 +85,7 @@ public class ProfessionalEditorActivity extends Activity {
     private String foregroundColor = "#ffffff";
     private float cloneSourceX = Float.NaN;
     private float cloneSourceY = Float.NaN;
+    private float cropAspectRatio = 0f;
     private byte[] pendingExportBytes;
     private String pendingExportName = "export.png";
 
@@ -213,17 +215,16 @@ public class ProfessionalEditorActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, 1f));
 
         middle.addView(dividerVertical());
-        middle.addView(buildToolRail(), new LinearLayout.LayoutParams(dp(60),
+        middle.addView(buildToolRail(), new LinearLayout.LayoutParams(dp(64),
                 ViewGroup.LayoutParams.MATCH_PARENT));
 
         root.addView(middle, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
         root.addView(divider());
-        phoneInspectorPanel = buildInspector();
+        phoneInspectorPanel = buildPhoneContextPanel();
         root.addView(phoneInspectorPanel, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
-        setPhoneInspectorExpanded(false);
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(104)));
         return root;
     }
 
