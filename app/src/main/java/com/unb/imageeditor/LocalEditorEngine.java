@@ -1799,33 +1799,59 @@ public final class LocalEditorEngine {
         boolean bold = p.optBoolean("bold", false);
         paint.setTypeface(Typeface.create(fontFamily,
                 bold ? Typeface.BOLD : Typeface.NORMAL));
-        paint.setTextScaleX(Math.max(0.5f, Math.min(2.0f,
-                (float) p.optDouble("width_scale", 1.0))));
 
         float requested = Math.max(6f, (float) p.optDouble("size", h * 0.72f));
         String[] lines = text.split("\\n", -1);
         float maxWidth = Math.max(1f, w - 4f);
+        float targetWidth = Math.max(1f, maxWidth * 0.92f);
 
-        float fitted = requested;
-        for (String line : lines) {
-            paint.setTextSize(fitted);
-            float measured = paint.measureText(line);
-            if (measured > maxWidth && measured > 0f) {
-                fitted = Math.max(6f, fitted * (maxWidth / measured));
-            }
-        }
+        // Preserve the original text-region height first. The previous logic
+        // reduced the font size whenever the replacement string was wider,
+        // which made Arabic replacements such as "اليمن نت" visibly tiny.
+        paint.setTextSize(requested);
+        Paint.FontMetrics initialFm = paint.getFontMetrics();
+        float glyphHeight = Math.max(1f, initialFm.descent - initialFm.ascent);
+        float targetLineHeight = Math.max(6f,
+                (h * 0.78f) / Math.max(1, lines.length));
+        float heightScale = targetLineHeight / glyphHeight;
+        float fitted = Math.max(6f, requested * heightScale);
         paint.setTextSize(fitted);
 
-        boolean rtl = containsRtl(text);
-        paint.setTextAlign(rtl ? Paint.Align.RIGHT : Paint.Align.LEFT);
-        float tx = rtl ? x + w - 2f : x + 2f;
+        float baseWidthScale = Math.max(0.5f, Math.min(2.0f,
+                (float) p.optDouble("width_scale", 1.0)));
+        paint.setTextScaleX(baseWidthScale);
+
+        float widest = 1f;
+        for (String line : lines) {
+            widest = Math.max(widest, paint.measureText(line));
+        }
+
+        // Match the width of the old selected region mostly by horizontal
+        // scaling, not by shrinking font height. Only fall back to reducing
+        // font size if the required horizontal compression would be extreme.
+        float widthFactor = targetWidth / widest;
+        float adjustedScaleX = baseWidthScale * widthFactor;
+        if (adjustedScaleX < 0.62f) {
+            float shrink = adjustedScaleX / 0.62f;
+            fitted = Math.max(6f, fitted * shrink);
+            paint.setTextSize(fitted);
+            adjustedScaleX = 0.62f;
+        }
+        adjustedScaleX = Math.max(0.62f, Math.min(1.45f, adjustedScaleX));
+        paint.setTextScaleX(adjustedScaleX);
+
+        // Replacement text is centered in the original text box so Arabic
+        // words remain in the same visual slot even when character counts differ.
+        paint.setTextAlign(Paint.Align.CENTER);
+        float tx = x + w / 2f;
 
         Paint.FontMetrics fm = paint.getFontMetrics();
-        float lineHeight = Math.max(fitted * 1.15f, fm.descent - fm.ascent);
-        float baseline = y + Math.max(-fm.ascent, (h - lineHeight * lines.length) / 2f - fm.ascent);
+        float lineHeight = Math.max(fitted * 1.08f, fm.descent - fm.ascent);
+        float totalHeight = lineHeight * lines.length;
+        float baseline = y + (h - totalHeight) / 2f - fm.ascent;
 
         for (String line : lines) {
-            if (baseline > y + h) break;
+            if (baseline > y + h + Math.abs(fm.ascent)) break;
             canvas.drawText(line, tx, baseline, paint);
             baseline += lineHeight;
         }
