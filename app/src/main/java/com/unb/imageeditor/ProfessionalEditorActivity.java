@@ -298,8 +298,47 @@ public class ProfessionalEditorActivity extends Activity {
         addTool(rail, "color_picker", "لون");
         addTool(rail, "zoom", "تكبير");
 
+        if (!desktopLayout) {
+            TextView split = label("—", 10, MUTED, false);
+            split.setGravity(Gravity.CENTER);
+            rail.addView(split, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(20)));
+
+            addRailPanelButton(rail, "خصائص", "properties");
+            addRailPanelButton(rail, "طبقات", "layers");
+            addRailPanelButton(rail, "قنوات", "channels");
+            addRailPanelButton(rail, "مسارات", "paths");
+            addRailPanelButton(rail, "موارد", "resources");
+            addRailPanelButton(rail, "سجل", "history");
+        }
+
         scroll.addView(rail);
         return scroll;
+    }
+
+    private void addRailPanelButton(LinearLayout rail, String title, String tab) {
+        Button b = new Button(this);
+        b.setText(title);
+        b.setTextSize(9.5f);
+        b.setTextColor(MUTED);
+        b.setAllCaps(false);
+        b.setGravity(Gravity.CENTER);
+        b.setPadding(dp(2), dp(2), dp(2), dp(2));
+        b.setBackground(rounded(Color.rgb(31, 34, 39), 9));
+
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(40));
+        lp.bottomMargin = dp(4);
+        rail.addView(b, lp);
+
+        b.setOnClickListener(v -> {
+            openInspectorTab(tab);
+            if ("layers".equals(tab)) refreshLayers();
+            else if ("channels".equals(tab)) refreshChannels();
+            else if ("paths".equals(tab)) refreshPaths();
+            else if ("resources".equals(tab)) loadResources("fonts");
+            else if ("history".equals(tab)) addHistoryRowsOnly();
+        });
     }
 
     private void addTool(LinearLayout rail, String id, String label) {
@@ -329,6 +368,62 @@ public class ProfessionalEditorActivity extends Activity {
         });
 
         if ("move".equals(id)) activeToolButton = b;
+    }
+
+    private View buildPhoneContextPanel() {
+        LinearLayout panel = column();
+        panel.setBackgroundColor(PANEL);
+        panel.setPadding(dp(4), dp(4), dp(4), dp(4));
+
+        phoneContextScroll = new HorizontalScrollView(this);
+        phoneContextScroll.setHorizontalScrollBarEnabled(false);
+        phoneContextScroll.setFillViewport(false);
+
+        LinearLayout host = column();
+
+        toolOptions = new LinearLayout(this);
+        toolOptions.setOrientation(LinearLayout.HORIZONTAL);
+        toolOptions.setGravity(Gravity.CENTER_VERTICAL);
+
+        layerList = new LinearLayout(this);
+        layerList.setOrientation(LinearLayout.HORIZONTAL);
+        layerList.setGravity(Gravity.CENTER_VERTICAL);
+
+        channelList = new LinearLayout(this);
+        channelList.setOrientation(LinearLayout.HORIZONTAL);
+        channelList.setGravity(Gravity.CENTER_VERTICAL);
+
+        pathList = new LinearLayout(this);
+        pathList.setOrientation(LinearLayout.HORIZONTAL);
+        pathList.setGravity(Gravity.CENTER_VERTICAL);
+
+        resourceList = new LinearLayout(this);
+        resourceList.setOrientation(LinearLayout.HORIZONTAL);
+        resourceList.setGravity(Gravity.CENTER_VERTICAL);
+
+        historyList = new LinearLayout(this);
+        historyList.setOrientation(LinearLayout.HORIZONTAL);
+        historyList.setGravity(Gravity.CENTER_VERTICAL);
+
+        host.addView(toolOptions, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(94)));
+        host.addView(layerList, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(94)));
+        host.addView(channelList, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(94)));
+        host.addView(pathList, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(94)));
+        host.addView(resourceList, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(94)));
+        host.addView(historyList, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(94)));
+
+        phoneContextScroll.addView(host);
+        panel.addView(phoneContextScroll, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        showInspector("properties");
+        return panel;
     }
 
     private View buildInspector() {
