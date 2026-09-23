@@ -2053,11 +2053,21 @@ public class ProfessionalEditorActivity extends Activity {
                 applyRemote("move_layer_up", new JSONObject())));
         layerList.addView(actionButton("↓ للأسفل", v ->
                 applyRemote("move_layer_down", new JSONObject())));
+        layerList.addView(actionButton("⤒ أعلى الكل", v ->
+                applyRemote("move_layer_top", new JSONObject())));
+        layerList.addView(actionButton("⤓ أسفل الكل", v ->
+                applyRemote("move_layer_bottom", new JSONObject())));
+        layerList.addView(actionButton("إظهار الكل", v ->
+                applyRemote("show_all_layers", new JSONObject())));
+        layerList.addView(actionButton("إخفاء البقية", v ->
+                applyRemote("hide_other_layers", new JSONObject())));
         layerList.addView(actionButton("حذف", v ->
                 applyRemote("delete_layer", new JSONObject())));
         layerList.addView(actionButton("دمج لأسفل", v ->
                 applyRemote("merge_down", new JSONObject())));
-        layerList.addView(actionButton("Flatten", v ->
+        layerList.addView(actionButton("دمج المرئي", v ->
+                applyRemote("merge_visible", new JSONObject())));
+        layerList.addView(actionButton("Flatten الكل", v ->
                 applyRemote("flatten", new JSONObject())));
         layerList.addView(actionButton("+ قناع", v ->
                 applyRemote("add_layer_mask", new JSONObject())));
