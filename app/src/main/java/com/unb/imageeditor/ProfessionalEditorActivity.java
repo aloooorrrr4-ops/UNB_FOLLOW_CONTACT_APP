@@ -1063,6 +1063,189 @@ public class ProfessionalEditorActivity extends Activity {
         });
     }
 
+    private void addLiveSlider(LinearLayout parent, String title,
+                               int min, int max, int initial, SliderCommit live) {
+        LinearLayout card = sliderCard(title, String.valueOf(initial));
+        TextView value = (TextView) ((LinearLayout) card.getChildAt(0)).getChildAt(1);
+
+        SeekBar seek = new SeekBar(this);
+        seek.setMax(max - min);
+        seek.setProgress(initial - min);
+        seek.setKeyProgressIncrement(1);
+        card.addView(seek, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(desktopLayout ? 42 : 34)));
+        addSliderCard(parent, card);
+
+        seek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            public void onProgressChanged(SeekBar s, int progress, boolean fromUser) {
+                int current = min + progress;
+                value.setText(String.valueOf(current));
+                if (fromUser && live != null) live.apply(current);
+            }
+            public void onStartTrackingTouch(SeekBar s) {}
+            public void onStopTrackingTouch(SeekBar s) {}
+        });
+    }
+
+    private void addAdjustmentSlider(LinearLayout parent, String title, String operation,
+                                     int initial, SliderCommit saveValue) {
+        int safeInitial = Math.max(-100, Math.min(100, initial));
+        LinearLayout card = sliderCard(title, signedValue(safeInitial));
+        TextView value = (TextView) ((LinearLayout) card.getChildAt(0)).getChildAt(1);
+        value.setTextDirection(View.TEXT_DIRECTION_LTR);
+        value.setLayoutDirection(View.LAYOUT_DIRECTION_LTR);
+        value.setGravity(Gravity.END);
+
+        SeekBar seek = new SeekBar(this);
+        seek.setMax(200);
+        seek.setProgress(safeInitial + 100);
+        seek.setKeyProgressIncrement(1);
+        card.addView(seek, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(desktopLayout ? 42 : 34)));
+        addSliderCard(parent, card);
+
+        final int[] current = {safeInitial};
+
+        seek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onStartTrackingTouch(SeekBar s) {
+                if (!localEngine.hasImage()) return;
+                activeAdjustmentOperation = operation;
+                int requested = current[0];
+                localExecutor.execute(() -> {
+                    try {
+                        int actual = localEngine.beginAdjustment(operation, requested);
+                        if (actual != requested) {
+                            runOnUiThread(() -> {
+                                current[0] = actual;
+                                seek.setProgress(actual + 100);
+                                value.setText(signedValue(actual));
+                                if (saveValue != null) saveValue.apply(actual);
+                            });
+                        }
+                    } catch (Exception e) {
+                        runOnUiThread(() -> toast(shortText(e.getMessage())));
+                    }
+                });
+            }
+
+            @Override
+            public void onProgressChanged(SeekBar s, int progress, boolean fromUser) {
+                current[0] = progress - 100;
+                value.setText(signedValue(current[0]));
+                if (saveValue != null) saveValue.apply(current[0]);
+                if (fromUser && localEngine.hasImage()) {
+                    requestAdjustmentPreview(operation, current[0], false);
+                }
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar s) {
+                if (!localEngine.hasImage()) return;
+                requestAdjustmentPreview(operation, current[0], true);
+            }
+        });
+    }
+
+    private LinearLayout sliderCard(String title, String initialText) {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setGravity(Gravity.CENTER_VERTICAL);
+        card.setPadding(dp(8), dp(4), dp(8), dp(2));
+        if (!desktopLayout) {
+            card.setBackground(rounded(Color.rgb(35, 39, 45), 8));
+        }
+
+        LinearLayout header = new LinearLayout(this);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView name = label(title, desktopLayout ? 13 : 11, MUTED, false);
+        TextView value = label(initialText, desktopLayout ? 13 : 11, TEXT, true);
+        value.setGravity(Gravity.END);
+
+        header.addView(name, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        header.addView(value, new LinearLayout.LayoutParams(dp(desktopLayout ? 60 : 48),
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+        card.addView(header);
+        return card;
+    }
+
+    private void addSliderCard(LinearLayout parent, LinearLayout card) {
+        LinearLayout.LayoutParams cardLp;
+        if (desktopLayout) {
+            cardLp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        } else {
+            cardLp = new LinearLayout.LayoutParams(dp(170), dp(82));
+            cardLp.setMargins(dp(3), 0, dp(3), 0);
+        }
+        parent.addView(card, cardLp);
+    }
+
+    private String signedValue(int value) {
+        if (value > 0) return "+" + value;
+        return String.valueOf(value);
+    }
+
+    private void requestAdjustmentPreview(String operation, int value, boolean commit) {
+        int token = adjustmentGeneration.incrementAndGet();
+
+        localExecutor.execute(() -> {
+            try {
+                if (token != adjustmentGeneration.get()) return;
+
+                Bitmap frame = localEngine.previewAdjustment(operation, value);
+                if (token != adjustmentGeneration.get()) return;
+
+                if (commit) {
+                    frame = localEngine.commitAdjustment();
+                }
+
+                Bitmap result = frame;
+                runOnUiThread(() -> {
+                    if (token != adjustmentGeneration.get()) return;
+                    if (canvas != null) canvas.setBitmapPreserveViewport(result);
+                    projectText.setText("Offline • " +
+                            localEngine.width() + "×" + localEngine.height());
+
+                    if (commit) {
+                        activeAdjustmentOperation = null;
+                        if (value != 0) addHistory(operation + " " + signedValue(value));
+                        setStatus(operationLabel(operation) + " " + signedValue(value));
+                        refreshRemotePanels();
+                        flushPendingHistory();
+                    } else {
+                        setStatus(operationLabel(operation) + " " + signedValue(value));
+                    }
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    activeAdjustmentOperation = null;
+                    setStatus("فشل التعديل: " + shortText(e.getMessage()));
+                    toast(shortText(e.getMessage()));
+                    flushPendingHistory();
+                });
+            }
+        });
+    }
+
+    private String operationLabel(String operation) {
+        if ("brightness".equals(operation)) return "السطوع";
+        if ("contrast".equals(operation)) return "التباين";
+        if ("saturation".equals(operation)) return "التشبع";
+        return operation;
+    }
+
+    private void resetAdjustmentValues() {
+        adjustmentGeneration.incrementAndGet();
+        activeAdjustmentOperation = null;
+        brightnessValue = 0;
+        contrastValue = 0;
+        saturationValue = 0;
+    }
+
     private void refreshLayers() {
         if (layerList == null) return;
         layerList.removeAllViews();
@@ -1389,6 +1572,7 @@ public class ProfessionalEditorActivity extends Activity {
                 runOnUiThread(() -> {
                     sourceBytes = bytes;
                     sourceName = name;
+                    resetAdjustmentValues();
                     projectId = "LOCAL";
                     canvas.setBitmap(frame);
                     projectText.setText("Offline • " +
@@ -1424,6 +1608,11 @@ public class ProfessionalEditorActivity extends Activity {
                 runOnUiThread(() -> {
                     canvas.setBitmap(value);
                     if (canvas != null) canvas.clearStrokePreview();
+                    if (!"brightness".equals(operation) &&
+                            !"contrast".equals(operation) &&
+                            !"saturation".equals(operation)) {
+                        resetAdjustmentValues();
+                    }
                     setBusy(false);
                     projectId = "LOCAL";
                     projectText.setText("Offline • " +
@@ -1448,6 +1637,13 @@ public class ProfessionalEditorActivity extends Activity {
     private void remoteHistory(String action) {
         if (!localEngine.hasImage()) return;
 
+        if (activeAdjustmentOperation != null) {
+            pendingHistoryAction = action;
+            setStatus(("redo".equals(action) ? "الإعادة" : "التراجع") +
+                    " سيتم بعد تثبيت قيمة المؤشر");
+            return;
+        }
+
         if (busy) {
             pendingHistoryAction = action;
             setStatus(("redo".equals(action) ? "الإعادة" : "التراجع") +
@@ -1466,6 +1662,7 @@ public class ProfessionalEditorActivity extends Activity {
 
                 runOnUiThread(() -> {
                     canvas.setBitmap(value);
+                    resetAdjustmentValues();
                     setBusy(false);
                     projectText.setText("Offline • " +
                             localEngine.width() + "×" + localEngine.height());
