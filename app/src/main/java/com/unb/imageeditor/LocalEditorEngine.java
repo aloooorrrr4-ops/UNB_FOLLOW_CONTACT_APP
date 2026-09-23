@@ -1748,12 +1748,26 @@ public final class LocalEditorEngine {
             int cx = Math.round((float) pts.optDouble(i));
             int cy = Math.round((float) pts.optDouble(i + 1));
 
+            int deltaR = 0, deltaG = 0, deltaB = 0;
+            if (heal) {
+                int sampleRadius = Math.max(1, radius / 2);
+                int targetAvg = neighborhoodAverage(original, w, h, cx, cy, sampleRadius);
+                int sourceAvg = neighborhoodAverage(original, w, h,
+                        cx + offsetX, cy + offsetY, sampleRadius);
+                deltaR = Color.red(targetAvg) - Color.red(sourceAvg);
+                deltaG = Color.green(targetAvg) - Color.green(sourceAvg);
+                deltaB = Color.blue(targetAvg) - Color.blue(sourceAvg);
+            }
+
             for (int dy = -radius; dy <= radius; dy++) {
                 int yy = cy + dy;
                 int sy = yy + offsetY;
                 if (yy < 0 || yy >= h || sy < 0 || sy >= h) continue;
+
                 for (int dx = -radius; dx <= radius; dx++) {
-                    if (dx * dx + dy * dy > radius * radius) continue;
+                    int distSq = dx * dx + dy * dy;
+                    if (distSq > radius * radius) continue;
+
                     int xx = cx + dx;
                     int sx = xx + offsetX;
                     if (xx < 0 || xx >= w || sx < 0 || sx >= w) continue;
@@ -1762,23 +1776,16 @@ public final class LocalEditorEngine {
                     int si = sy * w + sx;
                     int source = original[si];
                     int dest = out[di];
-                    float edge = 1f - (float) Math.sqrt(dx * dx + dy * dy) /
-                            Math.max(1f, radius);
-                    float local = opacity * Math.max(0.18f, edge);
+
+                    float edge = 1f - (float) Math.sqrt(distSq) / Math.max(1f, radius);
+                    float local = opacity * Math.max(0.12f, edge);
 
                     if (heal) {
-                        int targetAvg = neighborhoodAverage(original, w, h, xx, yy,
-                                Math.max(1, radius / 3));
-                        int sourceAvg = neighborhoodAverage(original, w, h, sx, sy,
-                                Math.max(1, radius / 3));
-
-                        int rr = clamp(Color.red(source) +
-                                Color.red(targetAvg) - Color.red(sourceAvg), 0, 255);
-                        int gg = clamp(Color.green(source) +
-                                Color.green(targetAvg) - Color.green(sourceAvg), 0, 255);
-                        int bb = clamp(Color.blue(source) +
-                                Color.blue(targetAvg) - Color.blue(sourceAvg), 0, 255);
-                        int corrected = Color.argb(Color.alpha(source), rr, gg, bb);
+                        int corrected = Color.argb(
+                                Color.alpha(source),
+                                clamp(Color.red(source) + deltaR, 0, 255),
+                                clamp(Color.green(source) + deltaG, 0, 255),
+                                clamp(Color.blue(source) + deltaB, 0, 255));
                         out[di] = blend(dest, corrected, local * 0.82f);
                     } else {
                         out[di] = blend(dest, source, local);
