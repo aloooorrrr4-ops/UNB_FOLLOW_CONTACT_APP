@@ -2283,7 +2283,10 @@ public class ProfessionalEditorActivity extends Activity {
                     resetAdjustmentValues();
                     detectedTextRegions.clear();
                     selectedTextRegion = null;
-                    if (canvas != null) canvas.clearDetectedTextRegions();
+                    if (canvas != null) {
+                        canvas.clearDetectedTextRegions();
+                        canvas.clearSelectionOverlay();
+                    }
                     projectId = "LOCAL";
                     canvas.setBitmap(frame);
                     projectText.setText("Offline • " +
@@ -2316,9 +2319,13 @@ public class ProfessionalEditorActivity extends Activity {
         localExecutor.execute(() -> {
             try {
                 Bitmap value = localEngine.apply(operation, params);
+                Bitmap selectionOverlay = localEngine.selectionPreview();
                 runOnUiThread(() -> {
                     canvas.setBitmap(value);
-                    if (canvas != null) canvas.clearStrokePreview();
+                    if (canvas != null) {
+                        canvas.clearStrokePreview();
+                        canvas.setSelectionOverlay(selectionOverlay);
+                    }
                     if (!"brightness".equals(operation) &&
                             !"contrast".equals(operation) &&
                             !"saturation".equals(operation)) {
@@ -2340,7 +2347,7 @@ public class ProfessionalEditorActivity extends Activity {
                 runOnUiThread(() -> {
                     if (canvas != null) canvas.clearStrokePreview();
                     setBusy(false);
-                    setStatus("غير متاح بعد: " + shortText(e.getMessage()));
+                    setStatus("تعذر التنفيذ: " + shortText(e.getMessage()));
                     toast(shortText(e.getMessage()));
                     flushPendingHistory();
                 });
@@ -2373,9 +2380,11 @@ public class ProfessionalEditorActivity extends Activity {
                 Bitmap value = "redo".equals(action)
                         ? localEngine.redo()
                         : localEngine.undo();
+                Bitmap selectionOverlay = localEngine.selectionPreview();
 
                 runOnUiThread(() -> {
                     canvas.setBitmap(value);
+                    canvas.setSelectionOverlay(selectionOverlay);
                     resetAdjustmentValues();
                     setBusy(false);
                     projectText.setText("Offline • " +
