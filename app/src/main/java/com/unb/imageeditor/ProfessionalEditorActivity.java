@@ -101,9 +101,10 @@ public class ProfessionalEditorActivity extends Activity {
         getWindow().setNavigationBarColor(Color.rgb(14, 16, 19));
 
         SharedPreferences prefs = getSharedPreferences("editor_settings", MODE_PRIVATE);
-        String savedServer = prefs.getString("server_base", "http://91.98.126.167:18083");
-        if ("http://91.98.126.167:18085".equals(savedServer)) {
-            savedServer = "http://91.98.126.167:18083";
+        String savedServer = prefs.getString("server_base", "https://91.98.126.167");
+        if ("http://91.98.126.167:18085".equals(savedServer) ||
+                "http://91.98.126.167:18083".equals(savedServer)) {
+            savedServer = "https://91.98.126.167";
             prefs.edit().putString("server_base", savedServer).apply();
         }
         api = new EditorApiClient(savedServer);
@@ -1126,7 +1127,7 @@ public class ProfessionalEditorActivity extends Activity {
         EditText serverInput = new EditText(this);
         serverInput.setSingleLine(true);
         serverInput.setText(api.getServerBase());
-        serverInput.setHint("http://IP:PORT");
+        serverInput.setHint("https://IP أو https://domain");
         serverInput.setTextColor(TEXT);
         serverInput.setHintTextColor(MUTED);
 
@@ -1159,6 +1160,10 @@ public class ProfessionalEditorActivity extends Activity {
                     serverInput.setError("أدخل عنوان السيرفر");
                     return;
                 }
+                if (!value.startsWith("https://")) {
+                    serverInput.setError("استخدم HTTPS فقط");
+                    return;
+                }
                 api.setServerBase(value);
                 api.setApiKey(key);
                 getSharedPreferences("editor_settings", MODE_PRIVATE)
@@ -1176,6 +1181,10 @@ public class ProfessionalEditorActivity extends Activity {
                 String key = keyInput.getText().toString().trim();
                 if (value.isEmpty()) {
                     serverInput.setError("أدخل عنوان السيرفر");
+                    return;
+                }
+                if (!value.startsWith("https://")) {
+                    serverInput.setError("استخدم HTTPS فقط");
                     return;
                 }
 
