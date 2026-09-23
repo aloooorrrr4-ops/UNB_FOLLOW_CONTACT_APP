@@ -2618,7 +2618,7 @@ public class ProfessionalEditorActivity extends Activity {
         String fmt = format == null ? "png" : format.toLowerCase();
         if (!("png".equals(fmt) || "jpg".equals(fmt) ||
                 "jpeg".equals(fmt) || "webp".equals(fmt))) {
-            toast("هذه الصيغة ستضاف في المحرك المحلي القادم");
+            toast("الصيغ المدعومة حاليًا: PNG / JPG / WEBP");
             return;
         }
 
