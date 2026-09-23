@@ -56,6 +56,10 @@ public class EditorApiClient {
         return apiKey;
     }
 
+    public void close() {
+        executor.shutdownNow();
+    }
+
     public void health(Callback<JSONObject> cb) {
         executor.execute(() -> {
             HttpURLConnection conn = null;
