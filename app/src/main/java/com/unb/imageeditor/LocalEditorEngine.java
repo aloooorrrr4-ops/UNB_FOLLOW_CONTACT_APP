@@ -186,6 +186,9 @@ public final class LocalEditorEngine {
 
     public synchronized int beginAdjustment(String operation, int requestedValue) {
         requireImage();
+        if (activeLayer().locked) {
+            throw new IllegalStateException("الطبقة مقفلة — افتح القفل أولاً");
+        }
         String op = normalizeAdjustment(operation);
 
         if (adjustmentBase == null) {
@@ -200,6 +203,9 @@ public final class LocalEditorEngine {
 
     public synchronized Bitmap previewAdjustment(String operation, int value) {
         requireImage();
+        if (activeLayer().locked) {
+            throw new IllegalStateException("الطبقة مقفلة — افتح القفل أولاً");
+        }
         String op = normalizeAdjustment(operation);
         if (adjustmentOperation == null || !op.equals(adjustmentOperation)) {
             beginAdjustment(op, committedAdjustment(op));
@@ -348,6 +354,13 @@ public final class LocalEditorEngine {
 
         if (activeLayer().locked) {
             throw new IllegalStateException("الطبقة مقفلة — افتح القفل أولاً");
+        }
+
+        // Validate user-controlled free-transform geometry before flattening.
+        // Otherwise an invalid quad could destroy the original layer model
+        // before quadTransform() gets a chance to reject it.
+        if ("quad_transform".equals(op)) {
+            validateQuadTransform(p);
         }
 
         if (isGeometryOperation(op) && layers.size() > 1) {
@@ -1389,6 +1402,34 @@ public final class LocalEditorEngine {
         selectionMask = null;
     }
 
+    private void validateQuadTransform(JSONObject p) {
+        JSONArray quad = p.optJSONArray("quad");
+        if (quad == null || quad.length() < 8) {
+            throw new IllegalArgumentException("مقابض التحويل غير مكتملة");
+        }
+
+        int w = bitmap.getWidth();
+        int h = bitmap.getHeight();
+        float[] src = new float[]{
+                0f, 0f,
+                w, 0f,
+                w, h,
+                0f, h
+        };
+        float[] dst = new float[8];
+        for (int i = 0; i < 8; i++) {
+            dst[i] = (float) quad.optDouble(i, src[i]);
+            if (!Float.isFinite(dst[i])) {
+                throw new IllegalArgumentException("إحداثيات التحويل غير صالحة");
+            }
+        }
+
+        Matrix probe = new Matrix();
+        if (!probe.setPolyToPoly(src, 0, dst, 0, 4)) {
+            throw new IllegalStateException("تعذر حساب التحويل الحر");
+        }
+    }
+
     private void quadTransform(JSONObject p) {
         JSONArray quad = p.optJSONArray("quad");
         if (quad == null || quad.length() < 8) {
@@ -1859,7 +1900,11 @@ public final class LocalEditorEngine {
 
             int deltaR = 0, deltaG = 0, deltaB = 0;
             if (heal) {
-                int sampleRadius = Math.max(1, radius / 2);
+                // Keep color matching bounded even with the 300 px brush.
+                // The paint loop still uses the full brush radius; only the
+                // average-color probes are capped because larger disks add
+                // little visual value while becoming quadratic per point.
+                int sampleRadius = Math.max(1, Math.min(radius / 2, 24));
                 int targetAvg = neighborhoodAverage(original, w, h, cx, cy, sampleRadius);
                 int sourceAvg = neighborhoodAverage(original, w, h,
                         cx + offsetX, cy + offsetY, sampleRadius);
