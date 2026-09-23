@@ -1079,6 +1079,9 @@ public class ProfessionalEditorActivity extends Activity {
             rememberColor(foregroundColor);
             if (canvas != null) {
                 canvas.setStrokePreview(brushSize, parsed);
+                if (canvas.hasTextOverlay()) {
+                    updateTextOverlayStyle();
+                }
             }
             setStatus("اللون الحالي " + foregroundColor);
         } catch (Exception e) {
@@ -1471,6 +1474,9 @@ public class ProfessionalEditorActivity extends Activity {
         foregroundColor = String.format("#%06X", (0xFFFFFF & color));
         rememberColor(foregroundColor);
         canvas.setStrokePreview(brushSize, color);
+        if (canvas.hasTextOverlay()) {
+            updateTextOverlayStyle();
+        }
         setStatus("اللون الحالي " + foregroundColor + "  •  X " + x + " Y " + y);
 
         if (colorPickerReturnTool != null) {
@@ -1797,6 +1803,15 @@ public class ProfessionalEditorActivity extends Activity {
             toast("افتح صورة أولاً");
             return;
         }
+        if (canvas != null && canvas.hasTextOverlay()) {
+            new AlertDialog.Builder(this)
+                    .setTitle("يوجد نص غير مثبت")
+                    .setMessage("ثبّت النص الحالي أو ألغِه قبل إضافة نص جديد حتى لا تفقد موضعه وتعديلاتك.")
+                    .setNegativeButton("إغلاق", null)
+                    .setPositiveButton("تثبيت الحالي", (d, w) -> commitTextOverlay())
+                    .show();
+            return;
+        }
 
         LinearLayout box = column();
         box.setPadding(dp(18), dp(8), dp(18), 0);
@@ -1874,6 +1889,10 @@ public class ProfessionalEditorActivity extends Activity {
             toast("أضف نصًا أولاً");
             return;
         }
+        if (busy) {
+            toast("انتظر انتهاء العملية الحالية ثم ثبّت النص");
+            return;
+        }
 
         JSONObject params = jsonOf(
                 "text", canvas.getTextOverlayText(),
@@ -1888,9 +1907,8 @@ public class ProfessionalEditorActivity extends Activity {
                 "color", String.format("#%08X", canvas.getTextOverlayColor())
         );
 
-        canvas.clearTextOverlay();
         applyRemote("add_text", params);
-        setStatus("تم إرسال النص للتثبيت على الطبقة");
+        setStatus("جاري تثبيت النص على الطبقة...");
     }
 
     private void showFontPickerDialog() {
