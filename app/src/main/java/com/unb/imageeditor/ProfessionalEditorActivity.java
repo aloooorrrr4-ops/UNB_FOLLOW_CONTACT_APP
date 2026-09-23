@@ -1041,6 +1041,12 @@ public class ProfessionalEditorActivity extends Activity {
             return;
         }
 
+        if ("text".equals(activeTool) && "text_select".equals(canvas.getInteractionMode())) {
+            selectDetectedTextRegion(lastImageTapX, lastImageTapY);
+            canvas.clearStrokePreview();
+            return;
+        }
+
         if ("select".equals(activeTool)) {
             if (points.length < 4) {
                 canvas.clearStrokePreview();
@@ -1252,9 +1258,17 @@ public class ProfessionalEditorActivity extends Activity {
                     detectedTextRegions.clear();
                     detectedTextRegions.addAll(regions);
                     selectedTextRegion = null;
-                    if (canvas != null) canvas.setDetectedTextRegions(regions);
+                    recognizedText = "";
+                    recognizedTextConfidence = 0;
+                    if (canvas != null) {
+                        canvas.setDetectedTextRegions(regions);
+                        canvas.setInteractionMode("text_select");
+                        canvas.setPointerActionEnabled(pointerWorkEnabled);
+                        canvas.showPointerNow();
+                    }
                     setBusy(false);
-                    setStatus("تم اكتشاف " + regions.size() + " منطقة نص — اضغط على الإطار المطلوب");
+                    setStatus("تم اكتشاف " + regions.size() +
+                            " منطقة نص — حرّك المؤشر داخل النص ثم حدده");
                     addHistory("كشف النص");
                 });
             } catch (Exception e) {
@@ -1281,6 +1295,8 @@ public class ProfessionalEditorActivity extends Activity {
         }
 
         selectedTextRegion = best == null ? null : new RectF(best);
+        recognizedText = "";
+        recognizedTextConfidence = 0;
         if (canvas != null) canvas.setSelectedTextRegion(selectedTextRegion);
 
         if (selectedTextRegion == null) {
@@ -1290,6 +1306,205 @@ public class ProfessionalEditorActivity extends Activity {
                     Math.round(selectedTextRegion.width()) + "×" +
                     Math.round(selectedTextRegion.height()));
         }
+    }
+
+    private void selectTextAtPointer() {
+        if (canvas == null) return;
+        float[] p = canvas.getPointerImagePosition();
+        if (p == null || p.length < 2) {
+            toast("المؤشر غير جاهز");
+            return;
+        }
+        selectDetectedTextRegion(p[0], p[1]);
+    }
+
+    private void recognizeSelectedText(boolean openEditorAfter) {
+        if (selectedTextRegion == null) {
+            toast("حدد النص بالمؤشر أولاً");
+            return;
+        }
+        if (busy) return;
+
+        RectF region = new RectF(selectedTextRegion);
+        setBusy(true);
+        setStatus("جاري التعرف على النص محليًا...");
+
+        localExecutor.execute(() -> {
+            try {
+                LocalOcrEngine.Result result = ocrEngine.recognize(localEngine.current(), region);
+                runOnUiThread(() -> {
+                    setBusy(false);
+                    recognizedText = result.text;
+                    recognizedTextConfidence = result.confidence;
+
+                    if (recognizedText.isEmpty()) {
+                        setStatus("لم يتمكن OCR من قراءة النص المحدد");
+                        toast("لم يتم التعرف على نص واضح");
+                        if (openEditorAfter) showEditRecognizedTextDialog("");
+                        return;
+                    }
+
+                    setStatus("OCR " + result.confidence + "% • " + shortText(recognizedText));
+                    if (openEditorAfter) {
+                        showEditRecognizedTextDialog(recognizedText);
+                    } else {
+                        showRecognizedTextDialog(result);
+                    }
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    setBusy(false);
+                    setStatus("فشل التعرف على النص");
+                    toast(shortText(e.getMessage()));
+                });
+            }
+        });
+    }
+
+    private void showRecognizedTextDialog(LocalOcrEngine.Result result) {
+        TextView value = label(result.text.isEmpty() ? "لم يتم التعرف على نص" : result.text,
+                15, TEXT, false);
+        value.setPadding(dp(18), dp(16), dp(18), dp(16));
+        value.setTextIsSelectable(true);
+
+        new AlertDialog.Builder(this)
+                .setTitle("النص المكتشف • دقة " + result.confidence + "%")
+                .setView(value)
+                .setNegativeButton("إغلاق", null)
+                .setPositiveButton("تعديل", (d, w) ->
+                        showEditRecognizedTextDialog(result.text))
+                .show();
+    }
+
+    private void showEditRecognizedTextDialog(String initialText) {
+        if (selectedTextRegion == null) {
+            toast("حدد النص أولاً");
+            return;
+        }
+
+        LinearLayout box = column();
+        box.setPadding(dp(18), dp(8), dp(18), 0);
+
+        EditText textInput = new EditText(this);
+        textInput.setHint("النص الجديد");
+        textInput.setText(initialText == null ? "" : initialText);
+        textInput.setTextColor(TEXT);
+        textInput.setHintTextColor(MUTED);
+        textInput.setInputType(InputType.TYPE_CLASS_TEXT |
+                InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        textInput.setMinLines(2);
+        box.addView(textInput);
+
+        EditText sizeInput = new EditText(this);
+        sizeInput.setHint("حجم الخط");
+        int suggestedSize = Math.max(8, Math.round(selectedTextRegion.height() * 0.70f));
+        sizeInput.setText(String.valueOf(suggestedSize));
+        sizeInput.setTextColor(TEXT);
+        sizeInput.setHintTextColor(MUTED);
+        sizeInput.setInputType(InputType.TYPE_CLASS_NUMBER |
+                InputType.TYPE_NUMBER_FLAG_DECIMAL);
+        box.addView(sizeInput);
+
+        TextView color = label("لون النص " + foregroundColor, 12, TEXT, true);
+        color.setTextDirection(View.TEXT_DIRECTION_LTR);
+        color.setLayoutDirection(View.LAYOUT_DIRECTION_LTR);
+        color.setPadding(dp(6), dp(6), dp(6), dp(6));
+        box.addView(color);
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("تعديل النص المحدد")
+                .setView(box)
+                .setNegativeButton("إلغاء", null)
+                .setNeutralButton("حذف", null)
+                .setPositiveButton("استبدال", null)
+                .create();
+
+        dialog.setOnShowListener(ignored -> {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+                double size = suggestedSize;
+                try {
+                    size = Double.parseDouble(sizeInput.getText().toString());
+                } catch (Exception ignoredSize) {}
+
+                String replacement = textInput.getText().toString();
+                dialog.dismiss();
+                replaceSelectedTextRegion(replacement, size);
+            });
+
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> {
+                dialog.dismiss();
+                deleteSelectedTextRegion();
+            });
+        });
+
+        dialog.show();
+    }
+
+    private void replaceSelectedTextRegion(String replacement, double size) {
+        if (selectedTextRegion == null) return;
+
+        RectF region = new RectF(selectedTextRegion);
+        String background = sampleRegionBackground(region);
+
+        applyRemote("replace_text_region", jsonOf(
+                "x", Math.round(region.left),
+                "y", Math.round(region.top),
+                "width", Math.max(1, Math.round(region.width())),
+                "height", Math.max(1, Math.round(region.height())),
+                "text", replacement == null ? "" : replacement,
+                "size", size,
+                "color", foregroundColor,
+                "background", background
+        ));
+    }
+
+    private void deleteSelectedTextRegion() {
+        if (selectedTextRegion == null) {
+            toast("حدد النص أولاً");
+            return;
+        }
+        replaceSelectedTextRegion("", Math.max(8, selectedTextRegion.height() * 0.7));
+    }
+
+    private String sampleRegionBackground(RectF region) {
+        if (canvas == null || canvas.getBitmap() == null) return "#FFFFFF";
+        Bitmap bitmap = canvas.getBitmap();
+
+        int left = Math.max(0, Math.min(bitmap.getWidth() - 1, Math.round(region.left)));
+        int top = Math.max(0, Math.min(bitmap.getHeight() - 1, Math.round(region.top)));
+        int right = Math.max(left, Math.min(bitmap.getWidth() - 1, Math.round(region.right)));
+        int bottom = Math.max(top, Math.min(bitmap.getHeight() - 1, Math.round(region.bottom)));
+
+        long rr = 0, gg = 0, bb = 0, count = 0;
+        int stepX = Math.max(1, (right - left) / 24);
+        int stepY = Math.max(1, (bottom - top) / 12);
+        int pad = 2;
+
+        int yTop = Math.max(0, top - pad);
+        int yBottom = Math.min(bitmap.getHeight() - 1, bottom + pad);
+        for (int x = left; x <= right; x += stepX) {
+            int c1 = bitmap.getPixel(x, yTop);
+            int c2 = bitmap.getPixel(x, yBottom);
+            rr += Color.red(c1) + Color.red(c2);
+            gg += Color.green(c1) + Color.green(c2);
+            bb += Color.blue(c1) + Color.blue(c2);
+            count += 2;
+        }
+
+        int xLeft = Math.max(0, left - pad);
+        int xRight = Math.min(bitmap.getWidth() - 1, right + pad);
+        for (int y = top; y <= bottom; y += stepY) {
+            int c1 = bitmap.getPixel(xLeft, y);
+            int c2 = bitmap.getPixel(xRight, y);
+            rr += Color.red(c1) + Color.red(c2);
+            gg += Color.green(c1) + Color.green(c2);
+            bb += Color.blue(c1) + Color.blue(c2);
+            count += 2;
+        }
+
+        if (count == 0) return "#FFFFFF";
+        int color = Color.rgb((int) (rr / count), (int) (gg / count), (int) (bb / count));
+        return String.format("#%06X", 0xFFFFFF & color);
     }
 
     private void cropSelectedTextRegion() {
@@ -1374,7 +1589,7 @@ public class ProfessionalEditorActivity extends Activity {
                             "y", Math.round(y),
                             "size", size,
                             "font", "Sans",
-                            "color", "#ffffff"
+                            "color", foregroundColor
                     ));
                 }));
         dialog.show();
