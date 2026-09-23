@@ -23,6 +23,7 @@ import android.view.WindowInsets;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.HorizontalScrollView;
+import android.widget.GridLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
@@ -59,6 +60,7 @@ public class ProfessionalEditorActivity extends Activity {
     private EditorCanvasView canvas;
     private final LocalEditorEngine localEngine = new LocalEditorEngine();
     private final LocalTextRegionDetector textRegionDetector = new LocalTextRegionDetector();
+    private LocalOcrEngine ocrEngine;
     private final ExecutorService localExecutor = Executors.newSingleThreadExecutor();
     private String projectId;
     private byte[] sourceBytes;
@@ -86,19 +88,28 @@ public class ProfessionalEditorActivity extends Activity {
     private int brushSize = 45;
     private int brushOpacity = 100;
     private int pointerOffsetDp = 92;
+    private boolean pointerWorkEnabled = false;
+    private String eraseFillMode = "eraser";
+    private boolean eraserTransparent = true;
+    private String colorPickerReturnTool = null;
+    private String colorPickerReturnLabel = null;
     private int brightnessValue = 0;
     private int contrastValue = 0;
     private int saturationValue = 0;
     private String foregroundColor = "#ffffff";
     private final List<RectF> detectedTextRegions = new ArrayList<>();
     private RectF selectedTextRegion;
+    private String recognizedText = "";
+    private int recognizedTextConfidence = 0;
     private float cloneSourceX = Float.NaN;
     private float cloneSourceY = Float.NaN;
     private float cropAspectRatio = 0f;
+    private String gradientType = "linear";
     private byte[] pendingExportBytes;
     private String pendingExportName = "export.png";
 
     private final List<String> history = new ArrayList<>();
+    private final List<String> recentColors = new ArrayList<>();
     private boolean busy = false;
     private String pendingHistoryAction = null;
     private final AtomicInteger adjustmentGeneration = new AtomicInteger();
@@ -112,6 +123,7 @@ public class ProfessionalEditorActivity extends Activity {
         getWindow().setNavigationBarColor(Color.rgb(14, 16, 19));
 
         desktopLayout = isDesktopLayout();
+        ocrEngine = new LocalOcrEngine(this);
 
         LinearLayout root = column();
         root.setBackgroundColor(BG);
@@ -279,6 +291,7 @@ public class ProfessionalEditorActivity extends Activity {
             }
         });
         v.setPointerOffsetDp(pointerOffsetDp);
+        v.setPointerActionEnabled(pointerWorkEnabled);
         return v;
     }
 
@@ -302,8 +315,7 @@ public class ProfessionalEditorActivity extends Activity {
         addTool(rail, "perspective", "منظور");
         addTool(rail, "brush", "فرشاة");
         addTool(rail, "pencil", "قلم");
-        addTool(rail, "eraser", "ممحاة");
-        addTool(rail, "fill", "تعبئة");
+        addTool(rail, "erase_fill", "ممحاة/تعبئة");
         addTool(rail, "gradient", "تدرج");
         addTool(rail, "text", "نص");
         addTool(rail, "clone", "استنساخ");
@@ -576,7 +588,9 @@ public class ProfessionalEditorActivity extends Activity {
 
         activeTool = id;
         if (canvas != null) {
-            canvas.setInteractionMode(id);
+            String canvasMode = "erase_fill".equals(id) ? eraseFillMode : id;
+            canvas.setInteractionMode(canvasMode);
+            canvas.setPointerActionEnabled(pointerWorkEnabled);
             canvas.setStrokePreview(brushSize, parseColorSafe(foregroundColor));
         }
         if (toolOptions == null) return;
@@ -598,7 +612,53 @@ public class ProfessionalEditorActivity extends Activity {
             toolOptions.addView(toolTitle);
         }
 
-        if (Arrays.asList("brush", "pencil", "eraser", "clone", "heal", "smudge", "dodge_burn").contains(id)) {
+        if ("erase_fill".equals(id)) {
+            toolOptions.addView(actionButton("ممحاة", v -> {
+                eraseFillMode = "eraser";
+                if (canvas != null) {
+                    canvas.setInteractionMode("eraser");
+                    canvas.setPointerActionEnabled(pointerWorkEnabled);
+                    canvas.showPointerNow();
+                }
+                setStatus("وضع الممحاة");
+            }));
+            toolOptions.addView(actionButton("تعبئة", v -> {
+                eraseFillMode = "fill";
+                if (canvas != null) {
+                    canvas.setInteractionMode("fill");
+                    canvas.setPointerActionEnabled(pointerWorkEnabled);
+                    canvas.showPointerNow();
+                }
+                setStatus("وضع التعبئة");
+            }));
+
+            addLiveSlider(toolOptions, "الحجم", 1, 300, brushSize, value -> {
+                brushSize = value;
+                if (canvas != null) {
+                    canvas.setStrokePreview(brushSize, parseColorSafe(foregroundColor));
+                }
+            });
+            addLiveSlider(toolOptions, "العتامة", 0, 100, brushOpacity,
+                    value -> brushOpacity = value);
+            addLiveSlider(toolOptions, "ارتفاع الرأس", 48, 160, pointerOffsetDp, value -> {
+                pointerOffsetDp = value;
+                if (canvas != null) canvas.setPointerOffsetDp(pointerOffsetDp);
+            });
+
+            toolOptions.addView(actionButton(
+                    eraserTransparent ? "مسح شفاف ✓" : "مسح شفاف",
+                    v -> {
+                        eraserTransparent = !eraserTransparent;
+                        showTool("erase_fill", "ممحاة/تعبئة", null);
+                    }));
+
+            toolOptions.addView(actionButton("اختيار لون", v ->
+                    showColorPaletteDialog("لون الممحاة / التعبئة", "erase_fill", "ممحاة/تعبئة")));
+            toolOptions.addView(actionButton("التعرف من الصورة", v ->
+                    startColorPickFor("erase_fill", "ممحاة/تعبئة")));
+
+            addPointerModeControls(toolOptions);
+        } else if (Arrays.asList("brush", "pencil", "clone", "heal", "smudge", "dodge_burn").contains(id)) {
             addLiveSlider(toolOptions, "الحجم", 1, 300, brushSize, value -> {
                 brushSize = value;
                 if (canvas != null) {
@@ -614,7 +674,10 @@ public class ProfessionalEditorActivity extends Activity {
                 if (canvas != null) canvas.setPointerOffsetDp(pointerOffsetDp);
             });
             toolOptions.addView(actionButton("اللون " + foregroundColor, v ->
-                    showTool("color_picker", "اختيار لون", null)));
+                    showColorPaletteDialog("اختيار اللون", id, label)));
+            toolOptions.addView(actionButton("التعرف من الصورة", v ->
+                    startColorPickFor(id, label)));
+            addPointerModeControls(toolOptions);
 
             if ("clone".equals(id) || "heal".equals(id)) {
                 toolOptions.addView(actionButton("تحديد المصدر", v -> {
@@ -639,14 +702,34 @@ public class ProfessionalEditorActivity extends Activity {
 
             toolOptions.addView(actionButton("+ إضافة نص", v ->
                     showAddTextDialog(lastImageTapX, lastImageTapY)));
+            toolOptions.addView(actionButton("اكتشاف النصوص", v -> detectTextRegions()));
+            toolOptions.addView(actionButton("تحديد عند المؤشر", v -> selectTextAtPointer()));
+            toolOptions.addView(actionButton("تعرف على المحدد", v -> recognizeSelectedText(false)));
+            toolOptions.addView(actionButton("تعديل المحدد", v -> recognizeSelectedText(true)));
+            toolOptions.addView(actionButton("قص المحدد", v -> cropSelectedTextRegion()));
+            toolOptions.addView(actionButton("حذف المحدد", v -> deleteSelectedTextRegion()));
+
+            toolOptions.addView(actionButton("لون النص", v ->
+                    showColorPaletteDialog("لون النص", "text", "نص")));
+            toolOptions.addView(actionButton("التعرف على اللون", v ->
+                    startColorPickFor("text", "نص")));
             toolOptions.addView(actionButton("الخطوط", v -> {
                 openInspectorTab("resources");
                 loadResources("fonts");
             }));
-            toolOptions.addView(actionButton("RTL / LTR", v ->
-                    toast("اتجاه النص سيصبح قابلًا للتبديل في محرك النص V2")));
-            toolOptions.addView(actionButton("لون النص", v ->
-                    toast("لون النص الحالي " + foregroundColor)));
+
+            addPointerModeControls(toolOptions);
+
+            TextView textState = label(
+                    selectedTextRegion == null
+                            ? "اكتشف النصوص ثم حرّك المؤشر داخل النص المطلوب."
+                            : ("المحدد " + Math.round(selectedTextRegion.width()) + "×" +
+                               Math.round(selectedTextRegion.height()) +
+                               (recognizedText.isEmpty() ? "" :
+                                       " • OCR " + recognizedTextConfidence + "%")),
+                    11, MUTED, false);
+            textState.setPadding(dp(10), 0, dp(10), 0);
+            toolOptions.addView(textState, new LinearLayout.LayoutParams(dp(260), dp(82)));
         } else if ("color_picker".equals(id)) {
             addLiveSlider(toolOptions, "ارتفاع الرأس", 48, 160, pointerOffsetDp, value -> {
                 pointerOffsetDp = value;
@@ -659,7 +742,9 @@ public class ProfessionalEditorActivity extends Activity {
             colorInfo.setTextColor(colorLuminance(parseColorSafe(foregroundColor)) > 150
                     ? Color.BLACK : Color.WHITE);
             toolOptions.addView(colorInfo, new LinearLayout.LayoutParams(dp(160), dp(72)));
-            TextView help = label("حرّك إصبعك من أسفل؛ رأس المؤشر فوق يلتقط اللون بدقة.",
+            toolOptions.addView(actionButton("التقاط اللون", v -> pickColorAtPointer()));
+            addPointerModeControls(toolOptions);
+            TextView help = label("حرّك المؤشر للمكان المطلوب ثم اضغط التقاط اللون.",
                     11, MUTED, false);
             help.setPadding(dp(10), 0, dp(10), 0);
             toolOptions.addView(help, new LinearLayout.LayoutParams(dp(240), dp(82)));
@@ -672,19 +757,6 @@ public class ProfessionalEditorActivity extends Activity {
         } else if ("saturation_adjust".equals(id)) {
             addAdjustmentSlider(toolOptions, "التشبع", "saturation", saturationValue,
                     value -> saturationValue = value);
-        } else if ("text_detect".equals(id)) {
-            toolOptions.addView(actionButton("اكتشاف النص", v -> detectTextRegions()));
-            toolOptions.addView(actionButton("قص المحدد", v -> cropSelectedTextRegion()));
-            toolOptions.addView(actionButton("مسح التحديد", v -> {
-                selectedTextRegion = null;
-                detectedTextRegions.clear();
-                if (canvas != null) canvas.clearDetectedTextRegions();
-                setStatus("تم مسح تحديد النص");
-            }));
-            TextView help = label("اكتشاف محلي لمناطق النص. اضغط على الإطار المطلوب ثم قص المحدد.",
-                    11, MUTED, false);
-            help.setPadding(dp(10), 0, dp(10), 0);
-            toolOptions.addView(help, new LinearLayout.LayoutParams(dp(250), dp(82)));
         } else if ("crop".equals(id)) {
             cropAspectRatio = 0f;
             toolOptions.addView(actionButton("يدوي", v -> {
@@ -711,6 +783,7 @@ public class ProfessionalEditorActivity extends Activity {
                 pointerOffsetDp = value;
                 if (canvas != null) canvas.setPointerOffsetDp(pointerOffsetDp);
             });
+            addPointerModeControls(toolOptions);
             TextView help = label("المس من أسفل، والقص يعمل عند رأس المؤشر فوق إصبعك",
                     11, MUTED, false);
             help.setPadding(dp(10), 0, dp(10), 0);
@@ -734,21 +807,28 @@ public class ProfessionalEditorActivity extends Activity {
             toolOptions.addView(actionButton("تكبير/تصغير", v ->
                     showResizeDialog()));
             toolOptions.addView(actionButton("منظور", v ->
-                    toast("المنظور الحر ضمن محرك V2")));
+                    showPerspectiveDialog()));
             toolOptions.addView(actionButton("إلغاء", v ->
                     setStatus("تم إلغاء التحويل")));
-        } else if ("gradient".equals(id) || "fill".equals(id)) {
+        } else if ("gradient".equals(id)) {
             addSlider(toolOptions, "العتامة", 0, 100, 100, null);
             toolOptions.addView(actionButton("لون المقدمة", v ->
-                    toast("اللون الحالي " + foregroundColor)));
-            toolOptions.addView(actionButton("لون الخلفية", v ->
-                    toast("منتقي لون الخلفية ضمن V2")));
-            if ("gradient".equals(id)) {
-                toolOptions.addView(actionButton("خطي", v ->
-                        setStatus("تدرج خطي")));
-                toolOptions.addView(actionButton("دائري", v ->
-                        toast("التدرج الدائري ضمن V2")));
-            }
+                    showColorPaletteDialog("لون التدرج", "gradient", "تدرج")));
+            toolOptions.addView(actionButton("التعرف من الصورة", v ->
+                    startColorPickFor("gradient", "تدرج")));
+            toolOptions.addView(actionButton(
+                    "linear".equals(gradientType) ? "خطي ✓" : "خطي",
+                    v -> {
+                        gradientType = "linear";
+                        showTool("gradient", "تدرج", null);
+                    }));
+            toolOptions.addView(actionButton(
+                    "radial".equals(gradientType) ? "دائري ✓" : "دائري",
+                    v -> {
+                        gradientType = "radial";
+                        showTool("gradient", "تدرج", null);
+                    }));
+            addPointerModeControls(toolOptions);
         } else {
             TextView help = label(toolHelp(id), desktopLayout ? 13 : 11, MUTED, false);
             help.setPadding(dp(10), dp(6), dp(10), dp(6));
@@ -774,6 +854,180 @@ public class ProfessionalEditorActivity extends Activity {
         }
     }
 
+    private void addPointerModeControls(LinearLayout parent) {
+        parent.addView(actionButton(pointerWorkEnabled ? "تحريك فقط" : "تحريك فقط ✓", v -> {
+            pointerWorkEnabled = false;
+            if (canvas != null) {
+                canvas.setPointerActionEnabled(false);
+                canvas.showPointerNow();
+            }
+            setStatus("تحريك المؤشر فقط — بدون تنفيذ");
+        }));
+        parent.addView(actionButton(pointerWorkEnabled ? "تحريك + عمل ✓" : "تحريك + عمل", v -> {
+            pointerWorkEnabled = true;
+            if (canvas != null) {
+                canvas.setPointerActionEnabled(true);
+                canvas.showPointerNow();
+            }
+            setStatus("تحريك المؤشر مع تنفيذ الأداة");
+        }));
+    }
+
+    private void startColorPickFor(String returnTool, String returnLabel) {
+        colorPickerReturnTool = returnTool;
+        colorPickerReturnLabel = returnLabel;
+        pointerWorkEnabled = false;
+        showTool("color_picker", "اختيار لون", null);
+        if (canvas != null) {
+            canvas.setPointerActionEnabled(false);
+            canvas.showPointerNow();
+        }
+        setStatus("حرّك المؤشر فوق اللون ثم اضغط التقاط اللون");
+    }
+
+    private void pickColorAtPointer() {
+        if (canvas == null) return;
+        float[] p = canvas.getPointerImagePosition();
+        if (p == null || p.length < 2) {
+            toast("المؤشر غير جاهز");
+            return;
+        }
+        pickLocalColor(p[0], p[1]);
+    }
+
+    private void rememberColor(String color) {
+        if (color == null) return;
+        String normalized = color.toUpperCase();
+        recentColors.remove(normalized);
+        recentColors.add(0, normalized);
+        while (recentColors.size() > 8) recentColors.remove(recentColors.size() - 1);
+    }
+
+    private void applyForegroundColor(String color) {
+        try {
+            int parsed = Color.parseColor(color);
+            foregroundColor = String.format("#%06X", 0xFFFFFF & parsed);
+            rememberColor(foregroundColor);
+            if (canvas != null) {
+                canvas.setStrokePreview(brushSize, parsed);
+            }
+            setStatus("اللون الحالي " + foregroundColor);
+        } catch (Exception e) {
+            toast("لون غير صحيح");
+        }
+    }
+
+    private void showColorPaletteDialog(String title, String returnTool, String returnLabel) {
+        LinearLayout box = column();
+        box.setPadding(dp(16), dp(10), dp(16), dp(6));
+
+        TextView current = label("اللون الحالي  " + foregroundColor, 13, TEXT, true);
+        current.setTextDirection(View.TEXT_DIRECTION_LTR);
+        current.setLayoutDirection(View.LAYOUT_DIRECTION_LTR);
+        current.setGravity(Gravity.CENTER);
+        current.setPadding(dp(8), dp(8), dp(8), dp(8));
+        current.setBackground(rounded(parseColorSafe(foregroundColor), 10));
+        current.setTextColor(colorLuminance(parseColorSafe(foregroundColor)) > 150
+                ? Color.BLACK : Color.WHITE);
+        box.addView(current, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
+
+        GridLayout grid = new GridLayout(this);
+        grid.setColumnCount(6);
+        int[] palette = {
+                0xFFFFFFFF, 0xFFBDBDBD, 0xFF757575, 0xFF212121, 0xFF000000, 0xFFFF1744,
+                0xFFFF5252, 0xFFFF8A80, 0xFFFF9100, 0xFFFFC400, 0xFFFFFF00, 0xFFCDDC39,
+                0xFF76FF03, 0xFF00E676, 0xFF1DE9B6, 0xFF00E5FF, 0xFF40C4FF, 0xFF448AFF,
+                0xFF536DFE, 0xFF7C4DFF, 0xFFB388FF, 0xFFE040FB, 0xFFFF4081, 0xFF795548
+        };
+
+        final AlertDialog[] holder = new AlertDialog[1];
+        for (int color : palette) {
+            Button swatch = new Button(this);
+            swatch.setText("");
+            swatch.setBackground(rounded(color, 6));
+            GridLayout.LayoutParams lp = new GridLayout.LayoutParams();
+            lp.width = dp(42);
+            lp.height = dp(42);
+            lp.setMargins(dp(3), dp(3), dp(3), dp(3));
+            swatch.setLayoutParams(lp);
+            swatch.setOnClickListener(v -> {
+                applyForegroundColor(String.format("#%06X", 0xFFFFFF & color));
+                if (holder[0] != null) holder[0].dismiss();
+                if (returnTool != null) showTool(returnTool, returnLabel, null);
+            });
+            grid.addView(swatch);
+        }
+        box.addView(grid);
+
+        if (!recentColors.isEmpty()) {
+            TextView recentTitle = label("الألوان المستخدمة مؤخراً", 12, MUTED, false);
+            recentTitle.setPadding(0, dp(8), 0, dp(4));
+            box.addView(recentTitle);
+
+            HorizontalScrollView recentScroll = new HorizontalScrollView(this);
+            LinearLayout recentRow = new LinearLayout(this);
+            recentRow.setOrientation(LinearLayout.HORIZONTAL);
+            for (String rc : recentColors) {
+                Button b = new Button(this);
+                b.setText("");
+                b.setBackground(rounded(parseColorSafe(rc), 20));
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(44), dp(44));
+                lp.setMargins(dp(3), 0, dp(3), 0);
+                recentRow.addView(b, lp);
+                b.setOnClickListener(v -> {
+                    applyForegroundColor(rc);
+                    if (holder[0] != null) holder[0].dismiss();
+                    if (returnTool != null) showTool(returnTool, returnLabel, null);
+                });
+            }
+            recentScroll.addView(recentRow);
+            box.addView(recentScroll, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(52)));
+        }
+
+        EditText hex = new EditText(this);
+        hex.setHint("#RRGGBB");
+        hex.setText(foregroundColor);
+        hex.setTextColor(TEXT);
+        hex.setHintTextColor(MUTED);
+        hex.setSingleLine(true);
+        hex.setTextDirection(View.TEXT_DIRECTION_LTR);
+        hex.setLayoutDirection(View.LAYOUT_DIRECTION_LTR);
+        hex.setGravity(Gravity.CENTER);
+        box.addView(hex);
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setView(box)
+                .setNegativeButton("إلغاء", null)
+                .setNeutralButton("من الصورة", null)
+                .setPositiveButton("تم", null)
+                .create();
+        holder[0] = dialog;
+
+        dialog.setOnShowListener(ignored -> {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+                String value = hex.getText().toString().trim();
+                if (!value.startsWith("#")) value = "#" + value;
+                try {
+                    Color.parseColor(value);
+                    applyForegroundColor(value);
+                    dialog.dismiss();
+                    if (returnTool != null) showTool(returnTool, returnLabel, null);
+                } catch (Exception e) {
+                    hex.setError("مثال: #2B2E33");
+                }
+            });
+
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> {
+                dialog.dismiss();
+                startColorPickFor(returnTool, returnLabel);
+            });
+        });
+        dialog.show();
+    }
+
     private void handleCanvasStroke(float[] points) {
         if (canvas == null || points == null || points.length < 2) return;
 
@@ -794,6 +1048,12 @@ public class ProfessionalEditorActivity extends Activity {
 
         if ("color_picker".equals(activeTool)) {
             pickLocalColor(lastImageTapX, lastImageTapY);
+            canvas.clearStrokePreview();
+            return;
+        }
+
+        if ("text".equals(activeTool) && "text_select".equals(canvas.getInteractionMode())) {
+            selectDetectedTextRegion(lastImageTapX, lastImageTapY);
             canvas.clearStrokePreview();
             return;
         }
@@ -869,7 +1129,7 @@ public class ProfessionalEditorActivity extends Activity {
                     "y1", points[1],
                     "x2", points[points.length - 2],
                     "y2", points[points.length - 1],
-                    "type", "linear",
+                    "type", gradientType,
                     "foreground", foregroundColor,
                     "background", "#000000"
             ));
@@ -896,6 +1156,26 @@ public class ProfessionalEditorActivity extends Activity {
             return;
         }
 
+        if ("erase_fill".equals(activeTool)) {
+            if ("fill".equals(eraseFillMode)) {
+                applyRemote("fill_stroke", jsonOf(
+                        "points", pointsJson(points),
+                        "size", brushSize,
+                        "opacity", brushOpacity,
+                        "color", foregroundColor
+                ));
+            } else {
+                applyRemote("eraser", jsonOf(
+                        "points", pointsJson(points),
+                        "size", brushSize,
+                        "opacity", brushOpacity,
+                        "color", foregroundColor,
+                        "transparent", eraserTransparent
+                ));
+            }
+            return;
+        }
+
         if ("brush".equals(activeTool)) {
             applyRemote("paintbrush", jsonOf(
                     "points", pointsJson(points),
@@ -906,8 +1186,8 @@ public class ProfessionalEditorActivity extends Activity {
             return;
         }
 
-        if ("pencil".equals(activeTool) || "eraser".equals(activeTool)) {
-            applyRemote(activeTool, jsonOf(
+        if ("pencil".equals(activeTool)) {
+            applyRemote("pencil", jsonOf(
                     "points", pointsJson(points),
                     "size", brushSize,
                     "opacity", brushOpacity,
@@ -958,8 +1238,17 @@ public class ProfessionalEditorActivity extends Activity {
         int y = Math.max(0, Math.min(bitmap.getHeight() - 1, Math.round(imageY)));
         int color = bitmap.getPixel(x, y);
         foregroundColor = String.format("#%06X", (0xFFFFFF & color));
+        rememberColor(foregroundColor);
         canvas.setStrokePreview(brushSize, color);
         setStatus("اللون الحالي " + foregroundColor + "  •  X " + x + " Y " + y);
+
+        if (colorPickerReturnTool != null) {
+            String returnTool = colorPickerReturnTool;
+            String returnLabel = colorPickerReturnLabel == null ? "الأداة" : colorPickerReturnLabel;
+            colorPickerReturnTool = null;
+            colorPickerReturnLabel = null;
+            showTool(returnTool, returnLabel, null);
+        }
     }
 
     private void detectTextRegions() {
@@ -980,9 +1269,17 @@ public class ProfessionalEditorActivity extends Activity {
                     detectedTextRegions.clear();
                     detectedTextRegions.addAll(regions);
                     selectedTextRegion = null;
-                    if (canvas != null) canvas.setDetectedTextRegions(regions);
+                    recognizedText = "";
+                    recognizedTextConfidence = 0;
+                    if (canvas != null) {
+                        canvas.setDetectedTextRegions(regions);
+                        canvas.setInteractionMode("text_select");
+                        canvas.setPointerActionEnabled(pointerWorkEnabled);
+                        canvas.showPointerNow();
+                    }
                     setBusy(false);
-                    setStatus("تم اكتشاف " + regions.size() + " منطقة نص — اضغط على الإطار المطلوب");
+                    setStatus("تم اكتشاف " + regions.size() +
+                            " منطقة نص — حرّك المؤشر داخل النص ثم حدده");
                     addHistory("كشف النص");
                 });
             } catch (Exception e) {
@@ -1009,6 +1306,8 @@ public class ProfessionalEditorActivity extends Activity {
         }
 
         selectedTextRegion = best == null ? null : new RectF(best);
+        recognizedText = "";
+        recognizedTextConfidence = 0;
         if (canvas != null) canvas.setSelectedTextRegion(selectedTextRegion);
 
         if (selectedTextRegion == null) {
@@ -1018,6 +1317,205 @@ public class ProfessionalEditorActivity extends Activity {
                     Math.round(selectedTextRegion.width()) + "×" +
                     Math.round(selectedTextRegion.height()));
         }
+    }
+
+    private void selectTextAtPointer() {
+        if (canvas == null) return;
+        float[] p = canvas.getPointerImagePosition();
+        if (p == null || p.length < 2) {
+            toast("المؤشر غير جاهز");
+            return;
+        }
+        selectDetectedTextRegion(p[0], p[1]);
+    }
+
+    private void recognizeSelectedText(boolean openEditorAfter) {
+        if (selectedTextRegion == null) {
+            toast("حدد النص بالمؤشر أولاً");
+            return;
+        }
+        if (busy) return;
+
+        RectF region = new RectF(selectedTextRegion);
+        setBusy(true);
+        setStatus("جاري التعرف على النص محليًا...");
+
+        localExecutor.execute(() -> {
+            try {
+                LocalOcrEngine.Result result = ocrEngine.recognize(localEngine.current(), region);
+                runOnUiThread(() -> {
+                    setBusy(false);
+                    recognizedText = result.text;
+                    recognizedTextConfidence = result.confidence;
+
+                    if (recognizedText.isEmpty()) {
+                        setStatus("لم يتمكن OCR من قراءة النص المحدد");
+                        toast("لم يتم التعرف على نص واضح");
+                        if (openEditorAfter) showEditRecognizedTextDialog("");
+                        return;
+                    }
+
+                    setStatus("OCR " + result.confidence + "% • " + shortText(recognizedText));
+                    if (openEditorAfter) {
+                        showEditRecognizedTextDialog(recognizedText);
+                    } else {
+                        showRecognizedTextDialog(result);
+                    }
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    setBusy(false);
+                    setStatus("فشل التعرف على النص");
+                    toast(shortText(e.getMessage()));
+                });
+            }
+        });
+    }
+
+    private void showRecognizedTextDialog(LocalOcrEngine.Result result) {
+        TextView value = label(result.text.isEmpty() ? "لم يتم التعرف على نص" : result.text,
+                15, TEXT, false);
+        value.setPadding(dp(18), dp(16), dp(18), dp(16));
+        value.setTextIsSelectable(true);
+
+        new AlertDialog.Builder(this)
+                .setTitle("النص المكتشف • دقة " + result.confidence + "%")
+                .setView(value)
+                .setNegativeButton("إغلاق", null)
+                .setPositiveButton("تعديل", (d, w) ->
+                        showEditRecognizedTextDialog(result.text))
+                .show();
+    }
+
+    private void showEditRecognizedTextDialog(String initialText) {
+        if (selectedTextRegion == null) {
+            toast("حدد النص أولاً");
+            return;
+        }
+
+        LinearLayout box = column();
+        box.setPadding(dp(18), dp(8), dp(18), 0);
+
+        EditText textInput = new EditText(this);
+        textInput.setHint("النص الجديد");
+        textInput.setText(initialText == null ? "" : initialText);
+        textInput.setTextColor(TEXT);
+        textInput.setHintTextColor(MUTED);
+        textInput.setInputType(InputType.TYPE_CLASS_TEXT |
+                InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        textInput.setMinLines(2);
+        box.addView(textInput);
+
+        EditText sizeInput = new EditText(this);
+        sizeInput.setHint("حجم الخط");
+        int suggestedSize = Math.max(8, Math.round(selectedTextRegion.height() * 0.70f));
+        sizeInput.setText(String.valueOf(suggestedSize));
+        sizeInput.setTextColor(TEXT);
+        sizeInput.setHintTextColor(MUTED);
+        sizeInput.setInputType(InputType.TYPE_CLASS_NUMBER |
+                InputType.TYPE_NUMBER_FLAG_DECIMAL);
+        box.addView(sizeInput);
+
+        TextView color = label("لون النص " + foregroundColor, 12, TEXT, true);
+        color.setTextDirection(View.TEXT_DIRECTION_LTR);
+        color.setLayoutDirection(View.LAYOUT_DIRECTION_LTR);
+        color.setPadding(dp(6), dp(6), dp(6), dp(6));
+        box.addView(color);
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("تعديل النص المحدد")
+                .setView(box)
+                .setNegativeButton("إلغاء", null)
+                .setNeutralButton("حذف", null)
+                .setPositiveButton("استبدال", null)
+                .create();
+
+        dialog.setOnShowListener(ignored -> {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+                double size = suggestedSize;
+                try {
+                    size = Double.parseDouble(sizeInput.getText().toString());
+                } catch (Exception ignoredSize) {}
+
+                String replacement = textInput.getText().toString();
+                dialog.dismiss();
+                replaceSelectedTextRegion(replacement, size);
+            });
+
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> {
+                dialog.dismiss();
+                deleteSelectedTextRegion();
+            });
+        });
+
+        dialog.show();
+    }
+
+    private void replaceSelectedTextRegion(String replacement, double size) {
+        if (selectedTextRegion == null) return;
+
+        RectF region = new RectF(selectedTextRegion);
+        String background = sampleRegionBackground(region);
+
+        applyRemote("replace_text_region", jsonOf(
+                "x", Math.round(region.left),
+                "y", Math.round(region.top),
+                "width", Math.max(1, Math.round(region.width())),
+                "height", Math.max(1, Math.round(region.height())),
+                "text", replacement == null ? "" : replacement,
+                "size", size,
+                "color", foregroundColor,
+                "background", background
+        ));
+    }
+
+    private void deleteSelectedTextRegion() {
+        if (selectedTextRegion == null) {
+            toast("حدد النص أولاً");
+            return;
+        }
+        replaceSelectedTextRegion("", Math.max(8, selectedTextRegion.height() * 0.7));
+    }
+
+    private String sampleRegionBackground(RectF region) {
+        if (canvas == null || canvas.getBitmap() == null) return "#FFFFFF";
+        Bitmap bitmap = canvas.getBitmap();
+
+        int left = Math.max(0, Math.min(bitmap.getWidth() - 1, Math.round(region.left)));
+        int top = Math.max(0, Math.min(bitmap.getHeight() - 1, Math.round(region.top)));
+        int right = Math.max(left, Math.min(bitmap.getWidth() - 1, Math.round(region.right)));
+        int bottom = Math.max(top, Math.min(bitmap.getHeight() - 1, Math.round(region.bottom)));
+
+        long rr = 0, gg = 0, bb = 0, count = 0;
+        int stepX = Math.max(1, (right - left) / 24);
+        int stepY = Math.max(1, (bottom - top) / 12);
+        int pad = 2;
+
+        int yTop = Math.max(0, top - pad);
+        int yBottom = Math.min(bitmap.getHeight() - 1, bottom + pad);
+        for (int x = left; x <= right; x += stepX) {
+            int c1 = bitmap.getPixel(x, yTop);
+            int c2 = bitmap.getPixel(x, yBottom);
+            rr += Color.red(c1) + Color.red(c2);
+            gg += Color.green(c1) + Color.green(c2);
+            bb += Color.blue(c1) + Color.blue(c2);
+            count += 2;
+        }
+
+        int xLeft = Math.max(0, left - pad);
+        int xRight = Math.min(bitmap.getWidth() - 1, right + pad);
+        for (int y = top; y <= bottom; y += stepY) {
+            int c1 = bitmap.getPixel(xLeft, y);
+            int c2 = bitmap.getPixel(xRight, y);
+            rr += Color.red(c1) + Color.red(c2);
+            gg += Color.green(c1) + Color.green(c2);
+            bb += Color.blue(c1) + Color.blue(c2);
+            count += 2;
+        }
+
+        if (count == 0) return "#FFFFFF";
+        int color = Color.rgb((int) (rr / count), (int) (gg / count), (int) (bb / count));
+        return String.format("#%06X", 0xFFFFFF & color);
     }
 
     private void cropSelectedTextRegion() {
@@ -1102,7 +1600,7 @@ public class ProfessionalEditorActivity extends Activity {
                             "y", Math.round(y),
                             "size", size,
                             "font", "Sans",
-                            "color", "#ffffff"
+                            "color", foregroundColor
                     ));
                 }));
         dialog.show();
@@ -1365,110 +1863,143 @@ public class ProfessionalEditorActivity extends Activity {
         if (layerList == null) return;
         layerList.removeAllViews();
 
-        if (!desktopLayout) {
-            addContextTitle(layerList, "الطبقات");
-            layerList.addView(actionButton("+ طبقة", v ->
-                    toast("الطبقات المتعددة ضمن V2")));
-            layerList.addView(actionButton("+ مجموعة", v ->
-                    toast("مجموعات الطبقات ضمن V2")));
-            layerList.addView(actionButton("+ قناع", v ->
-                    toast("Layer Masks ضمن V2")));
-
-            if (localEngine.hasImage()) {
-                addContextCard(layerList,
-                        "◉ Background\n100% • " +
-                                localEngine.width() + "×" + localEngine.height());
-            } else {
-                addContextCard(layerList, "افتح صورة أولاً");
-            }
-            return;
-        }
-
-        layerList.addView(label("الطبقات", 17, TEXT, true));
-
-        LinearLayout actions = new LinearLayout(this);
-        actions.setOrientation(LinearLayout.HORIZONTAL);
-        actions.addView(actionButton("+ طبقة", v ->
-                toast("الطبقات المتعددة قادمة في المحرك المحلي V2")),
-                new LinearLayout.LayoutParams(0, dp(44), 1f));
-        actions.addView(actionButton("+ مجموعة", v ->
-                toast("مجموعات الطبقات قادمة في V2")),
-                new LinearLayout.LayoutParams(0, dp(44), 1f));
-        actions.addView(actionButton("+ قناع", v ->
-                toast("Layer Masks قادمة في V2")),
-                new LinearLayout.LayoutParams(0, dp(44), 1f));
-        layerList.addView(actions);
-
         if (!localEngine.hasImage()) {
+            if (!desktopLayout) addContextTitle(layerList, "الطبقات");
+            else layerList.addView(label("الطبقات", 17, TEXT, true));
             layerList.addView(label("افتح صورة لعرض الطبقات", 13, MUTED, false));
             return;
         }
 
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(7), dp(5), dp(7), dp(5));
-        row.setBackground(rounded(Color.rgb(44, 49, 57), 8));
+        if (!desktopLayout) {
+            addContextTitle(layerList, "الطبقات");
+        } else {
+            layerList.addView(label("الطبقات", 17, TEXT, true));
+        }
 
-        Button eye = flatButton("◉", 14);
-        TextView name = label("▤ Background", 13, TEXT, false);
-        TextView meta = label("100%  •  " + localEngine.width() + "×" + localEngine.height(),
-                11, MUTED, false);
-        meta.setGravity(Gravity.END);
+        layerList.addView(actionButton("+ طبقة", v ->
+                applyRemote("add_layer", jsonOf("name",
+                        "Layer " + (localEngine.layerInfo().size() + 1)))));
+        layerList.addView(actionButton("نسخ", v ->
+                applyRemote("duplicate_layer", new JSONObject())));
+        layerList.addView(actionButton("حذف", v ->
+                applyRemote("delete_layer", new JSONObject())));
+        layerList.addView(actionButton("دمج لأسفل", v ->
+                applyRemote("merge_down", new JSONObject())));
+        layerList.addView(actionButton("Flatten", v ->
+                applyRemote("flatten", new JSONObject())));
 
-        row.addView(eye, new LinearLayout.LayoutParams(dp(42), dp(36)));
-        row.addView(name, new LinearLayout.LayoutParams(0, dp(36), 1f));
-        row.addView(meta, new LinearLayout.LayoutParams(dp(132), dp(36)));
-        layerList.addView(row);
+        List<LocalEditorEngine.LayerInfo> layers = localEngine.layerInfo();
+        LocalEditorEngine.LayerInfo active = null;
+
+        for (LocalEditorEngine.LayerInfo info : layers) {
+            if (info.active) active = info;
+
+            if (!desktopLayout) {
+                String text = (info.active ? "● " : "○ ") +
+                        info.name + "\n" +
+                        Math.round(info.opacity * 100f / 255f) + "%";
+                Button card = actionButton(text, v ->
+                        applyRemote("set_active_layer", json("index", info.index)));
+                if (info.active) card.setBackground(rounded(Color.rgb(44, 83, 145), 8));
+                layerList.addView(card);
+
+                Button eye = actionButton(info.visible ? "👁" : "⊘", v ->
+                        applyRemote("toggle_layer_visibility", json("index", info.index)));
+                layerList.addView(eye);
+            } else {
+                LinearLayout row = new LinearLayout(this);
+                row.setOrientation(LinearLayout.HORIZONTAL);
+                row.setGravity(Gravity.CENTER_VERTICAL);
+                row.setPadding(dp(7), dp(5), dp(7), dp(5));
+                row.setBackground(rounded(
+                        info.active ? Color.rgb(44, 83, 145) : Color.rgb(44, 49, 57), 8));
+
+                Button eye = flatButton(info.visible ? "◉" : "○", 14);
+                eye.setOnClickListener(v ->
+                        applyRemote("toggle_layer_visibility", json("index", info.index)));
+
+                TextView name = label(info.name, 13, TEXT, info.active);
+                name.setOnClickListener(v ->
+                        applyRemote("set_active_layer", json("index", info.index)));
+
+                TextView meta = label(Math.round(info.opacity * 100f / 255f) + "%",
+                        11, MUTED, false);
+                meta.setGravity(Gravity.END);
+
+                row.addView(eye, new LinearLayout.LayoutParams(dp(42), dp(36)));
+                row.addView(name, new LinearLayout.LayoutParams(0, dp(36), 1f));
+                row.addView(meta, new LinearLayout.LayoutParams(dp(64), dp(36)));
+                layerList.addView(row);
+            }
+        }
+
+        if (active != null) {
+            int initialOpacity = Math.round(active.opacity * 100f / 255f);
+            int activeIndex = active.index;
+            addSlider(layerList, "عتامة الطبقة", 0, 100, initialOpacity, value ->
+                    applyRemote("set_layer_opacity", jsonOf(
+                            "index", activeIndex,
+                            "opacity", Math.round(value * 255f / 100f))));
+        }
     }
 
     private void refreshChannels() {
         if (channelList == null) return;
         channelList.removeAllViews();
 
-        if (!desktopLayout) {
-            addContextTitle(channelList, "القنوات");
-            if (!localEngine.hasImage()) {
-                addContextCard(channelList, "افتح صورة أولاً");
-                return;
-            }
-            addContextCard(channelList, "◉ RGB");
-            addContextCard(channelList, "R");
-            addContextCard(channelList, "G");
-            addContextCard(channelList, "B");
-            addContextCard(channelList, "Alpha");
-            return;
-        }
-
-        channelList.addView(label("القنوات Channels", 17, TEXT, true));
+        if (!desktopLayout) addContextTitle(channelList, "القنوات");
+        else channelList.addView(label("القنوات Channels", 17, TEXT, true));
 
         if (!localEngine.hasImage()) {
             channelList.addView(label("افتح صورة لعرض القنوات", 13, MUTED, false));
             return;
         }
 
-        channelList.addView(label("◉ RGB", 13, TEXT, false));
-        channelList.addView(label("   R  •  G  •  B  •  Alpha", 12, MUTED, false));
-        channelList.addView(label("قنوات Alpha المخصصة ستضاف في V2.", 12, MUTED, false));
+        channelList.addView(actionButton("R", v ->
+                applyRemote("channel_extract", json("channel", "R"))));
+        channelList.addView(actionButton("G", v ->
+                applyRemote("channel_extract", json("channel", "G"))));
+        channelList.addView(actionButton("B", v ->
+                applyRemote("channel_extract", json("channel", "B"))));
+        channelList.addView(actionButton("Alpha", v ->
+                applyRemote("channel_extract", json("channel", "A"))));
+
+        TextView note = label(
+                "استخراج القناة يحولها إلى صورة رمادية ويمكن التراجع عنه.",
+                11, MUTED, false);
+        note.setPadding(dp(8), 0, dp(8), 0);
+        if (!desktopLayout) {
+            channelList.addView(note, new LinearLayout.LayoutParams(dp(230), dp(72)));
+        } else {
+            channelList.addView(note);
+        }
     }
 
     private void refreshPaths() {
         if (pathList == null) return;
         pathList.removeAllViews();
 
-        if (!desktopLayout) {
-            addContextTitle(pathList, "المسارات");
-            pathList.addView(actionButton("+ مسار", v ->
-                    toast("Bezier Paths ضمن V2")));
-            addContextCard(pathList, "تحويل النص لمسار");
-            addContextCard(pathList, "Bezier");
-            return;
-        }
+        if (!desktopLayout) addContextTitle(pathList, "المسارات");
+        else pathList.addView(label("المسارات Paths", 17, TEXT, true));
 
-        pathList.addView(label("المسارات Paths", 17, TEXT, true));
-        pathList.addView(label(
-                "المحرك Offline يعمل الآن. مسارات Bezier والتحويل من النص إلى مسار ضمن V2.",
-                12, MUTED, false));
+        pathList.addView(actionButton("مسار حر", v ->
+                showTool("free_select", "لاسو", null)));
+        pathList.addView(actionButton("مسار مستطيل", v ->
+                showTool("select", "تحديد", null)));
+        pathList.addView(actionButton("تحديد نص", v -> {
+            showTool("text", "نص", null);
+            detectTextRegions();
+        }));
+
+        TextView note = label(
+                "المسار الحر والمستطيل يعملان محليًا ويمكن تحويلهما إلى تحديد.",
+                11, MUTED, false);
+        note.setPadding(dp(8), 0, dp(8), 0);
+        if (!desktopLayout) {
+            pathList.addView(note, new LinearLayout.LayoutParams(dp(250), dp(72)));
+        } else {
+            pathList.addView(note);
+        }
     }
 
     private void loadResources(String kind) {
@@ -1495,7 +2026,25 @@ public class ProfessionalEditorActivity extends Activity {
                     text = "تدرجات";
                     break;
                 case "patterns":
-                    text = "نقوش";
+                    resourceList.addView(actionButton("مربعات", v ->
+                            applyRemote("pattern_fill", jsonOf(
+                                    "style", "checker",
+                                    "foreground", foregroundColor,
+                                    "background", "#000000",
+                                    "size", 24))));
+                    resourceList.addView(actionButton("خطوط", v ->
+                            applyRemote("pattern_fill", jsonOf(
+                                    "style", "stripes",
+                                    "foreground", foregroundColor,
+                                    "background", "#000000",
+                                    "size", 24))));
+                    resourceList.addView(actionButton("نقاط", v ->
+                            applyRemote("pattern_fill", jsonOf(
+                                    "style", "dots",
+                                    "foreground", foregroundColor,
+                                    "background", "#000000",
+                                    "size", 24))));
+                    text = "نقوش محلية جاهزة";
                     break;
                 default:
                     text = "Palettes";
@@ -1530,7 +2079,25 @@ public class ProfessionalEditorActivity extends Activity {
                 message = "Linear Gradient يعمل محليًا الآن";
                 break;
             case "patterns":
-                message = "مكتبة النقوش المحلية ستضاف في V2";
+                resourceList.addView(actionButton("مربعات", v ->
+                        applyRemote("pattern_fill", jsonOf(
+                                "style", "checker",
+                                "foreground", foregroundColor,
+                                "background", "#000000",
+                                "size", 24))));
+                resourceList.addView(actionButton("خطوط", v ->
+                        applyRemote("pattern_fill", jsonOf(
+                                "style", "stripes",
+                                "foreground", foregroundColor,
+                                "background", "#000000",
+                                "size", 24))));
+                resourceList.addView(actionButton("نقاط", v ->
+                        applyRemote("pattern_fill", jsonOf(
+                                "style", "dots",
+                                "foreground", foregroundColor,
+                                "background", "#000000",
+                                "size", 24))));
+                message = "النقوش المحلية جاهزة وتطبق على الطبقة النشطة";
                 break;
             default:
                 message = "ألوان المقدمة والخلفية محلية بالكامل";
@@ -1874,13 +2441,12 @@ public class ProfessionalEditorActivity extends Activity {
         switch (group) {
             case "ملف":
                 showChoice("ملف", new String[]{
-                        "فتح صورة", "حفظ PNG", "حفظ JPG", "حفظ WEBP", "حفظ XCF"
+                        "فتح صورة", "حفظ PNG", "حفظ JPG", "حفظ WEBP"
                 }, index -> {
                     if (index == 0) chooseImage();
                     else if (index == 1) exportProject("png");
                     else if (index == 2) exportProject("jpg");
                     else if (index == 3) exportProject("webp");
-                    else if (index == 4) exportProject("xcf");
                 });
                 break;
 
@@ -1935,8 +2501,8 @@ public class ProfessionalEditorActivity extends Activity {
 
             case "طبقة":
                 showChoice("طبقة", new String[]{
-                        "فتح لوحة الطبقات", "طبقة جديدة", "مجموعة جديدة",
-                        "إضافة قناع أبيض", "دمج المرئي", "Flatten"
+                        "فتح لوحة الطبقات", "طبقة جديدة", "نسخ الطبقة",
+                        "حذف الطبقة", "دمج لأسفل", "Flatten"
                 }, index -> {
                     if (index == 0) {
                         openInspectorTab("layers");
@@ -1944,11 +2510,11 @@ public class ProfessionalEditorActivity extends Activity {
                     } else if (index == 1) {
                         applyRemote("add_layer", jsonOf("name", "Layer"));
                     } else if (index == 2) {
-                        applyRemote("add_group", jsonOf("name", "Group"));
+                        applyRemote("duplicate_layer", new JSONObject());
                     } else if (index == 3) {
-                        applyRemote("add_mask", jsonOf("type", "white"));
+                        applyRemote("delete_layer", new JSONObject());
                     } else if (index == 4) {
-                        applyRemote("merge_visible", new JSONObject());
+                        applyRemote("merge_down", new JSONObject());
                     } else {
                         applyRemote("flatten", new JSONObject());
                     }
@@ -1990,17 +2556,17 @@ public class ProfessionalEditorActivity extends Activity {
             case "أدوات":
                 showChoice("أدوات", new String[]{
                         "تحريك", "تحديد", "لاسو", "تحديد سحري", "حسب اللون",
-                        "فرشاة", "قلم", "ممحاة", "تدرج", "نص",
+                        "فرشاة", "قلم", "ممحاة/تعبئة", "تدرج", "نص",
                         "Clone", "Heal", "Smudge", "Dodge/Burn", "Color Picker"
                 }, index -> {
                     String[] ids = {
                             "move", "select", "free_select", "fuzzy_select", "color_select",
-                            "brush", "pencil", "eraser", "gradient", "text",
+                            "brush", "pencil", "erase_fill", "gradient", "text",
                             "clone", "heal", "smudge", "dodge_burn", "color_picker"
                     };
                     String[] names = {
                             "تحريك", "تحديد", "لاسو", "سحري", "حسب لون",
-                            "فرشاة", "قلم", "ممحاة", "تدرج", "نص",
+                            "فرشاة", "قلم", "ممحاة/تعبئة", "تدرج", "نص",
                             "استنساخ", "ترميم", "تلطيخ", "إضاءة", "لون"
                     };
                     if (index >= 0 && index < ids.length) showTool(ids[index], names[index], null);
@@ -2054,6 +2620,53 @@ public class ProfessionalEditorActivity extends Activity {
                     if (handler != null) handler.onChoice(which);
                 })
                 .setNegativeButton("إغلاق", null)
+                .show();
+    }
+
+    private void showPerspectiveDialog() {
+        if (!localEngine.hasImage()) {
+            toast("افتح صورة أولاً");
+            return;
+        }
+
+        LinearLayout box = column();
+        box.setPadding(dp(18), dp(8), dp(18), 0);
+
+        EditText top = new EditText(this);
+        top.setHint("تقارب الحافة العليا %");
+        top.setText("8");
+        top.setTextColor(TEXT);
+        top.setHintTextColor(MUTED);
+        top.setInputType(InputType.TYPE_CLASS_NUMBER |
+                InputType.TYPE_NUMBER_FLAG_DECIMAL);
+        box.addView(top);
+
+        EditText bottom = new EditText(this);
+        bottom.setHint("تقارب الحافة السفلى %");
+        bottom.setText("0");
+        bottom.setTextColor(TEXT);
+        bottom.setHintTextColor(MUTED);
+        bottom.setInputType(InputType.TYPE_CLASS_NUMBER |
+                InputType.TYPE_NUMBER_FLAG_DECIMAL);
+        box.addView(bottom);
+
+        new AlertDialog.Builder(this)
+                .setTitle("منظور Perspective")
+                .setView(box)
+                .setNegativeButton("إلغاء", null)
+                .setPositiveButton("تطبيق", (dialog, which) -> {
+                    try {
+                        double topPercent = Double.parseDouble(top.getText().toString());
+                        double bottomPercent = Double.parseDouble(bottom.getText().toString());
+                        double width = localEngine.width();
+                        applyRemote("perspective", jsonOf(
+                                "top_inset", width * topPercent / 100.0,
+                                "bottom_inset", width * bottomPercent / 100.0
+                        ));
+                    } catch (Exception e) {
+                        toast("أدخل نسباً صحيحة");
+                    }
+                })
                 .show();
     }
 

@@ -29,12 +29,14 @@ public class EditorCanvasView extends View {
 
     private static final Set<String> STROKE_MODES = new HashSet<>(Arrays.asList(
             "brush", "pencil", "eraser", "clone", "heal", "smudge",
-            "dodge_burn", "gradient", "select", "free_select", "crop", "color_picker"
+            "dodge_burn", "gradient", "select", "free_select", "crop", "color_picker",
+            "text_select", "fill"
     ));
 
     private static final Set<String> DETACHED_POINTER_MODES = new HashSet<>(Arrays.asList(
             "brush", "pencil", "eraser", "clone", "heal", "smudge",
-            "dodge_burn", "gradient", "select", "free_select", "crop", "color_picker"
+            "dodge_burn", "gradient", "select", "free_select", "crop", "color_picker",
+            "text_select", "fill"
     ));
 
     private final Paint checkerA = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -69,6 +71,7 @@ public class EditorCanvasView extends View {
     private float pointerHeadX;
     private float pointerHeadY;
     private boolean pointerVisible = false;
+    private boolean pointerActionEnabled = true;
 
     private final ScaleGestureDetector scaleDetector;
     private final GestureDetector gestureDetector;
@@ -177,12 +180,50 @@ public class EditorCanvasView extends View {
 
     public void setInteractionMode(String mode) {
         interactionMode = mode == null ? "move" : mode;
-        pointerVisible = false;
         clearStrokePreview();
+        if (usesDetachedPointer()) {
+            post(this::ensurePointerVisibleAtCenter);
+        } else {
+            pointerVisible = false;
+            invalidate();
+        }
     }
 
     public String getInteractionMode() {
         return interactionMode;
+    }
+
+    public void setPointerActionEnabled(boolean enabled) {
+        pointerActionEnabled = enabled;
+        if (usesDetachedPointer()) {
+            ensurePointerVisibleAtCenter();
+        }
+        invalidate();
+    }
+
+    public boolean isPointerActionEnabled() {
+        return pointerActionEnabled;
+    }
+
+    public void showPointerNow() {
+        ensurePointerVisibleAtCenter();
+    }
+
+    public float[] getPointerImagePosition() {
+        if (!pointerVisible || bitmap == null) return null;
+        return screenToImage(pointerHeadX, pointerHeadY);
+    }
+
+    private void ensurePointerVisibleAtCenter() {
+        if (!usesDetachedPointer() || getWidth() <= 0 || getHeight() <= 0) return;
+        if (!pointerVisible) {
+            pointerHeadX = getWidth() / 2f;
+            pointerHeadY = getHeight() / 2f;
+            pointerTouchX = pointerHeadX;
+            pointerTouchY = Math.min(getHeight() - dp(10), pointerHeadY + pointerOffsetPx);
+            pointerVisible = true;
+        }
+        invalidate();
     }
 
     public void setStrokePreview(float imageSizePx, int color) {
@@ -206,7 +247,10 @@ public class EditorCanvasView extends View {
         this.bitmap = bitmap;
         fitted = false;
         clearStrokePreview();
-        post(this::fitToView);
+        post(() -> {
+            fitToView();
+            ensurePointerVisibleAtCenter();
+        });
     }
 
     public void setBitmapPreserveViewport(Bitmap bitmap) {
@@ -357,7 +401,8 @@ public class EditorCanvasView extends View {
                 "clone".equals(interactionMode) ||
                 "heal".equals(interactionMode) ||
                 "smudge".equals(interactionMode) ||
-                "dodge_burn".equals(interactionMode);
+                "dodge_burn".equals(interactionMode) ||
+                "fill".equals(interactionMode);
 
         if (paintTool) {
             float radius = Math.max(dp(3), (previewStrokeSize * zoom) / 2f);
@@ -517,7 +562,9 @@ public class EditorCanvasView extends View {
     private void cancelStroke() {
         drawingStroke = false;
         strokePoints.clear();
-        pointerVisible = false;
+        if (usesDetachedPointer()) {
+            ensurePointerVisibleAtCenter();
+        }
         invalidate();
     }
 
@@ -536,6 +583,22 @@ public class EditorCanvasView extends View {
         if (!isStrokeMode()) {
             gestureDetector.onTouchEvent(event);
             return true;
+        }
+
+        if (usesDetachedPointer() && !pointerActionEnabled) {
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                case MotionEvent.ACTION_MOVE:
+                case MotionEvent.ACTION_UP:
+                    updateDetachedPointer(event.getX(), event.getY());
+                    invalidate();
+                    return true;
+                case MotionEvent.ACTION_CANCEL:
+                    invalidate();
+                    return true;
+                default:
+                    return true;
+            }
         }
 
         switch (event.getActionMasked()) {
@@ -563,7 +626,7 @@ public class EditorCanvasView extends View {
                     addStrokePoint(event.getX(), event.getY());
                     finishStroke();
                 }
-                pointerVisible = false;
+                pointerVisible = usesDetachedPointer();
                 invalidate();
                 return true;
 
