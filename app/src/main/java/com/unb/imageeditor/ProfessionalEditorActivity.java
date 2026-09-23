@@ -2789,16 +2789,19 @@ public class ProfessionalEditorActivity extends Activity {
             case "أدوات":
                 showChoice("أدوات", new String[]{
                         "تحريك", "تحديد", "لاسو", "تحديد سحري", "حسب اللون",
+                        "تحويل حر", "منظور",
                         "فرشاة", "قلم", "ممحاة/تعبئة", "تدرج", "نص",
                         "Clone", "Heal", "Smudge", "Dodge/Burn", "Color Picker"
                 }, index -> {
                     String[] ids = {
                             "move", "select", "free_select", "fuzzy_select", "color_select",
+                            "transform", "perspective",
                             "brush", "pencil", "erase_fill", "gradient", "text",
                             "clone", "heal", "smudge", "dodge_burn", "color_picker"
                     };
                     String[] names = {
                             "تحريك", "تحديد", "لاسو", "سحري", "حسب لون",
+                            "تحويل حر", "منظور",
                             "فرشاة", "قلم", "ممحاة/تعبئة", "تدرج", "نص",
                             "استنساخ", "ترميم", "تلطيخ", "إضاءة", "لون"
                     };
