@@ -30,13 +30,13 @@ public class EditorCanvasView extends View {
     private static final Set<String> STROKE_MODES = new HashSet<>(Arrays.asList(
             "brush", "pencil", "eraser", "clone", "heal", "smudge",
             "dodge_burn", "gradient", "select", "free_select", "crop", "color_picker",
-            "text_select"
+            "text_select", "fill"
     ));
 
     private static final Set<String> DETACHED_POINTER_MODES = new HashSet<>(Arrays.asList(
             "brush", "pencil", "eraser", "clone", "heal", "smudge",
             "dodge_burn", "gradient", "select", "free_select", "crop", "color_picker",
-            "text_select"
+            "text_select", "fill"
     ));
 
     private final Paint checkerA = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -401,7 +401,8 @@ public class EditorCanvasView extends View {
                 "clone".equals(interactionMode) ||
                 "heal".equals(interactionMode) ||
                 "smudge".equals(interactionMode) ||
-                "dodge_burn".equals(interactionMode);
+                "dodge_burn".equals(interactionMode) ||
+                "fill".equals(interactionMode);
 
         if (paintTool) {
             float radius = Math.max(dp(3), (previewStrokeSize * zoom) / 2f);
