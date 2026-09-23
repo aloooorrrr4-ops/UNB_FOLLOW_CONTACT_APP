@@ -23,6 +23,7 @@ import android.view.WindowInsets;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.HorizontalScrollView;
+import android.widget.GridLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
@@ -86,6 +87,11 @@ public class ProfessionalEditorActivity extends Activity {
     private int brushSize = 45;
     private int brushOpacity = 100;
     private int pointerOffsetDp = 92;
+    private boolean pointerWorkEnabled = false;
+    private String eraseFillMode = "eraser";
+    private boolean eraserTransparent = true;
+    private String colorPickerReturnTool = null;
+    private String colorPickerReturnLabel = null;
     private int brightnessValue = 0;
     private int contrastValue = 0;
     private int saturationValue = 0;
@@ -99,6 +105,7 @@ public class ProfessionalEditorActivity extends Activity {
     private String pendingExportName = "export.png";
 
     private final List<String> history = new ArrayList<>();
+    private final List<String> recentColors = new ArrayList<>();
     private boolean busy = false;
     private String pendingHistoryAction = null;
     private final AtomicInteger adjustmentGeneration = new AtomicInteger();
@@ -279,6 +286,7 @@ public class ProfessionalEditorActivity extends Activity {
             }
         });
         v.setPointerOffsetDp(pointerOffsetDp);
+        v.setPointerActionEnabled(pointerWorkEnabled);
         return v;
     }
 
@@ -302,8 +310,7 @@ public class ProfessionalEditorActivity extends Activity {
         addTool(rail, "perspective", "منظور");
         addTool(rail, "brush", "فرشاة");
         addTool(rail, "pencil", "قلم");
-        addTool(rail, "eraser", "ممحاة");
-        addTool(rail, "fill", "تعبئة");
+        addTool(rail, "erase_fill", "ممحاة/تعبئة");
         addTool(rail, "gradient", "تدرج");
         addTool(rail, "text", "نص");
         addTool(rail, "clone", "استنساخ");
@@ -576,7 +583,9 @@ public class ProfessionalEditorActivity extends Activity {
 
         activeTool = id;
         if (canvas != null) {
-            canvas.setInteractionMode(id);
+            String canvasMode = "erase_fill".equals(id) ? eraseFillMode : id;
+            canvas.setInteractionMode(canvasMode);
+            canvas.setPointerActionEnabled(pointerWorkEnabled);
             canvas.setStrokePreview(brushSize, parseColorSafe(foregroundColor));
         }
         if (toolOptions == null) return;
@@ -598,7 +607,53 @@ public class ProfessionalEditorActivity extends Activity {
             toolOptions.addView(toolTitle);
         }
 
-        if (Arrays.asList("brush", "pencil", "eraser", "clone", "heal", "smudge", "dodge_burn").contains(id)) {
+        if ("erase_fill".equals(id)) {
+            toolOptions.addView(actionButton("ممحاة", v -> {
+                eraseFillMode = "eraser";
+                if (canvas != null) {
+                    canvas.setInteractionMode("eraser");
+                    canvas.setPointerActionEnabled(pointerWorkEnabled);
+                    canvas.showPointerNow();
+                }
+                setStatus("وضع الممحاة");
+            }));
+            toolOptions.addView(actionButton("تعبئة", v -> {
+                eraseFillMode = "fill";
+                if (canvas != null) {
+                    canvas.setInteractionMode("fill");
+                    canvas.setPointerActionEnabled(pointerWorkEnabled);
+                    canvas.showPointerNow();
+                }
+                setStatus("وضع التعبئة");
+            }));
+
+            addLiveSlider(toolOptions, "الحجم", 1, 300, brushSize, value -> {
+                brushSize = value;
+                if (canvas != null) {
+                    canvas.setStrokePreview(brushSize, parseColorSafe(foregroundColor));
+                }
+            });
+            addLiveSlider(toolOptions, "العتامة", 0, 100, brushOpacity,
+                    value -> brushOpacity = value);
+            addLiveSlider(toolOptions, "ارتفاع الرأس", 48, 160, pointerOffsetDp, value -> {
+                pointerOffsetDp = value;
+                if (canvas != null) canvas.setPointerOffsetDp(pointerOffsetDp);
+            });
+
+            toolOptions.addView(actionButton(
+                    eraserTransparent ? "مسح شفاف ✓" : "مسح شفاف",
+                    v -> {
+                        eraserTransparent = !eraserTransparent;
+                        showTool("erase_fill", "ممحاة/تعبئة", null);
+                    }));
+
+            toolOptions.addView(actionButton("اختيار لون", v ->
+                    showColorPaletteDialog("لون الممحاة / التعبئة", "erase_fill", "ممحاة/تعبئة")));
+            toolOptions.addView(actionButton("التعرف من الصورة", v ->
+                    startColorPickFor("erase_fill", "ممحاة/تعبئة")));
+
+            addPointerModeControls(toolOptions);
+        } else if (Arrays.asList("brush", "pencil", "clone", "heal", "smudge", "dodge_burn").contains(id)) {
             addLiveSlider(toolOptions, "الحجم", 1, 300, brushSize, value -> {
                 brushSize = value;
                 if (canvas != null) {
@@ -614,7 +669,10 @@ public class ProfessionalEditorActivity extends Activity {
                 if (canvas != null) canvas.setPointerOffsetDp(pointerOffsetDp);
             });
             toolOptions.addView(actionButton("اللون " + foregroundColor, v ->
-                    showTool("color_picker", "اختيار لون", null)));
+                    showColorPaletteDialog("اختيار اللون", id, label)));
+            toolOptions.addView(actionButton("التعرف من الصورة", v ->
+                    startColorPickFor(id, label)));
+            addPointerModeControls(toolOptions);
 
             if ("clone".equals(id) || "heal".equals(id)) {
                 toolOptions.addView(actionButton("تحديد المصدر", v -> {
@@ -659,7 +717,9 @@ public class ProfessionalEditorActivity extends Activity {
             colorInfo.setTextColor(colorLuminance(parseColorSafe(foregroundColor)) > 150
                     ? Color.BLACK : Color.WHITE);
             toolOptions.addView(colorInfo, new LinearLayout.LayoutParams(dp(160), dp(72)));
-            TextView help = label("حرّك إصبعك من أسفل؛ رأس المؤشر فوق يلتقط اللون بدقة.",
+            toolOptions.addView(actionButton("التقاط اللون", v -> pickColorAtPointer()));
+            addPointerModeControls(toolOptions);
+            TextView help = label("حرّك المؤشر للمكان المطلوب ثم اضغط التقاط اللون.",
                     11, MUTED, false);
             help.setPadding(dp(10), 0, dp(10), 0);
             toolOptions.addView(help, new LinearLayout.LayoutParams(dp(240), dp(82)));
@@ -711,6 +771,7 @@ public class ProfessionalEditorActivity extends Activity {
                 pointerOffsetDp = value;
                 if (canvas != null) canvas.setPointerOffsetDp(pointerOffsetDp);
             });
+            addPointerModeControls(toolOptions);
             TextView help = label("المس من أسفل، والقص يعمل عند رأس المؤشر فوق إصبعك",
                     11, MUTED, false);
             help.setPadding(dp(10), 0, dp(10), 0);
@@ -737,18 +798,15 @@ public class ProfessionalEditorActivity extends Activity {
                     toast("المنظور الحر ضمن محرك V2")));
             toolOptions.addView(actionButton("إلغاء", v ->
                     setStatus("تم إلغاء التحويل")));
-        } else if ("gradient".equals(id) || "fill".equals(id)) {
+        } else if ("gradient".equals(id)) {
             addSlider(toolOptions, "العتامة", 0, 100, 100, null);
             toolOptions.addView(actionButton("لون المقدمة", v ->
-                    toast("اللون الحالي " + foregroundColor)));
-            toolOptions.addView(actionButton("لون الخلفية", v ->
-                    toast("منتقي لون الخلفية ضمن V2")));
-            if ("gradient".equals(id)) {
-                toolOptions.addView(actionButton("خطي", v ->
-                        setStatus("تدرج خطي")));
-                toolOptions.addView(actionButton("دائري", v ->
-                        toast("التدرج الدائري ضمن V2")));
-            }
+                    showColorPaletteDialog("لون التدرج", "gradient", "تدرج")));
+            toolOptions.addView(actionButton("التعرف من الصورة", v ->
+                    startColorPickFor("gradient", "تدرج")));
+            toolOptions.addView(actionButton("خطي", v ->
+                    setStatus("تدرج خطي")));
+            addPointerModeControls(toolOptions);
         } else {
             TextView help = label(toolHelp(id), desktopLayout ? 13 : 11, MUTED, false);
             help.setPadding(dp(10), dp(6), dp(10), dp(6));
