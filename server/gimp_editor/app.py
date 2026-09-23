@@ -23,7 +23,7 @@ APP_NAME = "UNB Pro Editor GIMP Bridge"
 DATA_DIR = Path(os.getenv("UNB_EDITOR_DATA", "/var/lib/unb-pro-editor"))
 GIMP_HOST = os.getenv("UNB_GIMP_HOST", "127.0.0.1")
 GIMP_PORT = int(os.getenv("UNB_GIMP_PORT", "10008"))
-MAX_HISTORY = int(os.getenv("UNB_EDITOR_HISTORY", "20"))
+MAX_HISTORY = max(1, int(os.getenv("UNB_EDITOR_HISTORY", "20")))
 MAX_UPLOAD_BYTES = int(os.getenv("UNB_EDITOR_MAX_UPLOAD", str(80 * 1024 * 1024)))
 PROJECT_TTL_SECONDS = int(os.getenv("UNB_EDITOR_PROJECT_TTL", "3600"))
 CLEANUP_INTERVAL_SECONDS = int(os.getenv("UNB_EDITOR_CLEANUP_INTERVAL", "300"))
@@ -383,11 +383,12 @@ def push_undo(state: ProjectState):
 
 
 def destroy_project_state(state: ProjectState):
-    with state.lock:
-        with engine_lock:
-            delete_gimp_image(state.image_id)
-            clear_stack(state.undo)
-            clear_stack(state.redo)
+    # Lock ordering is global engine first, then per-project lock everywhere.
+    # Keeping one order prevents engine-wide deadlocks during TTL/DELETE.
+    with engine_lock, state.lock:
+        delete_gimp_image(state.image_id)
+        clear_stack(state.undo)
+        clear_stack(state.redo)
     shutil.rmtree(state.folder, ignore_errors=True)
 
 
