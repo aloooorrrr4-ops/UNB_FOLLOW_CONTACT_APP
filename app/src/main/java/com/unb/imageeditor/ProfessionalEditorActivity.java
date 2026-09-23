@@ -95,6 +95,9 @@ public class ProfessionalEditorActivity extends Activity {
     private boolean eraserTransparent = true;
     private String colorPickerReturnTool = null;
     private String colorPickerReturnLabel = null;
+    private boolean selectedTextColorPickPending = false;
+    private String selectedTextDraftText = "";
+    private String selectedTextDraftSize = "";
     private int brightnessValue = 0;
     private int contrastValue = 0;
     private int saturationValue = 0;
@@ -1490,6 +1493,18 @@ public class ProfessionalEditorActivity extends Activity {
         }
         setStatus("اللون الحالي " + foregroundColor + "  •  X " + x + " Y " + y);
 
+        if (selectedTextColorPickPending) {
+            selectedTextColorPickPending = false;
+            String draftText = selectedTextDraftText;
+            String draftSize = selectedTextDraftSize;
+            selectedTextDraftText = "";
+            selectedTextDraftSize = "";
+            showTool("text", "نص", null);
+            showEditRecognizedTextDialog(draftText, draftSize);
+            setStatus("تم التقاط لون النص " + foregroundColor + " — اضغط استبدال للتطبيق");
+            return;
+        }
+
         if (colorPickerReturnTool != null) {
             String returnTool = colorPickerReturnTool;
             String returnLabel = colorPickerReturnLabel == null ? "الأداة" : colorPickerReturnLabel;
@@ -1758,6 +1773,10 @@ public class ProfessionalEditorActivity extends Activity {
     }
 
     private void showEditRecognizedTextDialog(String initialText) {
+        showEditRecognizedTextDialog(initialText, null);
+    }
+
+    private void showEditRecognizedTextDialog(String initialText, String initialSize) {
         if (selectedTextRegion == null) {
             toast("حدد النص أولاً");
             return;
@@ -1779,18 +1798,40 @@ public class ProfessionalEditorActivity extends Activity {
         EditText sizeInput = new EditText(this);
         sizeInput.setHint("حجم الخط");
         int suggestedSize = Math.max(8, Math.round(selectedTextRegion.height() * 0.70f));
-        sizeInput.setText(String.valueOf(suggestedSize));
+        sizeInput.setText(initialSize == null || initialSize.trim().isEmpty()
+                ? String.valueOf(suggestedSize)
+                : initialSize);
         sizeInput.setTextColor(TEXT);
         sizeInput.setHintTextColor(MUTED);
         sizeInput.setInputType(InputType.TYPE_CLASS_NUMBER |
                 InputType.TYPE_NUMBER_FLAG_DECIMAL);
         box.addView(sizeInput);
 
-        TextView color = label("لون النص " + foregroundColor, 12, TEXT, true);
-        color.setTextDirection(View.TEXT_DIRECTION_LTR);
-        color.setLayoutDirection(View.LAYOUT_DIRECTION_LTR);
-        color.setPadding(dp(6), dp(6), dp(6), dp(6));
-        box.addView(color);
+        TextView colorPreview = label("", 13, TEXT, true);
+        colorPreview.setGravity(Gravity.CENTER);
+        colorPreview.setPadding(dp(10), dp(8), dp(10), dp(8));
+        updateSelectedTextColorPreview(colorPreview);
+        box.addView(colorPreview, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
+
+        LinearLayout colorActions = new LinearLayout(this);
+        colorActions.setOrientation(LinearLayout.HORIZONTAL);
+        colorActions.setGravity(Gravity.CENTER);
+        colorActions.setPadding(0, dp(6), 0, dp(4));
+
+        Button chooseColor = new Button(this);
+        chooseColor.setText("اختيار اللون");
+        chooseColor.setAllCaps(false);
+
+        Button pickColor = new Button(this);
+        pickColor.setText("التقاط اللون من الصورة");
+        pickColor.setAllCaps(false);
+
+        colorActions.addView(chooseColor, new LinearLayout.LayoutParams(
+                0, dp(52), 1f));
+        colorActions.addView(pickColor, new LinearLayout.LayoutParams(
+                0, dp(52), 1f));
+        box.addView(colorActions);
 
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle("تعديل النص المحدد")
@@ -1799,6 +1840,26 @@ public class ProfessionalEditorActivity extends Activity {
                 .setNeutralButton("حذف", null)
                 .setPositiveButton("استبدال", null)
                 .create();
+
+        chooseColor.setOnClickListener(v ->
+                showSelectedTextColorPalette(colorPreview));
+
+        pickColor.setOnClickListener(v -> {
+            selectedTextDraftText = textInput.getText().toString();
+            selectedTextDraftSize = sizeInput.getText().toString();
+            selectedTextColorPickPending = true;
+            colorPickerReturnTool = null;
+            colorPickerReturnLabel = null;
+            dialog.dismiss();
+
+            pointerWorkEnabled = false;
+            showTool("color_picker", "اختيار لون النص", null);
+            if (canvas != null) {
+                canvas.setPointerActionEnabled(false);
+                canvas.showPointerNow();
+            }
+            setStatus("حرّك رأس المؤشر فوق لون النص المطلوب ثم اضغط التقاط اللون");
+        });
 
         dialog.setOnShowListener(ignored -> {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
@@ -1819,6 +1880,92 @@ public class ProfessionalEditorActivity extends Activity {
         });
 
         dialog.show();
+    }
+
+    private void updateSelectedTextColorPreview(TextView preview) {
+        if (preview == null) return;
+        int parsed = parseColorSafe(foregroundColor);
+        preview.setText("لون النص الحالي  " + foregroundColor.toUpperCase());
+        preview.setTextDirection(View.TEXT_DIRECTION_LTR);
+        preview.setLayoutDirection(View.LAYOUT_DIRECTION_LTR);
+        preview.setBackground(rounded(parsed, 10));
+        preview.setTextColor(colorLuminance(parsed) > 150 ? Color.BLACK : Color.WHITE);
+    }
+
+    private void showSelectedTextColorPalette(TextView preview) {
+        LinearLayout box = column();
+        box.setPadding(dp(16), dp(10), dp(16), dp(6));
+
+        TextView current = label("", 13, TEXT, true);
+        current.setGravity(Gravity.CENTER);
+        current.setPadding(dp(8), dp(8), dp(8), dp(8));
+        updateSelectedTextColorPreview(current);
+        box.addView(current, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
+
+        GridLayout grid = new GridLayout(this);
+        grid.setColumnCount(6);
+        int[] palette = {
+                0xFFFFFFFF, 0xFFBDBDBD, 0xFF757575, 0xFF212121, 0xFF000000, 0xFFFF1744,
+                0xFFFF5252, 0xFFFF8A80, 0xFFFF9100, 0xFFFFC400, 0xFFFFFF00, 0xFFCDDC39,
+                0xFF76FF03, 0xFF00E676, 0xFF1DE9B6, 0xFF00E5FF, 0xFF40C4FF, 0xFF448AFF,
+                0xFF536DFE, 0xFF7C4DFF, 0xFFB388FF, 0xFFE040FB, 0xFFFF4081, 0xFF795548
+        };
+
+        final AlertDialog[] holder = new AlertDialog[1];
+        for (int c : palette) {
+            Button swatch = new Button(this);
+            swatch.setText("");
+            swatch.setBackground(rounded(c, 7));
+            GridLayout.LayoutParams lp = new GridLayout.LayoutParams();
+            lp.width = dp(44);
+            lp.height = dp(44);
+            lp.setMargins(dp(3), dp(3), dp(3), dp(3));
+            swatch.setLayoutParams(lp);
+            swatch.setOnClickListener(v -> {
+                applyForegroundColor(String.format("#%06X", 0xFFFFFF & c));
+                updateSelectedTextColorPreview(preview);
+                updateSelectedTextColorPreview(current);
+                if (holder[0] != null) holder[0].dismiss();
+            });
+            grid.addView(swatch);
+        }
+        box.addView(grid);
+
+        EditText hex = new EditText(this);
+        hex.setHint("#RRGGBB");
+        hex.setText(foregroundColor);
+        hex.setTextColor(TEXT);
+        hex.setHintTextColor(MUTED);
+        hex.setSingleLine(true);
+        hex.setTextDirection(View.TEXT_DIRECTION_LTR);
+        hex.setLayoutDirection(View.LAYOUT_DIRECTION_LTR);
+        hex.setGravity(Gravity.CENTER);
+        box.addView(hex);
+
+        AlertDialog paletteDialog = new AlertDialog.Builder(this)
+                .setTitle("اختيار لون النص")
+                .setView(box)
+                .setNegativeButton("إلغاء", null)
+                .setPositiveButton("تطبيق", null)
+                .create();
+        holder[0] = paletteDialog;
+
+        paletteDialog.setOnShowListener(ignored ->
+                paletteDialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+                    String value = hex.getText().toString().trim();
+                    if (!value.startsWith("#")) value = "#" + value;
+                    try {
+                        Color.parseColor(value);
+                        applyForegroundColor(value);
+                        updateSelectedTextColorPreview(preview);
+                        updateSelectedTextColorPreview(current);
+                        paletteDialog.dismiss();
+                    } catch (Exception e) {
+                        hex.setError("مثال: #FFFFFF");
+                    }
+                }));
+        paletteDialog.show();
     }
 
     private void replaceSelectedTextRegion(String replacement, double size) {
