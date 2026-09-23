@@ -949,76 +949,21 @@ public class ProfessionalEditorActivity extends Activity {
     }
 
     private void showServerDialog() {
-        EditText input = new EditText(this);
-        input.setSingleLine(true);
-        input.setText(api.getServerBase());
-        input.setHint("http://IP:PORT");
-        input.setTextColor(TEXT);
-        input.setHintTextColor(MUTED);
+        String imageInfo = localEngine.hasImage()
+                ? localEngine.width() + "×" + localEngine.height() +
+                  "  •  Undo " + localEngine.undoDepth() +
+                  "  •  Redo " + localEngine.redoDepth()
+                : "لا توجد صورة مفتوحة";
 
         new AlertDialog.Builder(this)
-                .setTitle("عنوان سيرفر GIMP")
-                .setMessage("يمكن تغييره بدون إعادة بناء التطبيق.")
-                .setView(input)
-                .setNegativeButton("إلغاء", null)
-                .setNeutralButton("اختبار", null)
-                .setPositiveButton("حفظ", null)
-                .create();
-
-        AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle("عنوان سيرفر GIMP")
-                .setMessage("يمكن تغييره بدون إعادة بناء التطبيق.")
-                .setView(input)
-                .setNegativeButton("إلغاء", null)
-                .setNeutralButton("اختبار", null)
-                .setPositiveButton("حفظ", null)
-                .create();
-
-        dialog.setOnShowListener(ignored -> {
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
-                String value = input.getText().toString().trim();
-                if (value.isEmpty()) {
-                    input.setError("أدخل عنوان السيرفر");
-                    return;
-                }
-                api.setServerBase(value);
-                getSharedPreferences("editor_settings", MODE_PRIVATE)
-                        .edit().putString("server_base", api.getServerBase()).apply();
-                dialog.dismiss();
-                setStatus("تم حفظ السيرفر — جاري الاختبار...");
-                pingServer();
-            });
-
-            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> {
-                String value = input.getText().toString().trim();
-                if (value.isEmpty()) {
-                    input.setError("أدخل عنوان السيرفر");
-                    return;
-                }
-                String old = api.getServerBase();
-                api.setServerBase(value);
-                setStatus("جاري اختبار " + value);
-                api.health(new EditorApiClient.Callback<JSONObject>() {
-                    @Override
-                    public void onSuccess(JSONObject response) {
-                        runOnUiThread(() -> {
-                            setStatus("السيرفر يعمل: " + value);
-                            toast("الاتصال ناجح");
-                        });
-                    }
-
-                    @Override
-                    public void onError(String message) {
-                        runOnUiThread(() -> {
-                            api.setServerBase(old);
-                            setStatus("فشل الاتصال: " + shortText(message));
-                            toast("السيرفر غير متصل");
-                        });
-                    }
-                });
-            });
-        });
-        dialog.show();
+                .setTitle("UNB Pro Editor • Offline")
+                .setMessage("المحرر يعمل داخل الهاتف بالكامل.\n\n" +
+                        imageInfo + "\n\n" +
+                        "لا يوجد سيرفر، لا رفع صور، ولا يحتاج إنترنت.")
+                .setNegativeButton("إغلاق", null)
+                .setPositiveButton("معلومات المحرك", (d, w) ->
+                        toast("LocalEditorEngine • Android Canvas/Bitmap"))
+                .show();
     }
 
     private void chooseImage() {
