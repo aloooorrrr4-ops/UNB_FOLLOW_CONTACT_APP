@@ -999,124 +999,127 @@ public class ProfessionalEditorActivity extends Activity {
                 data == null || data.getData() == null) return;
 
         Uri uri = data.getData();
-        try {
-            sourceBytes = readAll(uri);
-            sourceName = queryName(uri);
-            Bitmap bitmap = BitmapFactory.decodeByteArray(sourceBytes, 0, sourceBytes.length);
-            if (bitmap == null) throw new Exception("صيغة الصورة غير مدعومة");
-            canvas.setBitmap(bitmap);
-            setStatus("جاري إنشاء مشروع على السيرفر...");
-            setBusy(true);
+        setBusy(true);
+        setStatus("جاري فتح الصورة محليًا...");
 
-            api.createProject(sourceBytes, sourceName, new EditorApiClient.Callback<EditorApiClient.Project>() {
-                @Override
-                public void onSuccess(EditorApiClient.Project p) {
-                    runOnUiThread(() -> {
-                        projectId = p.id;
-                        if (p.preview != null) canvas.setBitmap(p.preview);
-                        projectText.setText("Project " + projectId.substring(0, Math.min(8, projectId.length())));
-                        setBusy(false);
-                        setStatus("المشروع متصل بالسيرفر");
-                        addHistory("فتح " + sourceName);
-                        refreshRemotePanels();
-                    });
-                }
+        localExecutor.execute(() -> {
+            try {
+                byte[] bytes = readAll(uri);
+                String name = queryName(uri);
+                Bitmap decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+                if (decoded == null) throw new Exception("صيغة الصورة غير مدعومة");
 
-                @Override
-                public void onError(String message) {
-                    runOnUiThread(() -> {
-                        setBusy(false);
-                        if (message != null && message.contains("404")) {
-                            setStatus("الصورة مفتوحة محليًا — السيرفر ما زال على المحرك القديم");
-                            if (projectText != null) projectText.setText("بانتظار تحديث المحرك");
-                        } else {
-                            setStatus("الصورة محليًا — السيرفر: " + shortText(message));
-                        }
-                        addHistory("فتح محلي " + sourceName);
-                        refreshLayers();
-                    });
-                }
-            });
-        } catch (Exception e) {
-            toast("تعذر فتح الصورة: " + e.getMessage());
-        }
+                localEngine.open(decoded);
+                Bitmap frame = localEngine.current();
+
+                runOnUiThread(() -> {
+                    sourceBytes = bytes;
+                    sourceName = name;
+                    projectId = "LOCAL";
+                    canvas.setBitmap(frame);
+                    projectText.setText("Offline • " +
+                            localEngine.width() + "×" + localEngine.height());
+                    setBusy(false);
+                    setStatus("المحرر المحلي جاهز — بدون سيرفر");
+                    addHistory("فتح " + sourceName);
+                    refreshRemotePanels();
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    setBusy(false);
+                    toast("تعذر فتح الصورة: " + e.getMessage());
+                    setStatus("فشل فتح الصورة");
+                });
+            }
+        });
     }
 
     private void applyRemote(String operation, JSONObject params) {
-        if (projectId == null) {
-            toast("افتح صورة وانتظر إنشاء المشروع على السيرفر");
+        if (!localEngine.hasImage()) {
+            toast("افتح صورة أولاً");
             return;
         }
         if (busy) return;
 
         setBusy(true);
-        setStatus("تنفيذ " + operation + " على السيرفر...");
+        setStatus("تنفيذ " + operation + " محليًا...");
 
-        api.applyOperation(projectId, operation, params,
-                new EditorApiClient.Callback<Bitmap>() {
-                    @Override
-                    public void onSuccess(Bitmap value) {
-                        runOnUiThread(() -> {
-                            canvas.setBitmap(value);
-                            setBusy(false);
-                            setStatus("تم " + operation);
-                            addHistory(operation);
-                            refreshRemotePanels();
-                        });
-                    }
-
-                    @Override
-                    public void onError(String message) {
-                        runOnUiThread(() -> {
-                            if (canvas != null) canvas.clearStrokePreview();
-                            setBusy(false);
-                            setStatus("فشل: " + shortText(message));
-                        });
-                    }
+        localExecutor.execute(() -> {
+            try {
+                Bitmap value = localEngine.apply(operation, params);
+                runOnUiThread(() -> {
+                    canvas.setBitmap(value);
+                    if (canvas != null) canvas.clearStrokePreview();
+                    setBusy(false);
+                    projectId = "LOCAL";
+                    projectText.setText("Offline • " +
+                            localEngine.width() + "×" + localEngine.height());
+                    setStatus("تم " + operation + " محليًا");
+                    addHistory(operation);
+                    refreshRemotePanels();
                 });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    if (canvas != null) canvas.clearStrokePreview();
+                    setBusy(false);
+                    setStatus("غير متاح بعد: " + shortText(e.getMessage()));
+                    toast(shortText(e.getMessage()));
+                });
+            }
+        });
     }
 
     private void remoteHistory(String action) {
-        if (projectId == null || busy) return;
-        setBusy(true);
-        setStatus("جاري " + action + "...");
+        if (!localEngine.hasImage() || busy) return;
 
-        api.history(projectId, action, new EditorApiClient.Callback<Bitmap>() {
-            @Override
-            public void onSuccess(Bitmap value) {
+        setBusy(true);
+        setStatus("جاري " + action + " محليًا...");
+
+        localExecutor.execute(() -> {
+            try {
+                Bitmap value = "redo".equals(action)
+                        ? localEngine.redo()
+                        : localEngine.undo();
+
                 runOnUiThread(() -> {
                     canvas.setBitmap(value);
                     setBusy(false);
-                    setStatus("تم " + action);
+                    projectText.setText("Offline • " +
+                            localEngine.width() + "×" + localEngine.height());
+                    setStatus("تم " + action + " محليًا");
                     addHistory(action);
                     refreshRemotePanels();
                 });
-            }
-
-            @Override
-            public void onError(String message) {
+            } catch (Exception e) {
                 runOnUiThread(() -> {
                     setBusy(false);
-                    setStatus("فشل: " + shortText(message));
+                    setStatus(shortText(e.getMessage()));
+                    toast(shortText(e.getMessage()));
                 });
             }
         });
     }
 
     private void exportProject(String format) {
-        if (projectId == null) {
-            toast("لا يوجد مشروع للحفظ");
+        if (!localEngine.hasImage()) {
+            toast("لا توجد صورة للحفظ");
             return;
         }
         if (busy) return;
 
         String fmt = format == null ? "png" : format.toLowerCase();
-        setBusy(true);
-        setStatus("جاري التصدير من GIMP بصيغة " + fmt.toUpperCase() + "...");
+        if (!("png".equals(fmt) || "jpg".equals(fmt) ||
+                "jpeg".equals(fmt) || "webp".equals(fmt))) {
+            toast("هذه الصيغة ستضاف في المحرك المحلي القادم");
+            return;
+        }
 
-        api.exportProject(projectId, fmt, new EditorApiClient.Callback<byte[]>() {
-            @Override
-            public void onSuccess(byte[] value) {
+        setBusy(true);
+        setStatus("جاري التصدير محليًا بصيغة " + fmt.toUpperCase() + "...");
+
+        localExecutor.execute(() -> {
+            try {
+                byte[] value = localEngine.export(fmt, 95);
                 runOnUiThread(() -> {
                     setBusy(false);
                     pendingExportBytes = value;
@@ -1126,11 +1129,14 @@ public class ProfessionalEditorActivity extends Activity {
                     String mime;
                     switch (fmt) {
                         case "jpg":
-                        case "jpeg": mime = "image/jpeg"; break;
-                        case "webp": mime = "image/webp"; break;
-                        case "tiff": mime = "image/tiff"; break;
-                        case "xcf": mime = "application/octet-stream"; break;
-                        default: mime = "image/png";
+                        case "jpeg":
+                            mime = "image/jpeg";
+                            break;
+                        case "webp":
+                            mime = "image/webp";
+                            break;
+                        default:
+                            mime = "image/png";
                     }
 
                     Intent save = new Intent(Intent.ACTION_CREATE_DOCUMENT);
@@ -1139,13 +1145,10 @@ public class ProfessionalEditorActivity extends Activity {
                     save.putExtra(Intent.EXTRA_TITLE, pendingExportName);
                     startActivityForResult(save, CREATE_EXPORT);
                 });
-            }
-
-            @Override
-            public void onError(String message) {
+            } catch (Exception e) {
                 runOnUiThread(() -> {
                     setBusy(false);
-                    setStatus("فشل التصدير: " + shortText(message));
+                    setStatus("فشل التصدير: " + shortText(e.getMessage()));
                     toast("فشل التصدير");
                 });
             }
@@ -1153,48 +1156,10 @@ public class ProfessionalEditorActivity extends Activity {
     }
 
     private void pingServer() {
-        api.health(new EditorApiClient.Callback<JSONObject>() {
-            @Override
-            public void onSuccess(JSONObject value) {
-                String service = value.optString("service", "");
-                api.getJson("/api/editor/capabilities", new EditorApiClient.Callback<JSONObject>() {
-                    @Override
-                    public void onSuccess(JSONObject capabilities) {
-                        runOnUiThread(() -> {
-                            setStatus("محرك UNB Pro Editor متصل");
-                            if (projectText != null && projectId == null) {
-                                projectText.setText("السيرفر جاهز");
-                            }
-                        });
-                    }
-
-                    @Override
-                    public void onError(String message) {
-                        runOnUiThread(() -> {
-                            if ("UNB GIMP API".equalsIgnoreCase(service) ||
-                                    (message != null && message.contains("404"))) {
-                                setStatus("السيرفر متصل — محرك GIMP القديم ما زال يعمل");
-                                if (projectText != null && projectId == null) {
-                                    projectText.setText("بانتظار تحديث المحرك");
-                                }
-                            } else {
-                                setStatus("السيرفر متصل لكن واجهة المحرر غير جاهزة");
-                            }
-                        });
-                    }
-                });
-            }
-
-            @Override
-            public void onError(String message) {
-                runOnUiThread(() -> {
-                    setStatus("واجهة جاهزة — تعذر الاتصال بالسيرفر");
-                    if (projectText != null && projectId == null) {
-                        projectText.setText("بدون اتصال");
-                    }
-                });
-            }
-        });
+        setStatus("UNB Pro Editor • Offline 100%");
+        if (projectText != null && !localEngine.hasImage()) {
+            projectText.setText("Offline • بدون صورة");
+        }
     }
 
     private void showMenuGroup(String group) {
