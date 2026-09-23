@@ -2547,7 +2547,10 @@ public class ProfessionalEditorActivity extends Activity {
                     if (canvas != null) {
                         canvas.clearStrokePreview();
                         canvas.setSelectionOverlay(selectionOverlay);
-                        if ("quad_transform".equals(operation)) {
+                        if (isTransformGeometryOperation(operation) &&
+                                ("quad_transform".equals(operation) ||
+                                 "transform".equals(activeTool) ||
+                                 "perspective".equals(activeTool))) {
                             canvas.setInteractionMode("transform_quad");
                             canvas.resetTransformQuad();
                         }
@@ -2579,6 +2582,17 @@ public class ProfessionalEditorActivity extends Activity {
                 });
             }
         });
+    }
+
+    private boolean isTransformGeometryOperation(String operation) {
+        return "rotate".equals(operation) ||
+                "flip_horizontal".equals(operation) ||
+                "flip_vertical".equals(operation) ||
+                "crop".equals(operation) ||
+                "resize".equals(operation) ||
+                "scale".equals(operation) ||
+                "perspective".equals(operation) ||
+                "quad_transform".equals(operation);
     }
 
     private void remoteHistory(String action) {
