@@ -1024,22 +1024,26 @@ public class ProfessionalEditorActivity extends Activity {
     }
 
     private void addPointerModeControls(LinearLayout parent) {
-        parent.addView(actionButton(pointerWorkEnabled ? "تحريك فقط" : "تحريك فقط ✓", v -> {
-            pointerWorkEnabled = false;
-            if (canvas != null) {
-                canvas.setPointerActionEnabled(false);
-                canvas.showPointerNow();
-            }
-            setStatus("تحريك المؤشر فقط — بدون تنفيذ");
-        }));
-        parent.addView(actionButton(pointerWorkEnabled ? "تحريك + عمل ✓" : "تحريك + عمل", v -> {
-            pointerWorkEnabled = true;
-            if (canvas != null) {
-                canvas.setPointerActionEnabled(true);
-                canvas.showPointerNow();
-            }
-            setStatus("تحريك المؤشر مع تنفيذ الأداة");
-        }));
+        parent.addView(actionButton(
+                pointerWorkEnabled ? "المقبض: تحريك فقط" : "المقبض: تحريك فقط ✓",
+                v -> {
+                    pointerWorkEnabled = false;
+                    if (canvas != null) {
+                        canvas.setPointerActionEnabled(false);
+                        canvas.showPointerNow();
+                    }
+                    setStatus("تحريك فقط — اسحب المقبض البرتقالي ولن يحدث مسح أو تعبئة");
+                }));
+        parent.addView(actionButton(
+                pointerWorkEnabled ? "المقبض: تحريك + تنفيذ ✓" : "المقبض: تحريك + تنفيذ",
+                v -> {
+                    pointerWorkEnabled = true;
+                    if (canvas != null) {
+                        canvas.setPointerActionEnabled(true);
+                        canvas.showPointerNow();
+                    }
+                    setStatus("تحريك + تنفيذ — اسحب المقبض البرتقالي لتنفيذ الأداة من الرأس السماوي");
+                }));
     }
 
     private void startColorPickFor(String returnTool, String returnLabel) {
