@@ -274,6 +274,9 @@ public final class LocalEditorEngine {
                 case "eraser":
                     stroke(p, false, true);
                     break;
+                case "fill_stroke":
+                    stroke(p, false, false);
+                    break;
                 case "gradient":
                     gradient(p);
                     break;
@@ -593,7 +596,7 @@ public final class LocalEditorEngine {
             paint.setStrokeCap(Paint.Cap.SQUARE);
         }
 
-        if (erase) {
+        if (erase && p.optBoolean("transparent", true)) {
             paint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.CLEAR));
         }
 
