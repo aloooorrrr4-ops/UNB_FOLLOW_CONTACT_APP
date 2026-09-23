@@ -14,6 +14,7 @@ import android.view.ScaleGestureDetector;
 import android.view.View;
 
 import java.util.ArrayList;
+import java.util.List;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Set;
@@ -43,10 +44,14 @@ public class EditorCanvasView extends View {
     private final Paint strokePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint pointerPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint pointerGuidePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint textRegionPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint selectedTextRegionPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Matrix drawMatrix = new Matrix();
     private final Matrix inverse = new Matrix();
 
     private final ArrayList<Float> strokePoints = new ArrayList<>();
+    private final ArrayList<RectF> detectedTextRegions = new ArrayList<>();
+    private RectF selectedTextRegion;
 
     private Bitmap bitmap;
     private float zoom = 1f;
@@ -91,6 +96,14 @@ public class EditorCanvasView extends View {
         pointerGuidePaint.setStyle(Paint.Style.STROKE);
         pointerGuidePaint.setStrokeWidth(dp(1));
         pointerGuidePaint.setColor(Color.argb(110, 220, 225, 235));
+
+        textRegionPaint.setStyle(Paint.Style.STROKE);
+        textRegionPaint.setStrokeWidth(dp(1.5f));
+        textRegionPaint.setColor(Color.rgb(81, 164, 255));
+
+        selectedTextRegionPaint.setStyle(Paint.Style.STROKE);
+        selectedTextRegionPaint.setStrokeWidth(dp(2.5f));
+        selectedTextRegionPaint.setColor(Color.rgb(255, 196, 64));
 
         pointerOffsetPx = dp(92);
 
@@ -289,8 +302,47 @@ public class EditorCanvasView extends View {
         drawMatrix.mapRect(r);
         canvas.drawRect(r, borderPaint);
 
+        drawTextRegions(canvas);
         drawStrokePreview(canvas);
         drawDetachedPointer(canvas);
+    }
+
+    public void setDetectedTextRegions(List<RectF> regions) {
+        detectedTextRegions.clear();
+        if (regions != null) {
+            for (RectF r : regions) {
+                if (r != null) detectedTextRegions.add(new RectF(r));
+            }
+        }
+        selectedTextRegion = null;
+        invalidate();
+    }
+
+    public void setSelectedTextRegion(RectF region) {
+        selectedTextRegion = region == null ? null : new RectF(region);
+        invalidate();
+    }
+
+    public void clearDetectedTextRegions() {
+        detectedTextRegions.clear();
+        selectedTextRegion = null;
+        invalidate();
+    }
+
+    private void drawTextRegions(Canvas canvas) {
+        if (detectedTextRegions.isEmpty()) return;
+
+        for (RectF region : detectedTextRegions) {
+            RectF screen = new RectF(region);
+            drawMatrix.mapRect(screen);
+            canvas.drawRect(screen, textRegionPaint);
+        }
+
+        if (selectedTextRegion != null) {
+            RectF selected = new RectF(selectedTextRegion);
+            drawMatrix.mapRect(selected);
+            canvas.drawRect(selected, selectedTextRegionPaint);
+        }
     }
 
     private void drawDetachedPointer(Canvas canvas) {
