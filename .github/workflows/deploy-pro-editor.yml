@@ -24,6 +24,7 @@ jobs:
           python3 -m py_compile server/gimp_editor/app.py
           bash -n server/gimp_editor/start_gimp_scriptfu.sh
           bash -n server/gimp_editor/install_staging.sh
+          bash -n server/gimp_editor/setup_https_ip.sh
 
       - name: Check SSH deployment credential
         env:
@@ -56,14 +57,15 @@ jobs:
             cd /tmp/unb-pro-editor-deploy/server/gimp_editor
             chmod +x install_staging.sh start_gimp_scriptfu.sh diagnose.sh
             ./install_staging.sh
+            ./setup_https_ip.sh
 
       - name: Verify production endpoint
         run: |
           set -euo pipefail
           sleep 3
-          curl --fail --show-error --silent http://91.98.126.167:18083/health
+          curl --fail --show-error --silent https://91.98.126.167/health
           echo
-          STATUS="$(curl --silent --output /tmp/caps.json --write-out '%{http_code}' http://91.98.126.167:18083/api/editor/capabilities)"
+          STATUS="$(curl --silent --output /tmp/caps.json --write-out '%{http_code}' https://91.98.126.167/api/editor/capabilities)"
           cat /tmp/caps.json
           echo
           test "$STATUS" = "401"
