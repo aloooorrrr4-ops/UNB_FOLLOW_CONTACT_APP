@@ -701,14 +701,34 @@ public class ProfessionalEditorActivity extends Activity {
 
             toolOptions.addView(actionButton("+ إضافة نص", v ->
                     showAddTextDialog(lastImageTapX, lastImageTapY)));
+            toolOptions.addView(actionButton("اكتشاف النصوص", v -> detectTextRegions()));
+            toolOptions.addView(actionButton("تحديد عند المؤشر", v -> selectTextAtPointer()));
+            toolOptions.addView(actionButton("تعرف على المحدد", v -> recognizeSelectedText(false)));
+            toolOptions.addView(actionButton("تعديل المحدد", v -> recognizeSelectedText(true)));
+            toolOptions.addView(actionButton("قص المحدد", v -> cropSelectedTextRegion()));
+            toolOptions.addView(actionButton("حذف المحدد", v -> deleteSelectedTextRegion()));
+
+            toolOptions.addView(actionButton("لون النص", v ->
+                    showColorPaletteDialog("لون النص", "text", "نص")));
+            toolOptions.addView(actionButton("التعرف على اللون", v ->
+                    startColorPickFor("text", "نص")));
             toolOptions.addView(actionButton("الخطوط", v -> {
                 openInspectorTab("resources");
                 loadResources("fonts");
             }));
-            toolOptions.addView(actionButton("RTL / LTR", v ->
-                    toast("اتجاه النص سيصبح قابلًا للتبديل في محرك النص V2")));
-            toolOptions.addView(actionButton("لون النص", v ->
-                    toast("لون النص الحالي " + foregroundColor)));
+
+            addPointerModeControls(toolOptions);
+
+            TextView textState = label(
+                    selectedTextRegion == null
+                            ? "اكتشف النصوص ثم حرّك المؤشر داخل النص المطلوب."
+                            : ("المحدد " + Math.round(selectedTextRegion.width()) + "×" +
+                               Math.round(selectedTextRegion.height()) +
+                               (recognizedText.isEmpty() ? "" :
+                                       " • OCR " + recognizedTextConfidence + "%")),
+                    11, MUTED, false);
+            textState.setPadding(dp(10), 0, dp(10), 0);
+            toolOptions.addView(textState, new LinearLayout.LayoutParams(dp(260), dp(82)));
         } else if ("color_picker".equals(id)) {
             addLiveSlider(toolOptions, "ارتفاع الرأس", 48, 160, pointerOffsetDp, value -> {
                 pointerOffsetDp = value;
@@ -736,19 +756,6 @@ public class ProfessionalEditorActivity extends Activity {
         } else if ("saturation_adjust".equals(id)) {
             addAdjustmentSlider(toolOptions, "التشبع", "saturation", saturationValue,
                     value -> saturationValue = value);
-        } else if ("text_detect".equals(id)) {
-            toolOptions.addView(actionButton("اكتشاف النص", v -> detectTextRegions()));
-            toolOptions.addView(actionButton("قص المحدد", v -> cropSelectedTextRegion()));
-            toolOptions.addView(actionButton("مسح التحديد", v -> {
-                selectedTextRegion = null;
-                detectedTextRegions.clear();
-                if (canvas != null) canvas.clearDetectedTextRegions();
-                setStatus("تم مسح تحديد النص");
-            }));
-            TextView help = label("اكتشاف محلي لمناطق النص. اضغط على الإطار المطلوب ثم قص المحدد.",
-                    11, MUTED, false);
-            help.setPadding(dp(10), 0, dp(10), 0);
-            toolOptions.addView(help, new LinearLayout.LayoutParams(dp(250), dp(82)));
         } else if ("crop".equals(id)) {
             cropAspectRatio = 0f;
             toolOptions.addView(actionButton("يدوي", v -> {
