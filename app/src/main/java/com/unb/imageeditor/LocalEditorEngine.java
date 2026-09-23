@@ -40,21 +40,28 @@ public final class LocalEditorEngine {
         public final boolean visible;
         public final int opacity;
         public final boolean active;
+        public final boolean hasMask;
+        public final String blendMode;
 
-        LayerInfo(int index, String name, boolean visible, int opacity, boolean active) {
+        LayerInfo(int index, String name, boolean visible, int opacity, boolean active,
+                  boolean hasMask, String blendMode) {
             this.index = index;
             this.name = name;
             this.visible = visible;
             this.opacity = opacity;
             this.active = active;
+            this.hasMask = hasMask;
+            this.blendMode = blendMode;
         }
     }
 
     private static final class Layer {
         String name;
         Bitmap bitmap;
+        Bitmap mask;
         boolean visible = true;
         int opacity = 255;
+        String blendMode = "normal";
 
         Layer(String name, Bitmap bitmap) {
             this.name = name;
@@ -64,6 +71,7 @@ public final class LocalEditorEngine {
 
     private Bitmap bitmap;
     private Rect selection;
+    private byte[] selectionMask;
     private final Deque<Bitmap> undo = new ArrayDeque<>();
     private final Deque<Bitmap> redo = new ArrayDeque<>();
     private final ArrayList<Layer> layers = new ArrayList<>();
@@ -86,6 +94,7 @@ public final class LocalEditorEngine {
         layers.add(new Layer("Background", bitmap));
         activeLayerIndex = 0;
         selection = null;
+        selectionMask = null;
         clearAdjustmentPipeline();
     }
 
@@ -102,7 +111,7 @@ public final class LocalEditorEngine {
         for (int i = layers.size() - 1; i >= 0; i--) {
             Layer layer = layers.get(i);
             result.add(new LayerInfo(i, layer.name, layer.visible, layer.opacity,
-                    i == activeLayerIndex));
+                    i == activeLayerIndex, layer.mask != null, layer.blendMode));
         }
         return result;
     }
@@ -115,6 +124,27 @@ public final class LocalEditorEngine {
     public synchronized int height() {
         return layers.isEmpty() ? (bitmap == null ? 0 : bitmap.getHeight())
                 : layers.get(0).bitmap.getHeight();
+    }
+
+    public synchronized Bitmap selectionPreview() {
+        if (selectionMask == null || bitmap == null) return null;
+        int w = bitmap.getWidth();
+        int h = bitmap.getHeight();
+        if (selectionMask.length != w * h) return null;
+
+        Bitmap overlay = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+        int[] px = new int[selectionMask.length];
+        for (int i = 0; i < selectionMask.length; i++) {
+            int a = selectionMask[i] & 0xFF;
+            if (a == 0) {
+                px[i] = Color.TRANSPARENT;
+            } else {
+                int alpha = Math.max(24, Math.round(a * 0.28f));
+                px[i] = Color.argb(alpha, 65, 145, 255);
+            }
+        }
+        overlay.setPixels(px, 0, w, 0, 0, w, h);
+        return overlay;
     }
 
     public synchronized int undoDepth() {
@@ -134,6 +164,7 @@ public final class LocalEditorEngine {
         bitmap = undo.removeLast();
         syncActiveLayer();
         selection = null;
+        selectionMask = null;
         return compositeLayers();
     }
 
@@ -146,6 +177,7 @@ public final class LocalEditorEngine {
         bitmap = redo.removeLast();
         syncActiveLayer();
         selection = null;
+        selectionMask = null;
         return compositeLayers();
     }
 
@@ -273,6 +305,17 @@ public final class LocalEditorEngine {
             case "set_layer_opacity":
                 return setLayerOpacity(p.optInt("index", activeLayerIndex),
                         p.optInt("opacity", 255));
+            case "set_layer_blend_mode":
+                return setLayerBlendMode(p.optInt("index", activeLayerIndex),
+                        p.optString("mode", "normal"));
+            case "add_layer_mask":
+                return addLayerMask();
+            case "invert_layer_mask":
+                return invertLayerMask();
+            case "apply_layer_mask":
+                return applyLayerMask();
+            case "remove_layer_mask":
+                return removeLayerMask();
             case "merge_down":
                 return mergeDown();
             case "flatten":
@@ -428,6 +471,10 @@ public final class LocalEditorEngine {
                             "الأداة " + op + " ستُنقل للمحرك المحلي في المرحلة التالية");
             }
 
+            if (selectionMask != null && !isGeometryOperation(op)) {
+                applySelectionMask(before);
+            }
+
             undo.addLast(before);
             trim(undo);
             redo.clear();
@@ -501,6 +548,8 @@ public final class LocalEditorEngine {
         Layer copyLayer = new Layer(source.name + " copy", copy(source.bitmap));
         copyLayer.visible = source.visible;
         copyLayer.opacity = source.opacity;
+        copyLayer.blendMode = source.blendMode;
+        copyLayer.mask = source.mask == null ? null : copy(source.mask);
         layers.add(activeLayerIndex + 1, copyLayer);
         activeLayerIndex++;
         bitmap = copyLayer.bitmap;
@@ -552,6 +601,119 @@ public final class LocalEditorEngine {
         return compositeLayers();
     }
 
+    private Bitmap setLayerBlendMode(int index, String mode) {
+        if (index < 0 || index >= layers.size()) {
+            throw new IllegalArgumentException("طبقة غير موجودة");
+        }
+        String normalized = normalizeBlendMode(mode);
+        layers.get(index).blendMode = normalized;
+        return compositeLayers();
+    }
+
+    private String normalizeBlendMode(String mode) {
+        String m = mode == null ? "normal" : mode.trim().toLowerCase();
+        switch (m) {
+            case "multiply":
+            case "screen":
+            case "add":
+            case "darken":
+            case "lighten":
+                return m;
+            default:
+                return "normal";
+        }
+    }
+
+    private Bitmap addLayerMask() {
+        Layer layer = activeLayer();
+        Bitmap mask = Bitmap.createBitmap(width(), height(), Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(mask);
+        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        paint.setColor(Color.WHITE);
+
+        if (selectionMask == null) {
+            canvas.drawRect(0, 0, width(), height(), paint);
+        } else {
+            int[] maskPixels = new int[selectionMask.length];
+            for (int i = 0; i < selectionMask.length; i++) {
+                int v = selectionMask[i] & 0xFF;
+                maskPixels[i] = Color.argb(255, v, v, v);
+            }
+            mask.setPixels(maskPixels, 0, width(), 0, 0, width(), height());
+        }
+
+        layer.mask = mask;
+        return compositeLayers();
+    }
+
+    private Bitmap invertLayerMask() {
+        Layer layer = activeLayer();
+        if (layer.mask == null) throw new IllegalStateException("لا يوجد قناع للطبقة");
+
+        int w = layer.mask.getWidth();
+        int h = layer.mask.getHeight();
+        int[] px = new int[w * h];
+        layer.mask.getPixels(px, 0, w, 0, 0, w, h);
+        for (int i = 0; i < px.length; i++) {
+            int v = 255 - Color.red(px[i]);
+            px[i] = Color.argb(255, v, v, v);
+        }
+        layer.mask.setPixels(px, 0, w, 0, 0, w, h);
+        return compositeLayers();
+    }
+
+    private Bitmap applyLayerMask() {
+        Layer layer = activeLayer();
+        if (layer.mask == null) throw new IllegalStateException("لا يوجد قناع للطبقة");
+
+        Bitmap masked = maskedLayerBitmap(layer);
+        layer.bitmap = masked;
+        layer.mask = null;
+        bitmap = layer.bitmap;
+        return compositeLayers();
+    }
+
+    private Bitmap removeLayerMask() {
+        Layer layer = activeLayer();
+        if (layer.mask == null) throw new IllegalStateException("لا يوجد قناع للطبقة");
+        layer.mask = null;
+        return compositeLayers();
+    }
+
+    private Bitmap maskedLayerBitmap(Layer layer) {
+        Bitmap out = Bitmap.createBitmap(width(), height(), Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(out);
+        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+        canvas.drawBitmap(layer.bitmap, 0, 0, paint);
+
+        Paint maskPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+        maskPaint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.DST_IN));
+
+        Bitmap alphaMask = Bitmap.createBitmap(width(), height(), Bitmap.Config.ARGB_8888);
+        int[] src = new int[width() * height()];
+        int[] dst = new int[src.length];
+        layer.mask.getPixels(src, 0, width(), 0, 0, width(), height());
+        for (int i = 0; i < src.length; i++) {
+            int a = Color.red(src[i]);
+            dst[i] = Color.argb(a, 255, 255, 255);
+        }
+        alphaMask.setPixels(dst, 0, width(), 0, 0, width(), height());
+        canvas.drawBitmap(alphaMask, 0, 0, maskPaint);
+        maskPaint.setXfermode(null);
+        return out;
+    }
+
+    private PorterDuff.Mode porterDuffForBlend(String mode) {
+        switch (normalizeBlendMode(mode)) {
+            case "multiply": return PorterDuff.Mode.MULTIPLY;
+            case "screen": return PorterDuff.Mode.SCREEN;
+            case "add": return PorterDuff.Mode.ADD;
+            case "darken": return PorterDuff.Mode.DARKEN;
+            case "lighten": return PorterDuff.Mode.LIGHTEN;
+            default: return null;
+        }
+    }
+
     private Bitmap mergeDown() {
         if (activeLayerIndex <= 0 || layers.size() <= 1) {
             throw new IllegalStateException("لا توجد طبقة أسفلها للدمج");
@@ -564,13 +726,24 @@ public final class LocalEditorEngine {
 
         Paint lowerPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
         lowerPaint.setAlpha(lower.opacity);
-        if (lower.visible) canvas.drawBitmap(lower.bitmap, 0, 0, lowerPaint);
+        if (lower.visible) {
+            Bitmap lowerBitmap = lower.mask == null ? lower.bitmap : maskedLayerBitmap(lower);
+            canvas.drawBitmap(lowerBitmap, 0, 0, lowerPaint);
+        }
 
         Paint topPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
         topPaint.setAlpha(top.opacity);
-        if (top.visible) canvas.drawBitmap(top.bitmap, 0, 0, topPaint);
+        PorterDuff.Mode topMode = porterDuffForBlend(top.blendMode);
+        if (topMode != null) topPaint.setXfermode(new PorterDuffXfermode(topMode));
+        if (top.visible) {
+            Bitmap topBitmap = top.mask == null ? top.bitmap : maskedLayerBitmap(top);
+            canvas.drawBitmap(topBitmap, 0, 0, topPaint);
+        }
+        topPaint.setXfermode(null);
 
         lower.bitmap = merged;
+        lower.mask = null;
+        lower.blendMode = "normal";
         lower.opacity = 255;
         lower.visible = true;
         lower.name = lower.name + " + " + top.name;
@@ -634,93 +807,359 @@ public final class LocalEditorEngine {
         Canvas canvas = new Canvas(out);
         Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
 
+        boolean hasBackdrop = false;
         for (Layer layer : layers) {
             if (!layer.visible) continue;
             paint.setAlpha(layer.opacity);
-            canvas.drawBitmap(layer.bitmap, 0, 0, paint);
+
+            // A blend mode requires an existing backdrop. The first visible
+            // layer is always composited normally, matching desktop editors.
+            PorterDuff.Mode mode = hasBackdrop ? porterDuffForBlend(layer.blendMode) : null;
+            if (mode != null) paint.setXfermode(new PorterDuffXfermode(mode));
+            else paint.setXfermode(null);
+
+            Bitmap draw = layer.mask == null ? layer.bitmap : maskedLayerBitmap(layer);
+            canvas.drawBitmap(draw, 0, 0, paint);
+            hasBackdrop = true;
         }
         paint.setAlpha(255);
+        paint.setXfermode(null);
         return out;
     }
 
     private boolean selectionOperation(String op, JSONObject p) {
         switch (op) {
             case "select_all":
+                selectionMask = new byte[bitmap.getWidth() * bitmap.getHeight()];
+                java.util.Arrays.fill(selectionMask, (byte) 0xFF);
                 selection = new Rect(0, 0, bitmap.getWidth(), bitmap.getHeight());
                 return true;
+
             case "select_none":
+                selectionMask = null;
                 selection = null;
                 return true;
+
             case "select_rectangle": {
                 int x = clamp(p.optInt("x", 0), 0, bitmap.getWidth() - 1);
                 int y = clamp(p.optInt("y", 0), 0, bitmap.getHeight() - 1);
                 int w = Math.max(1, p.optInt("width", 1));
                 int h = Math.max(1, p.optInt("height", 1));
-                selection = new Rect(
+                Rect r = new Rect(
                         x, y,
                         Math.min(bitmap.getWidth(), x + w),
                         Math.min(bitmap.getHeight(), y + h));
+                selectionMask = new byte[bitmap.getWidth() * bitmap.getHeight()];
+                fillMaskRect(selectionMask, r, 255);
+                selection = r;
                 return true;
             }
-            case "grow":
-                if (selection != null) {
-                    int s = Math.max(0, p.optInt("steps", 1));
-                    selection.left = Math.max(0, selection.left - s);
-                    selection.top = Math.max(0, selection.top - s);
-                    selection.right = Math.min(bitmap.getWidth(), selection.right + s);
-                    selection.bottom = Math.min(bitmap.getHeight(), selection.bottom + s);
-                }
-                return true;
-            case "shrink":
-                if (selection != null) {
-                    int s = Math.max(0, p.optInt("steps", 1));
-                    if (selection.width() > s * 2 && selection.height() > s * 2) {
-                        selection.inset(s, s);
-                    }
-                }
-                return true;
-            case "feather":
-            case "border":
+
             case "select_polygon": {
                 JSONArray pts = p.optJSONArray("points");
                 if (pts == null || pts.length() < 6) return true;
-                float minX = bitmap.getWidth(), minY = bitmap.getHeight();
-                float maxX = 0, maxY = 0;
-                for (int i = 0; i + 1 < pts.length(); i += 2) {
-                    float x = (float) pts.optDouble(i);
-                    float y = (float) pts.optDouble(i + 1);
-                    minX = Math.min(minX, x);
-                    minY = Math.min(minY, y);
-                    maxX = Math.max(maxX, x);
-                    maxY = Math.max(maxY, y);
-                }
-                selection = new Rect(
-                        clamp(Math.round(minX), 0, bitmap.getWidth() - 1),
-                        clamp(Math.round(minY), 0, bitmap.getHeight() - 1),
-                        clamp(Math.round(maxX), 1, bitmap.getWidth()),
-                        clamp(Math.round(maxY), 1, bitmap.getHeight()));
+                selectionMask = polygonMask(pts);
+                updateSelectionBoundsFromMask();
                 return true;
             }
+
             case "select_color": {
                 int target = parseColor(p.optString("color", "#ffffff"));
-                selectColorBounds(target, p.optDouble("threshold", 0.15));
+                selectionMask = colorMask(target, p.optDouble("threshold", 0.15), false, 0, 0);
+                updateSelectionBoundsFromMask();
                 return true;
             }
+
             case "select_contiguous": {
                 int x = clamp((int) Math.round(p.optDouble("x", 0)), 0, bitmap.getWidth() - 1);
                 int y = clamp((int) Math.round(p.optDouble("y", 0)), 0, bitmap.getHeight() - 1);
                 int target = bitmap.getPixel(x, y);
-                selectColorBounds(target, p.optDouble("threshold", 0.15));
+                selectionMask = colorMask(target, p.optDouble("threshold", 0.15), true, x, y);
+                updateSelectionBoundsFromMask();
                 return true;
             }
+
             case "invert_selection":
-                selection = new Rect(0, 0, bitmap.getWidth(), bitmap.getHeight());
+                if (selectionMask == null) {
+                    selectionMask = new byte[bitmap.getWidth() * bitmap.getHeight()];
+                    java.util.Arrays.fill(selectionMask, (byte) 0xFF);
+                } else {
+                    for (int i = 0; i < selectionMask.length; i++) {
+                        selectionMask[i] = (byte) (255 - (selectionMask[i] & 0xFF));
+                    }
+                }
+                updateSelectionBoundsFromMask();
                 return true;
+
+            case "grow":
+                if (selectionMask != null) {
+                    selectionMask = morphMask(selectionMask, Math.max(1, p.optInt("steps", 1)), true);
+                    updateSelectionBoundsFromMask();
+                }
+                return true;
+
+            case "shrink":
+                if (selectionMask != null) {
+                    selectionMask = morphMask(selectionMask, Math.max(1, p.optInt("steps", 1)), false);
+                    updateSelectionBoundsFromMask();
+                }
+                return true;
+
+            case "feather":
+                if (selectionMask != null) {
+                    selectionMask = blurMask(selectionMask, Math.max(1, p.optInt("radius", 5)));
+                    updateSelectionBoundsFromMask();
+                }
+                return true;
+
+            case "border":
+                if (selectionMask != null) {
+                    int radius = Math.max(1, p.optInt("radius", 2));
+                    byte[] grown = morphMask(selectionMask, radius, true);
+                    byte[] shrunk = morphMask(selectionMask, radius, false);
+                    byte[] border = new byte[selectionMask.length];
+                    for (int i = 0; i < border.length; i++) {
+                        int g = grown[i] & 0xFF;
+                        int sh = shrunk[i] & 0xFF;
+                        border[i] = (byte) Math.max(0, g - sh);
+                    }
+                    selectionMask = border;
+                    updateSelectionBoundsFromMask();
+                }
+                return true;
+
             case "sharpen_selection":
+                if (selectionMask != null) {
+                    for (int i = 0; i < selectionMask.length; i++) {
+                        selectionMask[i] = (byte) ((selectionMask[i] & 0xFF) >= 128 ? 255 : 0);
+                    }
+                    updateSelectionBoundsFromMask();
+                }
                 return true;
+
             default:
                 return false;
         }
+    }
+
+    private void fillMaskRect(byte[] mask, Rect rect, int value) {
+        int w = bitmap.getWidth();
+        byte v = (byte) value;
+        for (int y = Math.max(0, rect.top); y < Math.min(bitmap.getHeight(), rect.bottom); y++) {
+            int row = y * w;
+            for (int x = Math.max(0, rect.left); x < Math.min(w, rect.right); x++) {
+                mask[row + x] = v;
+            }
+        }
+    }
+
+    private byte[] polygonMask(JSONArray pts) {
+        int w = bitmap.getWidth();
+        int h = bitmap.getHeight();
+        int n = pts.length() / 2;
+        float[] xs = new float[n];
+        float[] ys = new float[n];
+        float minY = h, maxY = 0;
+
+        for (int i = 0; i < n; i++) {
+            xs[i] = (float) pts.optDouble(i * 2);
+            ys[i] = (float) pts.optDouble(i * 2 + 1);
+            minY = Math.min(minY, ys[i]);
+            maxY = Math.max(maxY, ys[i]);
+        }
+
+        byte[] mask = new byte[w * h];
+        int y0 = clamp((int) Math.floor(minY), 0, h - 1);
+        int y1 = clamp((int) Math.ceil(maxY), 0, h - 1);
+
+        for (int y = y0; y <= y1; y++) {
+            for (int x = 0; x < w; x++) {
+                boolean inside = false;
+                for (int i = 0, j = n - 1; i < n; j = i++) {
+                    boolean intersect = ((ys[i] > y) != (ys[j] > y)) &&
+                            (x < (xs[j] - xs[i]) * (y - ys[i]) /
+                                    Math.max(0.0001f, ys[j] - ys[i]) + xs[i]);
+                    if (intersect) inside = !inside;
+                }
+                if (inside) mask[y * w + x] = (byte) 0xFF;
+            }
+        }
+        return mask;
+    }
+
+    private byte[] colorMask(int target, double threshold, boolean contiguous, int startX, int startY) {
+        int w = bitmap.getWidth();
+        int h = bitmap.getHeight();
+        int[] px = pixels();
+        int tr = Color.red(target), tg = Color.green(target), tb = Color.blue(target);
+        double limit = Math.max(0.01, Math.min(1.0, threshold)) * 441.67295593;
+        double limitSq = limit * limit;
+        byte[] mask = new byte[w * h];
+
+        if (!contiguous) {
+            for (int i = 0; i < px.length; i++) {
+                int c = px[i];
+                int dr = Color.red(c) - tr;
+                int dg = Color.green(c) - tg;
+                int db = Color.blue(c) - tb;
+                if (dr * dr + dg * dg + db * db <= limitSq) mask[i] = (byte) 0xFF;
+            }
+            return mask;
+        }
+
+        boolean[] seen = new boolean[px.length];
+        ArrayDeque<Integer> queue = new ArrayDeque<>();
+        int start = startY * w + startX;
+        queue.add(start);
+        seen[start] = true;
+
+        while (!queue.isEmpty()) {
+            int idx = queue.removeFirst();
+            int c = px[idx];
+            int dr = Color.red(c) - tr;
+            int dg = Color.green(c) - tg;
+            int db = Color.blue(c) - tb;
+            if (dr * dr + dg * dg + db * db > limitSq) continue;
+
+            mask[idx] = (byte) 0xFF;
+            int x = idx % w;
+            int y = idx / w;
+
+            if (x > 0) enqueue(idx - 1, seen, queue);
+            if (x + 1 < w) enqueue(idx + 1, seen, queue);
+            if (y > 0) enqueue(idx - w, seen, queue);
+            if (y + 1 < h) enqueue(idx + w, seen, queue);
+        }
+        return mask;
+    }
+
+    private void enqueue(int index, boolean[] seen, ArrayDeque<Integer> queue) {
+        if (index < 0 || index >= seen.length || seen[index]) return;
+        seen[index] = true;
+        queue.addLast(index);
+    }
+
+    private byte[] morphMask(byte[] source, int radius, boolean grow) {
+        int w = bitmap.getWidth();
+        int h = bitmap.getHeight();
+        byte[] current = source.clone();
+
+        for (int step = 0; step < radius; step++) {
+            byte[] next = current.clone();
+            for (int y = 0; y < h; y++) {
+                for (int x = 0; x < w; x++) {
+                    int idx = y * w + x;
+                    int center = current[idx] & 0xFF;
+
+                    if (grow && center >= 128) continue;
+                    if (!grow && center < 128) continue;
+
+                    boolean hit = false;
+                    for (int dy = -1; dy <= 1 && !hit; dy++) {
+                        int yy = y + dy;
+                        if (yy < 0 || yy >= h) continue;
+                        for (int dx = -1; dx <= 1; dx++) {
+                            int xx = x + dx;
+                            if (xx < 0 || xx >= w) continue;
+                            int v = current[yy * w + xx] & 0xFF;
+                            if (grow ? v >= 128 : v < 128) {
+                                hit = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (hit) next[idx] = (byte) (grow ? 255 : 0);
+                }
+            }
+            current = next;
+        }
+        return current;
+    }
+
+    private byte[] blurMask(byte[] source, int radius) {
+        radius = Math.max(1, Math.min(30, radius));
+        int w = bitmap.getWidth();
+        int h = bitmap.getHeight();
+        int[] temp = new int[source.length];
+        byte[] out = new byte[source.length];
+
+        for (int y = 0; y < h; y++) {
+            int sum = 0;
+            for (int x = -radius; x <= radius; x++) {
+                sum += source[y * w + clamp(x, 0, w - 1)] & 0xFF;
+            }
+            int window = radius * 2 + 1;
+            for (int x = 0; x < w; x++) {
+                temp[y * w + x] = sum / window;
+                int removeX = clamp(x - radius, 0, w - 1);
+                int addX = clamp(x + radius + 1, 0, w - 1);
+                sum += (source[y * w + addX] & 0xFF) -
+                        (source[y * w + removeX] & 0xFF);
+            }
+        }
+
+        for (int x = 0; x < w; x++) {
+            int sum = 0;
+            for (int y = -radius; y <= radius; y++) {
+                sum += temp[clamp(y, 0, h - 1) * w + x];
+            }
+            int window = radius * 2 + 1;
+            for (int y = 0; y < h; y++) {
+                out[y * w + x] = (byte) clamp(sum / window, 0, 255);
+                int removeY = clamp(y - radius, 0, h - 1);
+                int addY = clamp(y + radius + 1, 0, h - 1);
+                sum += temp[addY * w + x] - temp[removeY * w + x];
+            }
+        }
+        return out;
+    }
+
+    private void updateSelectionBoundsFromMask() {
+        if (selectionMask == null) {
+            selection = null;
+            return;
+        }
+
+        int w = bitmap.getWidth();
+        int h = bitmap.getHeight();
+        int minX = w, minY = h, maxX = -1, maxY = -1;
+        for (int i = 0; i < selectionMask.length; i++) {
+            if ((selectionMask[i] & 0xFF) == 0) continue;
+            int x = i % w;
+            int y = i / w;
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+        }
+
+        selection = maxX < 0 ? null :
+                new Rect(minX, minY, Math.min(w, maxX + 1), Math.min(h, maxY + 1));
+    }
+
+    private void applySelectionMask(Bitmap before) {
+        if (selectionMask == null || before == null) return;
+        if (before.getWidth() != bitmap.getWidth() || before.getHeight() != bitmap.getHeight()) {
+            selectionMask = null;
+            selection = null;
+            return;
+        }
+
+        int w = bitmap.getWidth();
+        int h = bitmap.getHeight();
+        int[] oldPx = new int[w * h];
+        int[] newPx = new int[w * h];
+        before.getPixels(oldPx, 0, w, 0, 0, w, h);
+        bitmap.getPixels(newPx, 0, w, 0, 0, w, h);
+
+        for (int i = 0; i < newPx.length; i++) {
+            int a = selectionMask[i] & 0xFF;
+            if (a <= 0) newPx[i] = oldPx[i];
+            else if (a < 255) newPx[i] = blend(oldPx[i], newPx[i], a / 255f);
+        }
+
+        bitmap.setPixels(newPx, 0, w, 0, 0, w, h);
     }
 
     private void rotate(int degrees) {
@@ -730,6 +1169,7 @@ public final class LocalEditorEngine {
                 bitmap.getWidth(), bitmap.getHeight(), m, true)
                 .copy(Bitmap.Config.ARGB_8888, true);
         selection = null;
+        selectionMask = null;
     }
 
     private void flip(boolean horizontal) {
@@ -742,6 +1182,7 @@ public final class LocalEditorEngine {
         new Canvas(out).drawBitmap(bitmap, m, null);
         bitmap = out;
         selection = null;
+        selectionMask = null;
     }
 
     private void crop(JSONObject p) {
@@ -754,6 +1195,7 @@ public final class LocalEditorEngine {
         bitmap = Bitmap.createBitmap(bitmap, x, y, w, h)
                 .copy(Bitmap.Config.ARGB_8888, true);
         selection = null;
+        selectionMask = null;
     }
 
     private void resize(JSONObject p) {
@@ -763,6 +1205,7 @@ public final class LocalEditorEngine {
         bitmap = Bitmap.createScaledBitmap(bitmap, w, h, true)
                 .copy(Bitmap.Config.ARGB_8888, true);
         selection = null;
+        selectionMask = null;
     }
 
     private void perspective(JSONObject p) {
@@ -800,6 +1243,7 @@ public final class LocalEditorEngine {
         canvas.drawBitmap(bitmap, matrix, paint);
         bitmap = out;
         selection = null;
+        selectionMask = null;
     }
 
     private void brightness(float value) {

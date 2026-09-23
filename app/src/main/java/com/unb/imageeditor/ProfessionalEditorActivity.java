@@ -89,6 +89,8 @@ public class ProfessionalEditorActivity extends Activity {
     private int brushOpacity = 100;
     private int pointerOffsetDp = 92;
     private boolean pointerWorkEnabled = false;
+    private int selectionThreshold = 15;
+    private String dodgeBurnType = "dodge";
     private String eraseFillMode = "eraser";
     private boolean eraserTransparent = true;
     private String colorPickerReturnTool = null;
@@ -680,20 +682,26 @@ public class ProfessionalEditorActivity extends Activity {
             addPointerModeControls(toolOptions);
 
             if ("clone".equals(id) || "heal".equals(id)) {
-                toolOptions.addView(actionButton("تحديد المصدر", v -> {
+                toolOptions.addView(actionButton("خذ المصدر من المؤشر", v ->
+                        setCloneSourceAtPointer()));
+                toolOptions.addView(actionButton("إلغاء المصدر", v -> {
                     cloneSourceX = Float.NaN;
                     cloneSourceY = Float.NaN;
-                    setStatus("المس نقطة المصدر ثم ارسم على الهدف");
+                    setStatus("تم مسح مصدر " + ("heal".equals(id) ? "الترميم" : "الاستنساخ"));
                 }));
             }
 
-            if ("eraser".equals(id)) {
-                toolOptions.addView(actionButton("مسح ناعم", v ->
-                        setStatus("الممحاة الناعمة • اضبط الحجم والعتامة")));
-                toolOptions.addView(actionButton("مسح كامل", v -> {
-                    brushOpacity = 100;
-                    setStatus("الممحاة 100%");
-                }));
+            if ("dodge_burn".equals(id)) {
+                toolOptions.addView(actionButton(
+                        "dodge".equals(dodgeBurnType) ? "إضاءة ✓" : "إضاءة", v -> {
+                            dodgeBurnType = "dodge";
+                            showTool("dodge_burn", "إضاءة/حرق", null);
+                        }));
+                toolOptions.addView(actionButton(
+                        "burn".equals(dodgeBurnType) ? "حرق ✓" : "حرق", v -> {
+                            dodgeBurnType = "burn";
+                            showTool("dodge_burn", "إضاءة/حرق", null);
+                        }));
             }
         } else if ("text".equals(id)) {
             addSlider(toolOptions, "حجم الخط", 6, 300, 42, null);
@@ -788,6 +796,30 @@ public class ProfessionalEditorActivity extends Activity {
                     11, MUTED, false);
             help.setPadding(dp(10), 0, dp(10), 0);
             toolOptions.addView(help, new LinearLayout.LayoutParams(dp(240), dp(82)));
+        } else if ("fuzzy_select".equals(id) || "color_select".equals(id)) {
+            addLiveSlider(toolOptions, "الحساسية", 1, 100, selectionThreshold, value ->
+                    selectionThreshold = value);
+            addLiveSlider(toolOptions, "ارتفاع الرأس", 48, 160, pointerOffsetDp, value -> {
+                pointerOffsetDp = value;
+                if (canvas != null) canvas.setPointerOffsetDp(pointerOffsetDp);
+            });
+
+            if ("color_select".equals(id)) {
+                toolOptions.addView(actionButton("لون " + foregroundColor, v ->
+                        showColorPaletteDialog("لون التحديد", "color_select", "حسب لون")));
+                toolOptions.addView(actionButton("التعرف من الصورة", v ->
+                        startColorPickFor("color_select", "حسب لون")));
+            }
+
+            addPointerModeControls(toolOptions);
+
+            TextView help = label(
+                    "fuzzy_select".equals(id)
+                            ? "حرّك المؤشر إلى المنطقة ثم استخدم تحريك + عمل."
+                            : "يحدد كل البكسلات القريبة من اللون الحالي.",
+                    11, MUTED, false);
+            help.setPadding(dp(10), 0, dp(10), 0);
+            toolOptions.addView(help, new LinearLayout.LayoutParams(dp(250), dp(82)));
         } else if ("select".equals(id)) {
             toolOptions.addView(actionButton("مستطيل", v ->
                     setStatus("اسحب لتحديد مستطيل")));
@@ -1058,6 +1090,23 @@ public class ProfessionalEditorActivity extends Activity {
             return;
         }
 
+        if ("fuzzy_select".equals(activeTool)) {
+            double threshold = Math.max(0.01, Math.min(1.0, selectionThreshold / 100.0));
+            applyRemote("select_contiguous", jsonOf(
+                    "x", lastImageTapX,
+                    "y", lastImageTapY,
+                    "threshold", threshold));
+            return;
+        }
+
+        if ("color_select".equals(activeTool)) {
+            double threshold = Math.max(0.01, Math.min(1.0, selectionThreshold / 100.0));
+            applyRemote("select_color", jsonOf(
+                    "color", foregroundColor,
+                    "threshold", threshold));
+            return;
+        }
+
         if ("select".equals(activeTool)) {
             if (points.length < 4) {
                 canvas.clearStrokePreview();
@@ -1210,13 +1259,26 @@ public class ProfessionalEditorActivity extends Activity {
                     "points", pointsJson(points),
                     "size", brushSize,
                     "exposure", brushOpacity,
-                    "type", "dodge",
+                    "type", dodgeBurnType,
                     "range", "midtones"
             ));
             return;
         }
 
         canvas.clearStrokePreview();
+    }
+
+    private void setCloneSourceAtPointer() {
+        if (canvas == null) return;
+        float[] p = canvas.getPointerImagePosition();
+        if (p == null || p.length < 2) {
+            toast("المؤشر غير جاهز");
+            return;
+        }
+        cloneSourceX = p[0];
+        cloneSourceY = p[1];
+        setStatus("تم أخذ المصدر من المؤشر • X " + Math.round(cloneSourceX) +
+                " Y " + Math.round(cloneSourceY));
     }
 
     private JSONArray pointsJson(float[] points) {
@@ -1887,6 +1949,14 @@ public class ProfessionalEditorActivity extends Activity {
                 applyRemote("merge_down", new JSONObject())));
         layerList.addView(actionButton("Flatten", v ->
                 applyRemote("flatten", new JSONObject())));
+        layerList.addView(actionButton("+ قناع", v ->
+                applyRemote("add_layer_mask", new JSONObject())));
+        layerList.addView(actionButton("عكس القناع", v ->
+                applyRemote("invert_layer_mask", new JSONObject())));
+        layerList.addView(actionButton("تطبيق القناع", v ->
+                applyRemote("apply_layer_mask", new JSONObject())));
+        layerList.addView(actionButton("حذف القناع", v ->
+                applyRemote("remove_layer_mask", new JSONObject())));
 
         List<LocalEditorEngine.LayerInfo> layers = localEngine.layerInfo();
         LocalEditorEngine.LayerInfo active = null;
@@ -1897,7 +1967,8 @@ public class ProfessionalEditorActivity extends Activity {
             if (!desktopLayout) {
                 String text = (info.active ? "● " : "○ ") +
                         info.name + "\n" +
-                        Math.round(info.opacity * 100f / 255f) + "%";
+                        Math.round(info.opacity * 100f / 255f) + "% • " +
+                        info.blendMode + (info.hasMask ? " • Mask" : "");
                 Button card = actionButton(text, v ->
                         applyRemote("set_active_layer", json("index", info.index)));
                 if (info.active) card.setBackground(rounded(Color.rgb(44, 83, 145), 8));
@@ -1922,7 +1993,9 @@ public class ProfessionalEditorActivity extends Activity {
                 name.setOnClickListener(v ->
                         applyRemote("set_active_layer", json("index", info.index)));
 
-                TextView meta = label(Math.round(info.opacity * 100f / 255f) + "%",
+                TextView meta = label(
+                        Math.round(info.opacity * 100f / 255f) + "% • " +
+                                info.blendMode + (info.hasMask ? " • M" : ""),
                         11, MUTED, false);
                 meta.setGravity(Gravity.END);
 
@@ -1940,6 +2013,21 @@ public class ProfessionalEditorActivity extends Activity {
                     applyRemote("set_layer_opacity", jsonOf(
                             "index", activeIndex,
                             "opacity", Math.round(value * 255f / 100f))));
+
+            String activeBlend = active.blendMode;
+            layerList.addView(actionButton("Blend: " + activeBlend, v ->
+                    showChoice("Blend Mode", new String[]{
+                            "Normal", "Multiply", "Screen", "Add", "Darken", "Lighten"
+                    }, index -> {
+                        String[] modes = {
+                                "normal", "multiply", "screen", "add", "darken", "lighten"
+                        };
+                        if (index >= 0 && index < modes.length) {
+                            applyRemote("set_layer_blend_mode", jsonOf(
+                                    "index", activeIndex,
+                                    "mode", modes[index]));
+                        }
+                    })));
         }
     }
 
@@ -2257,7 +2345,10 @@ public class ProfessionalEditorActivity extends Activity {
                     resetAdjustmentValues();
                     detectedTextRegions.clear();
                     selectedTextRegion = null;
-                    if (canvas != null) canvas.clearDetectedTextRegions();
+                    if (canvas != null) {
+                        canvas.clearDetectedTextRegions();
+                        canvas.clearSelectionOverlay();
+                    }
                     projectId = "LOCAL";
                     canvas.setBitmap(frame);
                     projectText.setText("Offline • " +
@@ -2290,9 +2381,13 @@ public class ProfessionalEditorActivity extends Activity {
         localExecutor.execute(() -> {
             try {
                 Bitmap value = localEngine.apply(operation, params);
+                Bitmap selectionOverlay = localEngine.selectionPreview();
                 runOnUiThread(() -> {
                     canvas.setBitmap(value);
-                    if (canvas != null) canvas.clearStrokePreview();
+                    if (canvas != null) {
+                        canvas.clearStrokePreview();
+                        canvas.setSelectionOverlay(selectionOverlay);
+                    }
                     if (!"brightness".equals(operation) &&
                             !"contrast".equals(operation) &&
                             !"saturation".equals(operation)) {
@@ -2314,7 +2409,7 @@ public class ProfessionalEditorActivity extends Activity {
                 runOnUiThread(() -> {
                     if (canvas != null) canvas.clearStrokePreview();
                     setBusy(false);
-                    setStatus("غير متاح بعد: " + shortText(e.getMessage()));
+                    setStatus("تعذر التنفيذ: " + shortText(e.getMessage()));
                     toast(shortText(e.getMessage()));
                     flushPendingHistory();
                 });
@@ -2347,9 +2442,11 @@ public class ProfessionalEditorActivity extends Activity {
                 Bitmap value = "redo".equals(action)
                         ? localEngine.redo()
                         : localEngine.undo();
+                Bitmap selectionOverlay = localEngine.selectionPreview();
 
                 runOnUiThread(() -> {
                     canvas.setBitmap(value);
+                    canvas.setSelectionOverlay(selectionOverlay);
                     resetAdjustmentValues();
                     setBusy(false);
                     projectText.setText("Offline • " +
@@ -2574,18 +2671,53 @@ public class ProfessionalEditorActivity extends Activity {
                 break;
 
             case "فلاتر":
-                showChoice("فلاتر GEGL", new String[]{
+                showChoice("فلاتر محلية", new String[]{
                         "Gaussian Blur", "Unsharp Mask", "Noise Reduction",
                         "Bloom", "Emboss", "Edge", "Oilify", "Pixelize",
                         "Mosaic", "Motion Blur", "Color Temperature"
                 }, index -> {
-                    String[] ops = {
-                            "gaussian_blur", "unsharp_mask", "noise_reduction",
-                            "bloom", "emboss", "edge", "oilify", "pixelize",
-                            "mosaic", "motion_blur", "color_temperature"
-                    };
-                    if (index >= 0 && index < ops.length) {
-                        applyRemote(ops[index], new JSONObject());
+                    switch (index) {
+                        case 0:
+                            showNumericOperationDialog("Gaussian Blur • Radius 1-30",
+                                    "gaussian_blur", "radius", 4, 1, 30, false);
+                            break;
+                        case 1:
+                            showNumericOperationDialog("Unsharp • Amount 0-300%",
+                                    "unsharp_mask", "amount", 115, 0, 300, true);
+                            break;
+                        case 2:
+                            showNumericOperationDialog("Noise Reduction • Radius 1-10",
+                                    "noise_reduction", "radius", 1, 1, 10, false);
+                            break;
+                        case 3:
+                            showNumericOperationDialog("Bloom • Strength 0-100%",
+                                    "bloom", "strength", 35, 0, 100, true);
+                            break;
+                        case 4:
+                            applyRemote("emboss", new JSONObject());
+                            break;
+                        case 5:
+                            applyRemote("edge", new JSONObject());
+                            break;
+                        case 6:
+                            applyRemote("oilify", new JSONObject());
+                            break;
+                        case 7:
+                            showNumericOperationDialog("Pixelize • Size 2-100",
+                                    "pixelize", "size", 12, 2, 100, false);
+                            break;
+                        case 8:
+                            showNumericOperationDialog("Mosaic • Size 2-100",
+                                    "mosaic", "size", 18, 2, 100, false);
+                            break;
+                        case 9:
+                            showNumericOperationDialog("Motion Blur • Radius 2-50",
+                                    "motion_blur", "radius", 9, 2, 50, false);
+                            break;
+                        case 10:
+                            showNumericOperationDialog("Color Temperature -100 إلى +100",
+                                    "color_temperature", "value", 20, -100, 100, false);
+                            break;
                     }
                 });
                 break;

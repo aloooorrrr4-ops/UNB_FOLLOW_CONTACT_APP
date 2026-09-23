@@ -30,13 +30,13 @@ public class EditorCanvasView extends View {
     private static final Set<String> STROKE_MODES = new HashSet<>(Arrays.asList(
             "brush", "pencil", "eraser", "clone", "heal", "smudge",
             "dodge_burn", "gradient", "select", "free_select", "crop", "color_picker",
-            "text_select", "fill"
+            "text_select", "fill", "fuzzy_select", "color_select"
     ));
 
     private static final Set<String> DETACHED_POINTER_MODES = new HashSet<>(Arrays.asList(
             "brush", "pencil", "eraser", "clone", "heal", "smudge",
             "dodge_burn", "gradient", "select", "free_select", "crop", "color_picker",
-            "text_select", "fill"
+            "text_select", "fill", "fuzzy_select", "color_select"
     ));
 
     private final Paint checkerA = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -56,6 +56,7 @@ public class EditorCanvasView extends View {
     private RectF selectedTextRegion;
 
     private Bitmap bitmap;
+    private Bitmap selectionOverlay;
     private float zoom = 1f;
     private float offsetX = 0f;
     private float offsetY = 0f;
@@ -259,12 +260,23 @@ public class EditorCanvasView extends View {
         invalidate();
     }
 
+    public void setSelectionOverlay(Bitmap overlay) {
+        selectionOverlay = overlay;
+        invalidate();
+    }
+
+    public void clearSelectionOverlay() {
+        selectionOverlay = null;
+        invalidate();
+    }
+
     public Bitmap getBitmap() {
         return bitmap;
     }
 
     public void clearBitmap() {
         bitmap = null;
+        selectionOverlay = null;
         fitted = false;
         clearStrokePreview();
         invalidate();
@@ -341,6 +353,9 @@ public class EditorCanvasView extends View {
 
         rebuildMatrix();
         canvas.drawBitmap(bitmap, drawMatrix, imagePaint);
+        if (selectionOverlay != null) {
+            canvas.drawBitmap(selectionOverlay, drawMatrix, imagePaint);
+        }
 
         RectF r = new RectF(0, 0, bitmap.getWidth(), bitmap.getHeight());
         drawMatrix.mapRect(r);

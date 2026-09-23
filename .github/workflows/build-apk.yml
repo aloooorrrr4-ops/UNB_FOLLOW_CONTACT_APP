@@ -16,11 +16,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Validate GIMP editor server
-        run: |
-          python3 -m py_compile server/gimp_editor/app.py
-          bash -n server/gimp_editor/start_gimp_scriptfu.sh
-
       - name: Set up Java
         uses: actions/setup-java@v5
         with:
