@@ -42,9 +42,10 @@ public final class LocalEditorEngine {
         public final boolean active;
         public final boolean hasMask;
         public final String blendMode;
+        public final boolean locked;
 
         LayerInfo(int index, String name, boolean visible, int opacity, boolean active,
-                  boolean hasMask, String blendMode) {
+                  boolean hasMask, String blendMode, boolean locked) {
             this.index = index;
             this.name = name;
             this.visible = visible;
@@ -52,6 +53,7 @@ public final class LocalEditorEngine {
             this.active = active;
             this.hasMask = hasMask;
             this.blendMode = blendMode;
+            this.locked = locked;
         }
     }
 
@@ -60,6 +62,7 @@ public final class LocalEditorEngine {
         Bitmap bitmap;
         Bitmap mask;
         boolean visible = true;
+        boolean locked = false;
         int opacity = 255;
         String blendMode = "normal";
 
@@ -111,7 +114,7 @@ public final class LocalEditorEngine {
         for (int i = layers.size() - 1; i >= 0; i--) {
             Layer layer = layers.get(i);
             result.add(new LayerInfo(i, layer.name, layer.visible, layer.opacity,
-                    i == activeLayerIndex, layer.mask != null, layer.blendMode));
+                    i == activeLayerIndex, layer.mask != null, layer.blendMode, layer.locked));
         }
         return result;
     }
@@ -302,6 +305,8 @@ public final class LocalEditorEngine {
                 return setActiveLayer(p.optInt("index", activeLayerIndex));
             case "toggle_layer_visibility":
                 return toggleLayerVisibility(p.optInt("index", activeLayerIndex));
+            case "toggle_layer_lock":
+                return toggleLayerLock(p.optInt("index", activeLayerIndex));
             case "set_layer_opacity":
                 return setLayerOpacity(p.optInt("index", activeLayerIndex),
                         p.optInt("opacity", 255));
@@ -331,6 +336,10 @@ public final class LocalEditorEngine {
         }
 
         if (selectionOperation(op, p)) return compositeLayers();
+
+        if (activeLayer().locked) {
+            throw new IllegalStateException("الطبقة مقفلة — افتح القفل أولاً");
+        }
 
         if (isGeometryOperation(op) && layers.size() > 1) {
             flattenLayersInternal();
@@ -559,6 +568,7 @@ public final class LocalEditorEngine {
         copyLayer.visible = source.visible;
         copyLayer.opacity = source.opacity;
         copyLayer.blendMode = source.blendMode;
+        copyLayer.locked = false;
         copyLayer.mask = source.mask == null ? null : copy(source.mask);
         layers.add(activeLayerIndex + 1, copyLayer);
         activeLayerIndex++;
@@ -600,6 +610,14 @@ public final class LocalEditorEngine {
             throw new IllegalArgumentException("طبقة غير موجودة");
         }
         layers.get(index).visible = !layers.get(index).visible;
+        return compositeLayers();
+    }
+
+    private Bitmap toggleLayerLock(int index) {
+        if (index < 0 || index >= layers.size()) {
+            throw new IllegalArgumentException("طبقة غير موجودة");
+        }
+        layers.get(index).locked = !layers.get(index).locked;
         return compositeLayers();
     }
 
