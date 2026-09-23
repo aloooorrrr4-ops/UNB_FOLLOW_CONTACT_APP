@@ -96,6 +96,7 @@ public class ProfessionalEditorActivity extends Activity {
     private String colorPickerReturnTool = null;
     private String colorPickerReturnLabel = null;
     private boolean selectedTextColorPickPending = false;
+    private boolean selectedTextColorPickerInternalTransition = false;
     private String selectedTextDraftText = "";
     private String selectedTextDraftSize = "";
     private int brightnessValue = 0;
@@ -591,8 +592,20 @@ public class ProfessionalEditorActivity extends Activity {
     }
 
     private void showTool(String id, String label, Button source) {
-        if (selectedTextColorPickPending && !"color_picker".equals(id)) {
-            clearPendingSelectedTextColorPick();
+        if (selectedTextColorPickPending) {
+            if ("color_picker".equals(id)) {
+                if (selectedTextColorPickerInternalTransition) {
+                    // One-shot allowance for the temporary picker opened by
+                    // the selected-text dialog itself.
+                    selectedTextColorPickerInternalTransition = false;
+                } else {
+                    // The user explicitly selected the standalone picker.
+                    // Do not let a stale text-edit draft hijack its next sample.
+                    clearPendingSelectedTextColorPick();
+                }
+            } else {
+                clearPendingSelectedTextColorPick();
+            }
         }
         if (source != null && activeToolButton != source) {
             if (activeToolButton != null) activeToolButton.setBackground(rounded(PANEL_2, 9));
@@ -1056,6 +1069,7 @@ public class ProfessionalEditorActivity extends Activity {
 
     private void clearPendingSelectedTextColorPick() {
         selectedTextColorPickPending = false;
+        selectedTextColorPickerInternalTransition = false;
         selectedTextDraftText = "";
         selectedTextDraftSize = "";
     }
@@ -1509,6 +1523,7 @@ public class ProfessionalEditorActivity extends Activity {
 
         if (selectedTextColorPickPending) {
             selectedTextColorPickPending = false;
+            selectedTextColorPickerInternalTransition = false;
             String draftText = selectedTextDraftText;
             String draftSize = selectedTextDraftSize;
             selectedTextDraftText = "";
@@ -1864,6 +1879,7 @@ public class ProfessionalEditorActivity extends Activity {
             selectedTextDraftText = textInput.getText().toString();
             selectedTextDraftSize = sizeInput.getText().toString();
             selectedTextColorPickPending = true;
+            selectedTextColorPickerInternalTransition = true;
             colorPickerReturnTool = null;
             colorPickerReturnLabel = null;
             dialog.dismiss();
