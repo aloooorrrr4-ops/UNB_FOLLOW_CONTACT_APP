@@ -599,6 +599,7 @@ public class ProfessionalEditorActivity extends Activity {
             String canvasMode;
             if ("erase_fill".equals(id)) canvasMode = eraseFillMode;
             else if ("transform".equals(id) || "perspective".equals(id)) canvasMode = "transform_quad";
+            else if ("text".equals(id) && canvas.hasTextOverlay()) canvasMode = "text_place";
             else canvasMode = id;
             canvas.setInteractionMode(canvasMode);
             canvas.setPointerActionEnabled(pointerWorkEnabled);
