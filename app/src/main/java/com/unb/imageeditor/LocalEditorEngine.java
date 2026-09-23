@@ -20,7 +20,9 @@ import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Deque;
+import java.util.List;
 
 /**
  * First offline engine for UNB Pro Editor.
@@ -32,10 +34,40 @@ public final class LocalEditorEngine {
 
     private static final int MAX_HISTORY = 12;
 
+    public static final class LayerInfo {
+        public final int index;
+        public final String name;
+        public final boolean visible;
+        public final int opacity;
+        public final boolean active;
+
+        LayerInfo(int index, String name, boolean visible, int opacity, boolean active) {
+            this.index = index;
+            this.name = name;
+            this.visible = visible;
+            this.opacity = opacity;
+            this.active = active;
+        }
+    }
+
+    private static final class Layer {
+        String name;
+        Bitmap bitmap;
+        boolean visible = true;
+        int opacity = 255;
+
+        Layer(String name, Bitmap bitmap) {
+            this.name = name;
+            this.bitmap = bitmap;
+        }
+    }
+
     private Bitmap bitmap;
     private Rect selection;
     private final Deque<Bitmap> undo = new ArrayDeque<>();
     private final Deque<Bitmap> redo = new ArrayDeque<>();
+    private final ArrayList<Layer> layers = new ArrayList<>();
+    private int activeLayerIndex = 0;
 
     private Bitmap adjustmentBase;
     private Bitmap adjustmentSessionStart;
@@ -49,7 +81,10 @@ public final class LocalEditorEngine {
         if (source == null) throw new IllegalArgumentException("الصورة غير صالحة");
         undo.clear();
         redo.clear();
+        layers.clear();
         bitmap = mutable(source);
+        layers.add(new Layer("Background", bitmap));
+        activeLayerIndex = 0;
         selection = null;
         clearAdjustmentPipeline();
     }
@@ -59,15 +94,27 @@ public final class LocalEditorEngine {
     }
 
     public synchronized Bitmap current() {
-        return bitmap;
+        return compositeLayers();
+    }
+
+    public synchronized List<LayerInfo> layerInfo() {
+        ArrayList<LayerInfo> result = new ArrayList<>();
+        for (int i = layers.size() - 1; i >= 0; i--) {
+            Layer layer = layers.get(i);
+            result.add(new LayerInfo(i, layer.name, layer.visible, layer.opacity,
+                    i == activeLayerIndex));
+        }
+        return result;
     }
 
     public synchronized int width() {
-        return bitmap == null ? 0 : bitmap.getWidth();
+        return layers.isEmpty() ? (bitmap == null ? 0 : bitmap.getWidth())
+                : layers.get(0).bitmap.getWidth();
     }
 
     public synchronized int height() {
-        return bitmap == null ? 0 : bitmap.getHeight();
+        return layers.isEmpty() ? (bitmap == null ? 0 : bitmap.getHeight())
+                : layers.get(0).bitmap.getHeight();
     }
 
     public synchronized int undoDepth() {
@@ -85,8 +132,9 @@ public final class LocalEditorEngine {
         redo.addLast(copy(bitmap));
         trim(redo);
         bitmap = undo.removeLast();
+        syncActiveLayer();
         selection = null;
-        return bitmap;
+        return compositeLayers();
     }
 
     public synchronized Bitmap redo() {
@@ -96,8 +144,9 @@ public final class LocalEditorEngine {
         undo.addLast(copy(bitmap));
         trim(undo);
         bitmap = redo.removeLast();
+        syncActiveLayer();
         selection = null;
-        return bitmap;
+        return compositeLayers();
     }
 
     public synchronized int beginAdjustment(String operation, int requestedValue) {
@@ -131,12 +180,13 @@ public final class LocalEditorEngine {
         if (b != 0) brightness(b);
         if (c != 0) contrast(c);
         if (s != 0) saturation(s);
-        return bitmap;
+        syncActiveLayer();
+        return compositeLayers();
     }
 
     public synchronized Bitmap commitAdjustment() {
         requireImage();
-        if (adjustmentOperation == null) return bitmap;
+        if (adjustmentOperation == null) return compositeLayers();
 
         int previous = committedAdjustment(adjustmentOperation);
         if (adjustmentValue != previous) {
@@ -153,7 +203,8 @@ public final class LocalEditorEngine {
         adjustmentSessionStart = null;
         adjustmentOperation = null;
         adjustmentValue = 0;
-        return bitmap;
+        syncActiveLayer();
+        return compositeLayers();
     }
 
     public synchronized Bitmap cancelAdjustment() {
@@ -163,7 +214,8 @@ public final class LocalEditorEngine {
         adjustmentSessionStart = null;
         adjustmentOperation = null;
         adjustmentValue = 0;
-        return bitmap;
+        syncActiveLayer();
+        return compositeLayers();
     }
 
     public synchronized boolean hasAdjustmentSession() {
@@ -207,7 +259,32 @@ public final class LocalEditorEngine {
         String op = operation == null ? "" : operation.trim().toLowerCase();
         JSONObject p = params == null ? new JSONObject() : params;
 
-        if (selectionOperation(op, p)) return bitmap;
+        switch (op) {
+            case "add_layer":
+                return addLayer(p.optString("name", "Layer " + (layers.size() + 1)));
+            case "duplicate_layer":
+                return duplicateLayer();
+            case "delete_layer":
+                return deleteLayer();
+            case "set_active_layer":
+                return setActiveLayer(p.optInt("index", activeLayerIndex));
+            case "toggle_layer_visibility":
+                return toggleLayerVisibility(p.optInt("index", activeLayerIndex));
+            case "set_layer_opacity":
+                return setLayerOpacity(p.optInt("index", activeLayerIndex),
+                        p.optInt("opacity", 255));
+            case "merge_down":
+                return mergeDown();
+            case "flatten":
+            case "merge_visible":
+                return flattenLayers();
+        }
+
+        if (selectionOperation(op, p)) return compositeLayers();
+
+        if (isGeometryOperation(op) && layers.size() > 1) {
+            flattenLayersInternal();
+        }
 
         Bitmap original = bitmap;
         Bitmap before = copy(original);
@@ -339,10 +416,7 @@ public final class LocalEditorEngine {
                 case "replace_text_region":
                     replaceTextRegion(p);
                     break;
-                case "flatten":
-                case "merge_visible":
-                    // Phase 1 has one raster layer; these are already flattened.
-                    break;
+
                 default:
                     throw new UnsupportedOperationException(
                             "الأداة " + op + " ستُنقل للمحرك المحلي في المرحلة التالية");
@@ -351,9 +425,11 @@ public final class LocalEditorEngine {
             undo.addLast(before);
             trim(undo);
             redo.clear();
-            return bitmap;
+            syncActiveLayer();
+            return compositeLayers();
         } catch (RuntimeException e) {
             bitmap = original;
+            syncActiveLayer();
             throw e;
         }
     }
@@ -387,10 +463,178 @@ public final class LocalEditorEngine {
         }
 
         ByteArrayOutputStream out = new ByteArrayOutputStream();
-        if (!bitmap.compress(cf, q, out)) {
+        Bitmap exportBitmap = compositeLayers();
+        if (!exportBitmap.compress(cf, q, out)) {
             throw new IllegalStateException("فشل ضغط الصورة");
         }
         return out.toByteArray();
+    }
+
+    private boolean isGeometryOperation(String op) {
+        return "rotate".equals(op) || "flip_horizontal".equals(op) ||
+                "flip_vertical".equals(op) || "crop".equals(op) ||
+                "resize".equals(op) || "scale".equals(op) ||
+                "perspective".equals(op);
+    }
+
+    private Bitmap addLayer(String name) {
+        Bitmap layerBitmap = Bitmap.createBitmap(width(), height(), Bitmap.Config.ARGB_8888);
+        Layer layer = new Layer(name == null || name.trim().isEmpty()
+                ? "Layer " + (layers.size() + 1) : name.trim(), layerBitmap);
+        layers.add(layer);
+        activeLayerIndex = layers.size() - 1;
+        bitmap = layer.bitmap;
+        undo.clear();
+        redo.clear();
+        clearAdjustmentPipeline();
+        return compositeLayers();
+    }
+
+    private Bitmap duplicateLayer() {
+        Layer source = activeLayer();
+        Layer copyLayer = new Layer(source.name + " copy", copy(source.bitmap));
+        copyLayer.visible = source.visible;
+        copyLayer.opacity = source.opacity;
+        layers.add(activeLayerIndex + 1, copyLayer);
+        activeLayerIndex++;
+        bitmap = copyLayer.bitmap;
+        undo.clear();
+        redo.clear();
+        clearAdjustmentPipeline();
+        return compositeLayers();
+    }
+
+    private Bitmap deleteLayer() {
+        if (layers.size() <= 1) {
+            throw new IllegalStateException("لا يمكن حذف آخر طبقة");
+        }
+        layers.remove(activeLayerIndex);
+        activeLayerIndex = Math.max(0, Math.min(activeLayerIndex, layers.size() - 1));
+        bitmap = layers.get(activeLayerIndex).bitmap;
+        undo.clear();
+        redo.clear();
+        clearAdjustmentPipeline();
+        return compositeLayers();
+    }
+
+    private Bitmap setActiveLayer(int index) {
+        if (index < 0 || index >= layers.size()) {
+            throw new IllegalArgumentException("طبقة غير موجودة");
+        }
+        syncActiveLayer();
+        activeLayerIndex = index;
+        bitmap = layers.get(activeLayerIndex).bitmap;
+        undo.clear();
+        redo.clear();
+        clearAdjustmentPipeline();
+        return compositeLayers();
+    }
+
+    private Bitmap toggleLayerVisibility(int index) {
+        if (index < 0 || index >= layers.size()) {
+            throw new IllegalArgumentException("طبقة غير موجودة");
+        }
+        layers.get(index).visible = !layers.get(index).visible;
+        return compositeLayers();
+    }
+
+    private Bitmap setLayerOpacity(int index, int opacity) {
+        if (index < 0 || index >= layers.size()) {
+            throw new IllegalArgumentException("طبقة غير موجودة");
+        }
+        layers.get(index).opacity = clamp(opacity, 0, 255);
+        return compositeLayers();
+    }
+
+    private Bitmap mergeDown() {
+        if (activeLayerIndex <= 0 || layers.size() <= 1) {
+            throw new IllegalStateException("لا توجد طبقة أسفلها للدمج");
+        }
+
+        Layer top = layers.get(activeLayerIndex);
+        Layer lower = layers.get(activeLayerIndex - 1);
+        Bitmap merged = Bitmap.createBitmap(width(), height(), Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(merged);
+
+        Paint lowerPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+        lowerPaint.setAlpha(lower.opacity);
+        if (lower.visible) canvas.drawBitmap(lower.bitmap, 0, 0, lowerPaint);
+
+        Paint topPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+        topPaint.setAlpha(top.opacity);
+        if (top.visible) canvas.drawBitmap(top.bitmap, 0, 0, topPaint);
+
+        lower.bitmap = merged;
+        lower.opacity = 255;
+        lower.visible = true;
+        lower.name = lower.name + " + " + top.name;
+        layers.remove(activeLayerIndex);
+        activeLayerIndex--;
+        bitmap = lower.bitmap;
+        undo.clear();
+        redo.clear();
+        clearAdjustmentPipeline();
+        return compositeLayers();
+    }
+
+    private Bitmap flattenLayers() {
+        flattenLayersInternal();
+        undo.clear();
+        redo.clear();
+        clearAdjustmentPipeline();
+        return bitmap;
+    }
+
+    private void flattenLayersInternal() {
+        if (layers.size() <= 1) {
+            if (!layers.isEmpty()) bitmap = layers.get(0).bitmap;
+            return;
+        }
+
+        Bitmap merged = compositeLayers();
+        layers.clear();
+        Layer flat = new Layer("Background", merged);
+        layers.add(flat);
+        activeLayerIndex = 0;
+        bitmap = merged;
+    }
+
+    private Layer activeLayer() {
+        if (layers.isEmpty()) throw new IllegalStateException("لا توجد طبقات");
+        activeLayerIndex = Math.max(0, Math.min(activeLayerIndex, layers.size() - 1));
+        return layers.get(activeLayerIndex);
+    }
+
+    private void syncActiveLayer() {
+        if (!layers.isEmpty() && bitmap != null) {
+            activeLayer().bitmap = bitmap;
+        }
+    }
+
+    private Bitmap compositeLayers() {
+        if (bitmap == null) return null;
+        if (layers.size() <= 1) {
+            if (!layers.isEmpty()) {
+                Layer only = layers.get(0);
+                if (only.visible && only.opacity >= 255) return only.bitmap;
+            } else {
+                return bitmap;
+            }
+        }
+
+        int w = width();
+        int h = height();
+        Bitmap out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(out);
+        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+
+        for (Layer layer : layers) {
+            if (!layer.visible) continue;
+            paint.setAlpha(layer.opacity);
+            canvas.drawBitmap(layer.bitmap, 0, 0, paint);
+        }
+        paint.setAlpha(255);
+        return out;
     }
 
     private boolean selectionOperation(String op, JSONObject p) {
