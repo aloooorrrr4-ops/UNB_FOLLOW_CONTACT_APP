@@ -1079,9 +1079,6 @@ public class ProfessionalEditorActivity extends Activity {
             rememberColor(foregroundColor);
             if (canvas != null) {
                 canvas.setStrokePreview(brushSize, parsed);
-                if (canvas.hasTextOverlay()) {
-                    updateTextOverlayStyle();
-                }
             }
             setStatus("اللون الحالي " + foregroundColor);
         } catch (Exception e) {
@@ -1125,6 +1122,9 @@ public class ProfessionalEditorActivity extends Activity {
             swatch.setLayoutParams(lp);
             swatch.setOnClickListener(v -> {
                 applyForegroundColor(String.format("#%06X", 0xFFFFFF & color));
+                if ("text".equals(returnTool) && canvas != null && canvas.hasTextOverlay()) {
+                    updateTextOverlayStyle();
+                }
                 if (holder[0] != null) holder[0].dismiss();
                 if (returnTool != null) showTool(returnTool, returnLabel, null);
             });
@@ -1149,6 +1149,9 @@ public class ProfessionalEditorActivity extends Activity {
                 recentRow.addView(b, lp);
                 b.setOnClickListener(v -> {
                     applyForegroundColor(rc);
+                    if ("text".equals(returnTool) && canvas != null && canvas.hasTextOverlay()) {
+                        updateTextOverlayStyle();
+                    }
                     if (holder[0] != null) holder[0].dismiss();
                     if (returnTool != null) showTool(returnTool, returnLabel, null);
                 });
@@ -1185,6 +1188,9 @@ public class ProfessionalEditorActivity extends Activity {
                 try {
                     Color.parseColor(value);
                     applyForegroundColor(value);
+                    if ("text".equals(returnTool) && canvas != null && canvas.hasTextOverlay()) {
+                        updateTextOverlayStyle();
+                    }
                     dialog.dismiss();
                     if (returnTool != null) showTool(returnTool, returnLabel, null);
                 } catch (Exception e) {
@@ -1471,10 +1477,11 @@ public class ProfessionalEditorActivity extends Activity {
         int x = Math.max(0, Math.min(bitmap.getWidth() - 1, Math.round(imageX)));
         int y = Math.max(0, Math.min(bitmap.getHeight() - 1, Math.round(imageY)));
         int color = bitmap.getPixel(x, y);
+        boolean textColorTarget = "text".equals(colorPickerReturnTool);
         foregroundColor = String.format("#%06X", (0xFFFFFF & color));
         rememberColor(foregroundColor);
         canvas.setStrokePreview(brushSize, color);
-        if (canvas.hasTextOverlay()) {
+        if (textColorTarget && canvas.hasTextOverlay()) {
             updateTextOverlayStyle();
         }
         setStatus("اللون الحالي " + foregroundColor + "  •  X " + x + " Y " + y);
@@ -2747,8 +2754,11 @@ public class ProfessionalEditorActivity extends Activity {
                 Bitmap value = localEngine.apply(operation, params);
                 Bitmap selectionOverlay = localEngine.selectionPreview();
                 runOnUiThread(() -> {
-                    canvas.setBitmap(value);
                     if (canvas != null) {
+                        canvas.setBitmapPreserveViewport(value);
+                        if ("add_text".equals(operation)) {
+                            canvas.clearTextOverlay();
+                        }
                         canvas.clearStrokePreview();
                         canvas.setSelectionOverlay(selectionOverlay);
                         if (isTransformGeometryOperation(operation) &&
@@ -2827,7 +2837,7 @@ public class ProfessionalEditorActivity extends Activity {
                 Bitmap selectionOverlay = localEngine.selectionPreview();
 
                 runOnUiThread(() -> {
-                    canvas.setBitmap(value);
+                    canvas.setBitmapPreserveViewport(value);
                     canvas.setSelectionOverlay(selectionOverlay);
                     resetAdjustmentValues();
                     setBusy(false);
@@ -3305,6 +3315,9 @@ public class ProfessionalEditorActivity extends Activity {
 
     private void setBusy(boolean value) {
         busy = value;
+        if (canvas != null) {
+            canvas.setTextOverlayEditingEnabled(!value);
+        }
     }
 
     private void setStatus(String text) {

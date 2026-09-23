@@ -93,6 +93,7 @@ public class EditorCanvasView extends View {
     private int textOverlayColor = Color.WHITE;
     private String textOverlayFont = "sans-serif";
     private boolean textOverlayBold = false;
+    private boolean textOverlayEditingEnabled = true;
     private int textOverlayGesture = 0; // 1 move, 2 scale, 3 rotate
     private float textOverlayStartTouchX;
     private float textOverlayStartTouchY;
@@ -269,6 +270,7 @@ public class EditorCanvasView extends View {
 
     public void startTextOverlay(String text, float x, float y, float size, int color,
                                  String fontFamily, boolean bold, float widthScale) {
+        if (!textOverlayEditingEnabled) return;
         if (bitmap == null || text == null || text.trim().isEmpty()) return;
         if (hasTextOverlay()) return;
         textOverlayText = text;
@@ -290,6 +292,11 @@ public class EditorCanvasView extends View {
         return textOverlayText != null && !textOverlayText.isEmpty();
     }
 
+    public void setTextOverlayEditingEnabled(boolean enabled) {
+        textOverlayEditingEnabled = enabled;
+        if (!enabled) textOverlayGesture = 0;
+    }
+
     public void clearTextOverlay() {
         textOverlayText = null;
         textOverlayGesture = 0;
@@ -301,7 +308,7 @@ public class EditorCanvasView extends View {
 
     public void updateTextOverlayStyle(float size, int color, String fontFamily,
                                        boolean bold, float widthScale) {
-        if (!hasTextOverlay()) return;
+        if (!textOverlayEditingEnabled || !hasTextOverlay()) return;
         textOverlaySize = Math.max(6f, size);
         textOverlayColor = color;
         if (fontFamily != null && !fontFamily.trim().isEmpty()) {
@@ -623,6 +630,7 @@ public class EditorCanvasView extends View {
     }
 
     private boolean handleTextOverlayTouch(MotionEvent event) {
+        if (!textOverlayEditingEnabled) return true;
         if (!hasTextOverlay()) return true;
         RectF b = textOverlayLocalBounds();
         float sx = event.getX();
