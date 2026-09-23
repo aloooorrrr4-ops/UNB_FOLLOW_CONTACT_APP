@@ -104,6 +104,7 @@ public class ProfessionalEditorActivity extends Activity {
     private float cloneSourceX = Float.NaN;
     private float cloneSourceY = Float.NaN;
     private float cropAspectRatio = 0f;
+    private String gradientType = "linear";
     private byte[] pendingExportBytes;
     private String pendingExportName = "export.png";
 
@@ -806,7 +807,7 @@ public class ProfessionalEditorActivity extends Activity {
             toolOptions.addView(actionButton("تكبير/تصغير", v ->
                     showResizeDialog()));
             toolOptions.addView(actionButton("منظور", v ->
-                    toast("المنظور الحر ضمن محرك V2")));
+                    showPerspectiveDialog()));
             toolOptions.addView(actionButton("إلغاء", v ->
                     setStatus("تم إلغاء التحويل")));
         } else if ("gradient".equals(id)) {
@@ -815,8 +816,18 @@ public class ProfessionalEditorActivity extends Activity {
                     showColorPaletteDialog("لون التدرج", "gradient", "تدرج")));
             toolOptions.addView(actionButton("التعرف من الصورة", v ->
                     startColorPickFor("gradient", "تدرج")));
-            toolOptions.addView(actionButton("خطي", v ->
-                    setStatus("تدرج خطي")));
+            toolOptions.addView(actionButton(
+                    "linear".equals(gradientType) ? "خطي ✓" : "خطي",
+                    v -> {
+                        gradientType = "linear";
+                        showTool("gradient", "تدرج", null);
+                    }));
+            toolOptions.addView(actionButton(
+                    "radial".equals(gradientType) ? "دائري ✓" : "دائري",
+                    v -> {
+                        gradientType = "radial";
+                        showTool("gradient", "تدرج", null);
+                    }));
             addPointerModeControls(toolOptions);
         } else {
             TextView help = label(toolHelp(id), desktopLayout ? 13 : 11, MUTED, false);
@@ -1118,7 +1129,7 @@ public class ProfessionalEditorActivity extends Activity {
                     "y1", points[1],
                     "x2", points[points.length - 2],
                     "y2", points[points.length - 1],
-                    "type", "linear",
+                    "type", gradientType,
                     "foreground", foregroundColor,
                     "background", "#000000"
             ));
@@ -2541,6 +2552,53 @@ public class ProfessionalEditorActivity extends Activity {
                     if (handler != null) handler.onChoice(which);
                 })
                 .setNegativeButton("إغلاق", null)
+                .show();
+    }
+
+    private void showPerspectiveDialog() {
+        if (!localEngine.hasImage()) {
+            toast("افتح صورة أولاً");
+            return;
+        }
+
+        LinearLayout box = column();
+        box.setPadding(dp(18), dp(8), dp(18), 0);
+
+        EditText top = new EditText(this);
+        top.setHint("تقارب الحافة العليا %");
+        top.setText("8");
+        top.setTextColor(TEXT);
+        top.setHintTextColor(MUTED);
+        top.setInputType(InputType.TYPE_CLASS_NUMBER |
+                InputType.TYPE_NUMBER_FLAG_DECIMAL);
+        box.addView(top);
+
+        EditText bottom = new EditText(this);
+        bottom.setHint("تقارب الحافة السفلى %");
+        bottom.setText("0");
+        bottom.setTextColor(TEXT);
+        bottom.setHintTextColor(MUTED);
+        bottom.setInputType(InputType.TYPE_CLASS_NUMBER |
+                InputType.TYPE_NUMBER_FLAG_DECIMAL);
+        box.addView(bottom);
+
+        new AlertDialog.Builder(this)
+                .setTitle("منظور Perspective")
+                .setView(box)
+                .setNegativeButton("إلغاء", null)
+                .setPositiveButton("تطبيق", (dialog, which) -> {
+                    try {
+                        double topPercent = Double.parseDouble(top.getText().toString());
+                        double bottomPercent = Double.parseDouble(bottom.getText().toString());
+                        double width = localEngine.width();
+                        applyRemote("perspective", jsonOf(
+                                "top_inset", width * topPercent / 100.0,
+                                "bottom_inset", width * bottomPercent / 100.0
+                        ));
+                    } catch (Exception e) {
+                        toast("أدخل نسباً صحيحة");
+                    }
+                })
                 .show();
     }
 
