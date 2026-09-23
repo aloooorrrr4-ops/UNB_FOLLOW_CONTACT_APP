@@ -832,6 +832,180 @@ public class ProfessionalEditorActivity extends Activity {
         }
     }
 
+    private void addPointerModeControls(LinearLayout parent) {
+        parent.addView(actionButton(pointerWorkEnabled ? "تحريك فقط" : "تحريك فقط ✓", v -> {
+            pointerWorkEnabled = false;
+            if (canvas != null) {
+                canvas.setPointerActionEnabled(false);
+                canvas.showPointerNow();
+            }
+            setStatus("تحريك المؤشر فقط — بدون تنفيذ");
+        }));
+        parent.addView(actionButton(pointerWorkEnabled ? "تحريك + عمل ✓" : "تحريك + عمل", v -> {
+            pointerWorkEnabled = true;
+            if (canvas != null) {
+                canvas.setPointerActionEnabled(true);
+                canvas.showPointerNow();
+            }
+            setStatus("تحريك المؤشر مع تنفيذ الأداة");
+        }));
+    }
+
+    private void startColorPickFor(String returnTool, String returnLabel) {
+        colorPickerReturnTool = returnTool;
+        colorPickerReturnLabel = returnLabel;
+        pointerWorkEnabled = false;
+        showTool("color_picker", "اختيار لون", null);
+        if (canvas != null) {
+            canvas.setPointerActionEnabled(false);
+            canvas.showPointerNow();
+        }
+        setStatus("حرّك المؤشر فوق اللون ثم اضغط التقاط اللون");
+    }
+
+    private void pickColorAtPointer() {
+        if (canvas == null) return;
+        float[] p = canvas.getPointerImagePosition();
+        if (p == null || p.length < 2) {
+            toast("المؤشر غير جاهز");
+            return;
+        }
+        pickLocalColor(p[0], p[1]);
+    }
+
+    private void rememberColor(String color) {
+        if (color == null) return;
+        String normalized = color.toUpperCase();
+        recentColors.remove(normalized);
+        recentColors.add(0, normalized);
+        while (recentColors.size() > 8) recentColors.remove(recentColors.size() - 1);
+    }
+
+    private void applyForegroundColor(String color) {
+        try {
+            int parsed = Color.parseColor(color);
+            foregroundColor = String.format("#%06X", 0xFFFFFF & parsed);
+            rememberColor(foregroundColor);
+            if (canvas != null) {
+                canvas.setStrokePreview(brushSize, parsed);
+            }
+            setStatus("اللون الحالي " + foregroundColor);
+        } catch (Exception e) {
+            toast("لون غير صحيح");
+        }
+    }
+
+    private void showColorPaletteDialog(String title, String returnTool, String returnLabel) {
+        LinearLayout box = column();
+        box.setPadding(dp(16), dp(10), dp(16), dp(6));
+
+        TextView current = label("اللون الحالي  " + foregroundColor, 13, TEXT, true);
+        current.setTextDirection(View.TEXT_DIRECTION_LTR);
+        current.setLayoutDirection(View.LAYOUT_DIRECTION_LTR);
+        current.setGravity(Gravity.CENTER);
+        current.setPadding(dp(8), dp(8), dp(8), dp(8));
+        current.setBackground(rounded(parseColorSafe(foregroundColor), 10));
+        current.setTextColor(colorLuminance(parseColorSafe(foregroundColor)) > 150
+                ? Color.BLACK : Color.WHITE);
+        box.addView(current, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
+
+        GridLayout grid = new GridLayout(this);
+        grid.setColumnCount(6);
+        int[] palette = {
+                0xFFFFFFFF, 0xFFBDBDBD, 0xFF757575, 0xFF212121, 0xFF000000, 0xFFFF1744,
+                0xFFFF5252, 0xFFFF8A80, 0xFFFF9100, 0xFFFFC400, 0xFFFFFF00, 0xFFCDDC39,
+                0xFF76FF03, 0xFF00E676, 0xFF1DE9B6, 0xFF00E5FF, 0xFF40C4FF, 0xFF448AFF,
+                0xFF536DFE, 0xFF7C4DFF, 0xFFB388FF, 0xFFE040FB, 0xFFFF4081, 0xFF795548
+        };
+
+        final AlertDialog[] holder = new AlertDialog[1];
+        for (int color : palette) {
+            Button swatch = new Button(this);
+            swatch.setText("");
+            swatch.setBackground(rounded(color, 6));
+            GridLayout.LayoutParams lp = new GridLayout.LayoutParams();
+            lp.width = dp(42);
+            lp.height = dp(42);
+            lp.setMargins(dp(3), dp(3), dp(3), dp(3));
+            swatch.setLayoutParams(lp);
+            swatch.setOnClickListener(v -> {
+                applyForegroundColor(String.format("#%06X", 0xFFFFFF & color));
+                if (holder[0] != null) holder[0].dismiss();
+                if (returnTool != null) showTool(returnTool, returnLabel, null);
+            });
+            grid.addView(swatch);
+        }
+        box.addView(grid);
+
+        if (!recentColors.isEmpty()) {
+            TextView recentTitle = label("الألوان المستخدمة مؤخراً", 12, MUTED, false);
+            recentTitle.setPadding(0, dp(8), 0, dp(4));
+            box.addView(recentTitle);
+
+            HorizontalScrollView recentScroll = new HorizontalScrollView(this);
+            LinearLayout recentRow = new LinearLayout(this);
+            recentRow.setOrientation(LinearLayout.HORIZONTAL);
+            for (String rc : recentColors) {
+                Button b = new Button(this);
+                b.setText("");
+                b.setBackground(rounded(parseColorSafe(rc), 20));
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(44), dp(44));
+                lp.setMargins(dp(3), 0, dp(3), 0);
+                recentRow.addView(b, lp);
+                b.setOnClickListener(v -> {
+                    applyForegroundColor(rc);
+                    if (holder[0] != null) holder[0].dismiss();
+                    if (returnTool != null) showTool(returnTool, returnLabel, null);
+                });
+            }
+            recentScroll.addView(recentRow);
+            box.addView(recentScroll, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(52)));
+        }
+
+        EditText hex = new EditText(this);
+        hex.setHint("#RRGGBB");
+        hex.setText(foregroundColor);
+        hex.setTextColor(TEXT);
+        hex.setHintTextColor(MUTED);
+        hex.setSingleLine(true);
+        hex.setTextDirection(View.TEXT_DIRECTION_LTR);
+        hex.setLayoutDirection(View.LAYOUT_DIRECTION_LTR);
+        hex.setGravity(Gravity.CENTER);
+        box.addView(hex);
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setView(box)
+                .setNegativeButton("إلغاء", null)
+                .setNeutralButton("من الصورة", null)
+                .setPositiveButton("تم", null)
+                .create();
+        holder[0] = dialog;
+
+        dialog.setOnShowListener(ignored -> {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+                String value = hex.getText().toString().trim();
+                if (!value.startsWith("#")) value = "#" + value;
+                try {
+                    Color.parseColor(value);
+                    applyForegroundColor(value);
+                    dialog.dismiss();
+                    if (returnTool != null) showTool(returnTool, returnLabel, null);
+                } catch (Exception e) {
+                    hex.setError("مثال: #2B2E33");
+                }
+            });
+
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> {
+                dialog.dismiss();
+                startColorPickFor(returnTool, returnLabel);
+            });
+        });
+        dialog.show();
+    }
+
     private void handleCanvasStroke(float[] points) {
         if (canvas == null || points == null || points.length < 2) return;
 
@@ -1016,8 +1190,17 @@ public class ProfessionalEditorActivity extends Activity {
         int y = Math.max(0, Math.min(bitmap.getHeight() - 1, Math.round(imageY)));
         int color = bitmap.getPixel(x, y);
         foregroundColor = String.format("#%06X", (0xFFFFFF & color));
+        rememberColor(foregroundColor);
         canvas.setStrokePreview(brushSize, color);
         setStatus("اللون الحالي " + foregroundColor + "  •  X " + x + " Y " + y);
+
+        if (colorPickerReturnTool != null) {
+            String returnTool = colorPickerReturnTool;
+            String returnLabel = colorPickerReturnLabel == null ? "الأداة" : colorPickerReturnLabel;
+            colorPickerReturnTool = null;
+            colorPickerReturnLabel = null;
+            showTool(returnTool, returnLabel, null);
+        }
     }
 
     private void detectTextRegions() {
