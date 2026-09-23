@@ -107,6 +107,7 @@ public class ProfessionalEditorActivity extends Activity {
     private float cloneSourceY = Float.NaN;
     private float cropAspectRatio = 0f;
     private String gradientType = "linear";
+    private String gradientBackgroundColor = "#000000";
     private byte[] pendingExportBytes;
     private String pendingExportName = "export.png";
 
@@ -590,7 +591,10 @@ public class ProfessionalEditorActivity extends Activity {
 
         activeTool = id;
         if (canvas != null) {
-            String canvasMode = "erase_fill".equals(id) ? eraseFillMode : id;
+            String canvasMode;
+            if ("erase_fill".equals(id)) canvasMode = eraseFillMode;
+            else if ("transform".equals(id) || "perspective".equals(id)) canvasMode = "transform_quad";
+            else canvasMode = id;
             canvas.setInteractionMode(canvasMode);
             canvas.setPointerActionEnabled(pointerWorkEnabled);
             canvas.setStrokePreview(brushSize, parseColorSafe(foregroundColor));
@@ -832,21 +836,36 @@ public class ProfessionalEditorActivity extends Activity {
             toolOptions.addView(actionButton("تقليص", v ->
                     applyRemote("shrink", json("steps", 5))));
         } else if ("transform".equals(id) || "perspective".equals(id)) {
-            toolOptions.addView(actionButton("تحريك", v ->
-                    setStatus("التحويل: تحريك")));
-            toolOptions.addView(actionButton("تدوير", v ->
-                    setStatus("التحويل: تدوير")));
+            if (canvas != null) {
+                canvas.setInteractionMode("transform_quad");
+                canvas.resetTransformQuad();
+            }
+
+            toolOptions.addView(actionButton("تطبيق المقابض", v ->
+                    applyTransformQuad()));
+            toolOptions.addView(actionButton("إعادة ضبط", v -> {
+                if (canvas != null) canvas.resetTransformQuad();
+                setStatus("تمت إعادة مقابض التحويل إلى زوايا الصورة");
+            }));
+            toolOptions.addView(actionButton("تدوير 90°", v ->
+                    applyRemote("rotate", json("degrees", 90))));
             toolOptions.addView(actionButton("تكبير/تصغير", v ->
                     showResizeDialog()));
-            toolOptions.addView(actionButton("منظور", v ->
+            toolOptions.addView(actionButton("منظور رقمي", v ->
                     showPerspectiveDialog()));
-            toolOptions.addView(actionButton("إلغاء", v ->
-                    setStatus("تم إلغاء التحويل")));
+
+            TextView help = label(
+                    "اسحب أي مقبض أبيض من زوايا الصورة ثم اضغط تطبيق المقابض.",
+                    11, MUTED, false);
+            help.setPadding(dp(10), 0, dp(10), 0);
+            toolOptions.addView(help, new LinearLayout.LayoutParams(dp(270), dp(82)));
         } else if ("gradient".equals(id)) {
             addSlider(toolOptions, "العتامة", 0, 100, 100, null);
-            toolOptions.addView(actionButton("لون المقدمة", v ->
-                    showColorPaletteDialog("لون التدرج", "gradient", "تدرج")));
-            toolOptions.addView(actionButton("التعرف من الصورة", v ->
+            toolOptions.addView(actionButton("اللون 1 " + foregroundColor, v ->
+                    showColorPaletteDialog("لون بداية التدرج", "gradient", "تدرج")));
+            toolOptions.addView(actionButton("اللون 2 " + gradientBackgroundColor, v ->
+                    showGradientBackgroundColorDialog()));
+            toolOptions.addView(actionButton("التعرف على اللون 1", v ->
                     startColorPickFor("gradient", "تدرج")));
             toolOptions.addView(actionButton(
                     "linear".equals(gradientType) ? "خطي ✓" : "خطي",
@@ -884,6 +903,87 @@ public class ProfessionalEditorActivity extends Activity {
             addSlider(toolOptions, "التشبع", -100, 100, 0,
                     value -> applyRemote("saturation", json("value", value)));
         }
+    }
+
+    private void applyTransformQuad() {
+        if (canvas == null || !localEngine.hasImage()) return;
+        float[] quad = canvas.getTransformQuad();
+        if (quad == null || quad.length < 8) {
+            toast("مقابض التحويل غير جاهزة");
+            return;
+        }
+
+        JSONArray values = new JSONArray();
+        for (float v : quad) values.put(v);
+        applyRemote("quad_transform", jsonOf("quad", values));
+        canvas.clearTransformQuad();
+    }
+
+    private void showGradientBackgroundColorDialog() {
+        LinearLayout box = column();
+        box.setPadding(dp(16), dp(10), dp(16), dp(6));
+
+        GridLayout grid = new GridLayout(this);
+        grid.setColumnCount(6);
+        int[] palette = {
+                0xFF000000, 0xFFFFFFFF, 0xFF757575, 0xFFFF1744, 0xFFFF9100, 0xFFFFFF00,
+                0xFF76FF03, 0xFF00E676, 0xFF1DE9B6, 0xFF00E5FF, 0xFF448AFF, 0xFF536DFE,
+                0xFF7C4DFF, 0xFFE040FB, 0xFFFF4081, 0xFF795548, 0xFF263238, 0xFFB0BEC5
+        };
+
+        final AlertDialog[] holder = new AlertDialog[1];
+        for (int color : palette) {
+            Button swatch = new Button(this);
+            swatch.setText("");
+            swatch.setBackground(rounded(color, 6));
+            GridLayout.LayoutParams lp = new GridLayout.LayoutParams();
+            lp.width = dp(42);
+            lp.height = dp(42);
+            lp.setMargins(dp(3), dp(3), dp(3), dp(3));
+            swatch.setLayoutParams(lp);
+            swatch.setOnClickListener(v -> {
+                gradientBackgroundColor = String.format("#%06X", 0xFFFFFF & color);
+                if (holder[0] != null) holder[0].dismiss();
+                showTool("gradient", "تدرج", null);
+            });
+            grid.addView(swatch);
+        }
+        box.addView(grid);
+
+        EditText hex = new EditText(this);
+        hex.setHint("#RRGGBB");
+        hex.setText(gradientBackgroundColor);
+        hex.setTextColor(TEXT);
+        hex.setHintTextColor(MUTED);
+        hex.setSingleLine(true);
+        hex.setTextDirection(View.TEXT_DIRECTION_LTR);
+        hex.setLayoutDirection(View.LAYOUT_DIRECTION_LTR);
+        hex.setGravity(Gravity.CENTER);
+        box.addView(hex);
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("لون نهاية التدرج")
+                .setView(box)
+                .setNegativeButton("إلغاء", null)
+                .setPositiveButton("تم", null)
+                .create();
+        holder[0] = dialog;
+
+        dialog.setOnShowListener(ignored ->
+                dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+                    String value = hex.getText().toString().trim();
+                    if (!value.startsWith("#")) value = "#" + value;
+                    try {
+                        Color.parseColor(value);
+                        gradientBackgroundColor =
+                                String.format("#%06X", 0xFFFFFF & Color.parseColor(value));
+                        dialog.dismiss();
+                        showTool("gradient", "تدرج", null);
+                    } catch (Exception e) {
+                        hex.setError("مثال: #000000");
+                    }
+                }));
+        dialog.show();
     }
 
     private void addPointerModeControls(LinearLayout parent) {
@@ -1180,7 +1280,7 @@ public class ProfessionalEditorActivity extends Activity {
                     "y2", points[points.length - 1],
                     "type", gradientType,
                     "foreground", foregroundColor,
-                    "background", "#000000"
+                    "background", gradientBackgroundColor
             ));
             return;
         }
@@ -1943,6 +2043,12 @@ public class ProfessionalEditorActivity extends Activity {
                         "Layer " + (localEngine.layerInfo().size() + 1)))));
         layerList.addView(actionButton("نسخ", v ->
                 applyRemote("duplicate_layer", new JSONObject())));
+        layerList.addView(actionButton("تسمية", v ->
+                showRenameActiveLayerDialog()));
+        layerList.addView(actionButton("↑ للأعلى", v ->
+                applyRemote("move_layer_up", new JSONObject())));
+        layerList.addView(actionButton("↓ للأسفل", v ->
+                applyRemote("move_layer_down", new JSONObject())));
         layerList.addView(actionButton("حذف", v ->
                 applyRemote("delete_layer", new JSONObject())));
         layerList.addView(actionButton("دمج لأسفل", v ->
@@ -2029,6 +2135,36 @@ public class ProfessionalEditorActivity extends Activity {
                         }
                     })));
         }
+    }
+
+    private void showRenameActiveLayerDialog() {
+        List<LocalEditorEngine.LayerInfo> layers = localEngine.layerInfo();
+        LocalEditorEngine.LayerInfo active = null;
+        for (LocalEditorEngine.LayerInfo info : layers) {
+            if (info.active) {
+                active = info;
+                break;
+            }
+        }
+        if (active == null) return;
+
+        EditText input = new EditText(this);
+        input.setText(active.name);
+        input.setSingleLine(true);
+        input.setTextColor(TEXT);
+        input.setSelectAllOnFocus(true);
+
+        int index = active.index;
+        new AlertDialog.Builder(this)
+                .setTitle("اسم الطبقة")
+                .setView(input)
+                .setNegativeButton("إلغاء", null)
+                .setPositiveButton("حفظ", (d, w) -> {
+                    String value = input.getText().toString().trim();
+                    if (value.isEmpty()) value = "Layer " + (index + 1);
+                    applyRemote("rename_layer", jsonOf("index", index, "name", value));
+                })
+                .show();
     }
 
     private void refreshChannels() {
