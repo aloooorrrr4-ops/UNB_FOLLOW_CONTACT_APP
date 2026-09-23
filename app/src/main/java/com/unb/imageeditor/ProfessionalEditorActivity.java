@@ -60,6 +60,7 @@ public class ProfessionalEditorActivity extends Activity {
     private EditorCanvasView canvas;
     private final LocalEditorEngine localEngine = new LocalEditorEngine();
     private final LocalTextRegionDetector textRegionDetector = new LocalTextRegionDetector();
+    private LocalOcrEngine ocrEngine;
     private final ExecutorService localExecutor = Executors.newSingleThreadExecutor();
     private String projectId;
     private byte[] sourceBytes;
@@ -98,6 +99,8 @@ public class ProfessionalEditorActivity extends Activity {
     private String foregroundColor = "#ffffff";
     private final List<RectF> detectedTextRegions = new ArrayList<>();
     private RectF selectedTextRegion;
+    private String recognizedText = "";
+    private int recognizedTextConfidence = 0;
     private float cloneSourceX = Float.NaN;
     private float cloneSourceY = Float.NaN;
     private float cropAspectRatio = 0f;
@@ -119,6 +122,7 @@ public class ProfessionalEditorActivity extends Activity {
         getWindow().setNavigationBarColor(Color.rgb(14, 16, 19));
 
         desktopLayout = isDesktopLayout();
+        ocrEngine = new LocalOcrEngine(this);
 
         LinearLayout root = column();
         root.setBackgroundColor(BG);
