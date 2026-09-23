@@ -46,6 +46,9 @@ public class EditorCanvasView extends View {
     private final Paint strokePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint pointerPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint pointerGuidePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint pointerHandleFillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint pointerHandleStrokePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint pointerHandleGripPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint textRegionPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint selectedTextRegionPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint transformPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -78,6 +81,12 @@ public class EditorCanvasView extends View {
     private float pointerHeadY;
     private boolean pointerVisible = false;
     private boolean pointerActionEnabled = true;
+    private boolean pointerHandleDragging = false;
+    private float pointerHandleLastX;
+    private float pointerHandleLastY;
+    private float lastScaleFocusX;
+    private float lastScaleFocusY;
+    private boolean scaleFocusValid = false;
     private float textSelectDownX;
     private float textSelectDownY;
     private boolean textSelectDragged = false;
@@ -130,8 +139,24 @@ public class EditorCanvasView extends View {
         pointerPaint.setColor(Color.WHITE);
 
         pointerGuidePaint.setStyle(Paint.Style.STROKE);
-        pointerGuidePaint.setStrokeWidth(dp(1));
-        pointerGuidePaint.setColor(Color.argb(110, 220, 225, 235));
+        pointerGuidePaint.setStrokeWidth(dp(1.5f));
+        pointerGuidePaint.setColor(Color.argb(155, 235, 240, 248));
+
+        pointerHandleFillPaint.setStyle(Paint.Style.FILL);
+        pointerHandleFillPaint.setColor(Color.rgb(255, 138, 0));
+        pointerHandleFillPaint.setShadowLayer(dp(5), 0f, dp(2),
+                Color.argb(150, 0, 0, 0));
+
+        pointerHandleStrokePaint.setStyle(Paint.Style.STROKE);
+        pointerHandleStrokePaint.setStrokeWidth(dp(2.5f));
+        pointerHandleStrokePaint.setColor(Color.WHITE);
+
+        pointerHandleGripPaint.setStyle(Paint.Style.STROKE);
+        pointerHandleGripPaint.setStrokeWidth(dp(2.2f));
+        pointerHandleGripPaint.setStrokeCap(Paint.Cap.ROUND);
+        pointerHandleGripPaint.setColor(Color.WHITE);
+
+        setLayerType(View.LAYER_TYPE_SOFTWARE, null);
 
         textRegionPaint.setStyle(Paint.Style.STROKE);
         textRegionPaint.setStrokeWidth(dp(1.5f));
@@ -162,6 +187,10 @@ public class EditorCanvasView extends View {
                     public boolean onScaleBegin(ScaleGestureDetector detector) {
                         cancelStroke();
                         activeTransformHandle = -1;
+                        pointerHandleDragging = false;
+                        lastScaleFocusX = detector.getFocusX();
+                        lastScaleFocusY = detector.getFocusY();
+                        scaleFocusValid = true;
                         if ("text_select".equals(interactionMode)) {
                             textSelectTapCancelled = true;
                         }
@@ -171,18 +200,38 @@ public class EditorCanvasView extends View {
                     @Override
                     public boolean onScale(ScaleGestureDetector detector) {
                         if (bitmap == null) return false;
-                        float old = zoom;
-                        zoom = clamp(zoom * detector.getScaleFactor(), 0.05f, 16f);
-                        float factor = zoom / old;
 
                         float fx = detector.getFocusX();
                         float fy = detector.getFocusY();
+
+                        // Two-finger translation pans the enlarged image even
+                        // while another editing tool is selected.
+                        if (scaleFocusValid) {
+                            offsetX += fx - lastScaleFocusX;
+                            offsetY += fy - lastScaleFocusY;
+                        }
+
+                        float old = zoom;
+                        zoom = clamp(zoom * detector.getScaleFactor(), 0.05f, 16f);
+                        float factor = zoom / old;
                         offsetX = fx - (fx - offsetX) * factor;
                         offsetY = fy - (fy - offsetY) * factor;
+
+                        lastScaleFocusX = fx;
+                        lastScaleFocusY = fy;
+                        scaleFocusValid = true;
+                        clampViewportOffsets();
 
                         invalidate();
                         notifyViewport();
                         return true;
+                    }
+
+                    @Override
+                    public void onScaleEnd(ScaleGestureDetector detector) {
+                        scaleFocusValid = false;
+                        clampViewportOffsets();
+                        invalidate();
                     }
                 });
 
@@ -201,6 +250,7 @@ public class EditorCanvasView extends View {
                         }
                         offsetX -= distanceX;
                         offsetY -= distanceY;
+                        clampViewportOffsets();
                         invalidate();
                         notifyViewport();
                         return true;
@@ -404,6 +454,7 @@ public class EditorCanvasView extends View {
     public void setBitmapPreserveViewport(Bitmap bitmap) {
         this.bitmap = bitmap;
         clearStrokePreview();
+        clampViewportOffsets();
         invalidate();
     }
 
@@ -452,6 +503,7 @@ public class EditorCanvasView extends View {
         float factor = zoom / old;
         offsetX = centerX - (centerX - offsetX) * factor;
         offsetY = centerY - (centerY - offsetY) * factor;
+        clampViewportOffsets();
         invalidate();
         notifyViewport();
     }
@@ -478,6 +530,7 @@ public class EditorCanvasView extends View {
         float factor = zoom / old;
         offsetX = x - (x - offsetX) * factor;
         offsetY = y - (y - offsetY) * factor;
+        clampViewportOffsets();
         invalidate();
         notifyViewport();
     }
@@ -486,6 +539,11 @@ public class EditorCanvasView extends View {
     protected void onSizeChanged(int w, int h, int oldw, int oldh) {
         if (bitmap != null && (!fitted || oldw == 0 || oldh == 0)) {
             post(this::fitToView);
+        } else if (bitmap != null) {
+            post(() -> {
+                clampViewportOffsets();
+                invalidate();
+            });
         }
     }
 
@@ -805,15 +863,54 @@ public class EditorCanvasView extends View {
                     pointerHeadX, pointerHeadY + r + dp(4), pointerPaint);
         }
 
-        Paint touch = pointerGuidePaint;
-        canvas.drawCircle(pointerTouchX, pointerTouchY, dp(5), touch);
+        // Large dedicated grip below the pointer. It is intentionally bright
+        // and has a generous hit area so the first touch grabs the handle
+        // without jumping the pointer head.
+        float handleRadius = dp(18);
+        canvas.drawCircle(pointerTouchX, pointerTouchY, handleRadius,
+                pointerHandleFillPaint);
+        canvas.drawCircle(pointerTouchX, pointerTouchY, handleRadius,
+                pointerHandleStrokePaint);
+
+        float gripHalf = dp(7);
+        for (int i = -1; i <= 1; i++) {
+            float gy = pointerTouchY + i * dp(5);
+            canvas.drawLine(pointerTouchX - gripHalf, gy,
+                    pointerTouchX + gripHalf, gy, pointerHandleGripPaint);
+        }
+    }
+
+    private boolean isPointerHandleHit(float x, float y) {
+        if (!pointerVisible || !usesDetachedPointer()) return false;
+        float dx = x - pointerTouchX;
+        float dy = y - pointerTouchY;
+        float hitRadius = dp(34);
+        return dx * dx + dy * dy <= hitRadius * hitRadius;
+    }
+
+    private void movePointerHandleBy(float dx, float dy) {
+        float margin = dp(22);
+        float maxX = Math.max(margin, getWidth() - margin);
+        float maxY = Math.max(margin, getHeight() - margin);
+        float minY = Math.min(maxY, pointerOffsetPx + dp(18));
+
+        pointerTouchX = clamp(pointerTouchX + dx, margin, maxX);
+        pointerTouchY = clamp(pointerTouchY + dy, minY, maxY);
+        pointerHeadX = pointerTouchX;
+        pointerHeadY = pointerTouchY - pointerOffsetPx;
+        pointerVisible = usesDetachedPointer();
     }
 
     private void updateDetachedPointer(float touchX, float touchY) {
-        pointerTouchX = touchX;
-        pointerTouchY = touchY;
-        pointerHeadX = touchX;
-        pointerHeadY = touchY - pointerOffsetPx;
+        float margin = dp(22);
+        float maxX = Math.max(margin, getWidth() - margin);
+        float maxY = Math.max(margin, getHeight() - margin);
+        float minY = Math.min(maxY, pointerOffsetPx + dp(18));
+
+        pointerTouchX = clamp(touchX, margin, maxX);
+        pointerTouchY = clamp(touchY, minY, maxY);
+        pointerHeadX = pointerTouchX;
+        pointerHeadY = pointerTouchY - pointerOffsetPx;
         pointerVisible = usesDetachedPointer();
     }
 
@@ -893,6 +990,27 @@ public class EditorCanvasView extends View {
                 getWidth() / 2f, getHeight() / 2f + dp(28), p);
     }
 
+    private void clampViewportOffsets() {
+        if (bitmap == null || getWidth() <= 0 || getHeight() <= 0) return;
+
+        float scaledW = bitmap.getWidth() * zoom;
+        float scaledH = bitmap.getHeight() * zoom;
+
+        if (scaledW <= getWidth()) {
+            offsetX = (getWidth() - scaledW) / 2f;
+        } else {
+            float minX = getWidth() - scaledW;
+            offsetX = clamp(offsetX, minX, 0f);
+        }
+
+        if (scaledH <= getHeight()) {
+            offsetY = (getHeight() - scaledH) / 2f;
+        } else {
+            float minY = getHeight() - scaledH;
+            offsetY = clamp(offsetY, minY, 0f);
+        }
+    }
+
     private void rebuildMatrix() {
         drawMatrix.reset();
         drawMatrix.postScale(zoom, zoom);
@@ -965,6 +1083,43 @@ public class EditorCanvasView extends View {
             }
             gestureDetector.onTouchEvent(event);
             return true;
+        }
+
+        if (usesDetachedPointer() && pointerVisible) {
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    if (isPointerHandleHit(event.getX(), event.getY())) {
+                        pointerHandleDragging = true;
+                        pointerHandleLastX = event.getX();
+                        pointerHandleLastY = event.getY();
+                        drawingStroke = false;
+                        strokePoints.clear();
+                        invalidate();
+                        return true;
+                    }
+                    break;
+
+                case MotionEvent.ACTION_MOVE:
+                    if (pointerHandleDragging) {
+                        float dx = event.getX() - pointerHandleLastX;
+                        float dy = event.getY() - pointerHandleLastY;
+                        movePointerHandleBy(dx, dy);
+                        pointerHandleLastX = event.getX();
+                        pointerHandleLastY = event.getY();
+                        invalidate();
+                        return true;
+                    }
+                    break;
+
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    if (pointerHandleDragging) {
+                        pointerHandleDragging = false;
+                        invalidate();
+                        return true;
+                    }
+                    break;
+            }
         }
 
         if ("transform_quad".equals(interactionMode)) {
