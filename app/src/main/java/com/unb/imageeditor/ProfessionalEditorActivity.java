@@ -2074,7 +2074,8 @@ public class ProfessionalEditorActivity extends Activity {
                 String text = (info.active ? "● " : "○ ") +
                         info.name + "\n" +
                         Math.round(info.opacity * 100f / 255f) + "% • " +
-                        info.blendMode + (info.hasMask ? " • Mask" : "");
+                        info.blendMode + (info.hasMask ? " • Mask" : "") +
+                        (info.locked ? " • 🔒" : "");
                 Button card = actionButton(text, v ->
                         applyRemote("set_active_layer", json("index", info.index)));
                 if (info.active) card.setBackground(rounded(Color.rgb(44, 83, 145), 8));
@@ -2083,6 +2084,9 @@ public class ProfessionalEditorActivity extends Activity {
                 Button eye = actionButton(info.visible ? "👁" : "⊘", v ->
                         applyRemote("toggle_layer_visibility", json("index", info.index)));
                 layerList.addView(eye);
+                Button lock = actionButton(info.locked ? "🔒" : "🔓", v ->
+                        applyRemote("toggle_layer_lock", json("index", info.index)));
+                layerList.addView(lock);
             } else {
                 LinearLayout row = new LinearLayout(this);
                 row.setOrientation(LinearLayout.HORIZONTAL);
@@ -2101,13 +2105,19 @@ public class ProfessionalEditorActivity extends Activity {
 
                 TextView meta = label(
                         Math.round(info.opacity * 100f / 255f) + "% • " +
-                                info.blendMode + (info.hasMask ? " • M" : ""),
+                                info.blendMode + (info.hasMask ? " • M" : "") +
+                                (info.locked ? " • 🔒" : ""),
                         11, MUTED, false);
                 meta.setGravity(Gravity.END);
 
+                Button lock = flatButton(info.locked ? "🔒" : "🔓", 13);
+                lock.setOnClickListener(v ->
+                        applyRemote("toggle_layer_lock", json("index", info.index)));
+
                 row.addView(eye, new LinearLayout.LayoutParams(dp(42), dp(36)));
+                row.addView(lock, new LinearLayout.LayoutParams(dp(42), dp(36)));
                 row.addView(name, new LinearLayout.LayoutParams(0, dp(36), 1f));
-                row.addView(meta, new LinearLayout.LayoutParams(dp(64), dp(36)));
+                row.addView(meta, new LinearLayout.LayoutParams(dp(92), dp(36)));
                 layerList.addView(row);
             }
         }
