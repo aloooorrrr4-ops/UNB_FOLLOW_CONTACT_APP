@@ -10,8 +10,8 @@ android {
         applicationId "com.unb.imageeditor"
         minSdk 26
         targetSdk 35
-        versionCode 36
-        versionName "1.6.3-alpha-text-safe-geometry"
+        versionCode 37
+        versionName "1.6.4-alpha-text-inpaint-memory"
     }
 
     buildTypes {
