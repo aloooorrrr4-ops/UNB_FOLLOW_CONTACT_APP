@@ -308,6 +308,13 @@ public final class LocalEditorEngine {
             case "set_layer_blend_mode":
                 return setLayerBlendMode(p.optInt("index", activeLayerIndex),
                         p.optString("mode", "normal"));
+            case "rename_layer":
+                return renameLayer(p.optInt("index", activeLayerIndex),
+                        p.optString("name", "Layer"));
+            case "move_layer_up":
+                return moveLayer(activeLayerIndex, 1);
+            case "move_layer_down":
+                return moveLayer(activeLayerIndex, -1);
             case "add_layer_mask":
                 return addLayerMask();
             case "invert_layer_mask":
@@ -354,6 +361,9 @@ public final class LocalEditorEngine {
                     break;
                 case "perspective":
                     perspective(p);
+                    break;
+                case "quad_transform":
+                    quadTransform(p);
                     break;
                 case "brightness":
                     brightness((float) p.optDouble("value", 0));
@@ -527,7 +537,7 @@ public final class LocalEditorEngine {
         return "rotate".equals(op) || "flip_horizontal".equals(op) ||
                 "flip_vertical".equals(op) || "crop".equals(op) ||
                 "resize".equals(op) || "scale".equals(op) ||
-                "perspective".equals(op);
+                "perspective".equals(op) || "quad_transform".equals(op);
     }
 
     private Bitmap addLayer(String name) {
@@ -598,6 +608,30 @@ public final class LocalEditorEngine {
             throw new IllegalArgumentException("طبقة غير موجودة");
         }
         layers.get(index).opacity = clamp(opacity, 0, 255);
+        return compositeLayers();
+    }
+
+    private Bitmap renameLayer(int index, String name) {
+        if (index < 0 || index >= layers.size()) {
+            throw new IllegalArgumentException("طبقة غير موجودة");
+        }
+        String clean = name == null ? "" : name.trim();
+        if (clean.isEmpty()) clean = "Layer " + (index + 1);
+        layers.get(index).name = clean;
+        return compositeLayers();
+    }
+
+    private Bitmap moveLayer(int index, int direction) {
+        if (index < 0 || index >= layers.size()) {
+            throw new IllegalArgumentException("طبقة غير موجودة");
+        }
+        int target = index + direction;
+        if (target < 0 || target >= layers.size()) return compositeLayers();
+
+        Layer layer = layers.remove(index);
+        layers.add(target, layer);
+        activeLayerIndex = target;
+        bitmap = layer.bitmap;
         return compositeLayers();
     }
 
@@ -1246,6 +1280,39 @@ public final class LocalEditorEngine {
         selectionMask = null;
     }
 
+    private void quadTransform(JSONObject p) {
+        JSONArray quad = p.optJSONArray("quad");
+        if (quad == null || quad.length() < 8) {
+            throw new IllegalArgumentException("مقابض التحويل غير مكتملة");
+        }
+
+        int w = bitmap.getWidth();
+        int h = bitmap.getHeight();
+        float[] src = new float[]{
+                0f, 0f,
+                w, 0f,
+                w, h,
+                0f, h
+        };
+        float[] dst = new float[8];
+        for (int i = 0; i < 8; i++) {
+            dst[i] = (float) quad.optDouble(i, src[i]);
+        }
+
+        Matrix matrix = new Matrix();
+        if (!matrix.setPolyToPoly(src, 0, dst, 0, 4)) {
+            throw new IllegalStateException("تعذر حساب التحويل الحر");
+        }
+
+        Bitmap out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(out);
+        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+        canvas.drawBitmap(bitmap, matrix, paint);
+        bitmap = out;
+        selection = null;
+        selectionMask = null;
+    }
+
     private void brightness(float value) {
         float offset = Math.max(-100f, Math.min(100f, value)) * 2.55f;
         matrix(new ColorMatrix(new float[]{
@@ -1695,13 +1762,54 @@ public final class LocalEditorEngine {
                     int si = sy * w + sx;
                     int source = original[si];
                     int dest = out[di];
-                    float local = opacity;
-                    if (heal) local *= 0.65f;
-                    out[di] = blend(dest, source, local);
+                    float edge = 1f - (float) Math.sqrt(dx * dx + dy * dy) /
+                            Math.max(1f, radius);
+                    float local = opacity * Math.max(0.18f, edge);
+
+                    if (heal) {
+                        int targetAvg = neighborhoodAverage(original, w, h, xx, yy,
+                                Math.max(1, radius / 3));
+                        int sourceAvg = neighborhoodAverage(original, w, h, sx, sy,
+                                Math.max(1, radius / 3));
+
+                        int rr = clamp(Color.red(source) +
+                                Color.red(targetAvg) - Color.red(sourceAvg), 0, 255);
+                        int gg = clamp(Color.green(source) +
+                                Color.green(targetAvg) - Color.green(sourceAvg), 0, 255);
+                        int bb = clamp(Color.blue(source) +
+                                Color.blue(targetAvg) - Color.blue(sourceAvg), 0, 255);
+                        int corrected = Color.argb(Color.alpha(source), rr, gg, bb);
+                        out[di] = blend(dest, corrected, local * 0.82f);
+                    } else {
+                        out[di] = blend(dest, source, local);
+                    }
                 }
             }
         }
         setPixels(out);
+    }
+
+    private int neighborhoodAverage(int[] px, int w, int h,
+                                    int cx, int cy, int radius) {
+        long aa = 0, rr = 0, gg = 0, bb = 0, count = 0;
+        for (int dy = -radius; dy <= radius; dy++) {
+            int y = cy + dy;
+            if (y < 0 || y >= h) continue;
+            for (int dx = -radius; dx <= radius; dx++) {
+                int x = cx + dx;
+                if (x < 0 || x >= w) continue;
+                if (dx * dx + dy * dy > radius * radius) continue;
+                int c = px[y * w + x];
+                aa += Color.alpha(c);
+                rr += Color.red(c);
+                gg += Color.green(c);
+                bb += Color.blue(c);
+                count++;
+            }
+        }
+        if (count == 0) return Color.TRANSPARENT;
+        return Color.argb((int) (aa / count), (int) (rr / count),
+                (int) (gg / count), (int) (bb / count));
     }
 
     private void smudgeStroke(JSONObject p) {
