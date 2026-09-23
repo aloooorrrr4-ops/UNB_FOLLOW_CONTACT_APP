@@ -914,7 +914,12 @@ public class ProfessionalEditorActivity extends Activity {
         }
 
         JSONArray values = new JSONArray();
-        for (float v : quad) values.put(v);
+        try {
+            for (float v : quad) values.put((double) v);
+        } catch (Exception e) {
+            toast("تعذر تجهيز نقاط التحويل");
+            return;
+        }
         applyRemote("quad_transform", jsonOf("quad", values));
         canvas.clearTransformQuad();
     }
