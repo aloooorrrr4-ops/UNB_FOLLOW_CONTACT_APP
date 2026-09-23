@@ -81,6 +81,7 @@ public class EditorCanvasView extends View {
     private float textSelectDownX;
     private float textSelectDownY;
     private boolean textSelectDragged = false;
+    private boolean textSelectTapCancelled = false;
     private float[] transformQuad;
     private int activeTransformHandle = -1;
 
@@ -161,6 +162,9 @@ public class EditorCanvasView extends View {
                     public boolean onScaleBegin(ScaleGestureDetector detector) {
                         cancelStroke();
                         activeTransformHandle = -1;
+                        if ("text_select".equals(interactionMode)) {
+                            textSelectTapCancelled = true;
+                        }
                         return bitmap != null;
                     }
 
@@ -956,6 +960,9 @@ public class EditorCanvasView extends View {
         if (event.getPointerCount() >= 2 || scaleDetector.isInProgress()) {
             cancelStroke();
             activeTransformHandle = -1;
+            if ("text_select".equals(interactionMode)) {
+                textSelectTapCancelled = true;
+            }
             gestureDetector.onTouchEvent(event);
             return true;
         }
@@ -970,6 +977,7 @@ public class EditorCanvasView extends View {
                     textSelectDownX = event.getX();
                     textSelectDownY = event.getY();
                     textSelectDragged = false;
+                    textSelectTapCancelled = false;
                     updateDetachedPointer(event.getX(), event.getY());
                     invalidate();
                     return true;
@@ -986,15 +994,19 @@ public class EditorCanvasView extends View {
 
                 case MotionEvent.ACTION_UP:
                     updateDetachedPointer(event.getX(), event.getY());
-                    if (listener != null) {
+                    if (textSelectTapCancelled) {
+                        textSelectTapCancelled = false;
+                        textSelectDragged = false;
+                        invalidate();
+                        return true;
+                    }
+                    if (pointerActionEnabled && listener != null) {
                         if (!textSelectDragged) {
-                            // A deliberate tap on a detected box selects the
-                            // text under the finger directly. This avoids the
-                            // extra "select at pointer" step for normal use.
+                            // Direct text selection obeys the same action-mode
+                            // safety switch as detached-pointer selection.
                             float[] direct = screenToImage(event.getX(), event.getY());
                             listener.onTapImage(direct[0], direct[1]);
-                        } else if (pointerActionEnabled) {
-                            // Dragging still uses the detached pointer head.
+                        } else {
                             float[] p = getPointerImagePosition();
                             if (p != null) listener.onTapImage(p[0], p[1]);
                         }
@@ -1005,6 +1017,7 @@ public class EditorCanvasView extends View {
 
                 case MotionEvent.ACTION_CANCEL:
                     textSelectDragged = false;
+                    textSelectTapCancelled = false;
                     return true;
 
                 default:
