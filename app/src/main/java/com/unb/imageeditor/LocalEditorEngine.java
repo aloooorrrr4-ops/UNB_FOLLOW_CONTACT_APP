@@ -1790,8 +1790,17 @@ public final class LocalEditorEngine {
         RasterTextProfile originalProfile = analyzeRasterTextProfile(x, y, w, h);
 
         // Preserve the original artwork/background while removing the old
-        // character pixels.
-        eraseRasterTextPreserveBackground(x, y, w, h);
+        // character pixels. OCR boxes can clip anti-aliased glyph rims, so
+        // clean a very small padded area without changing the replacement box.
+        int cleanupPad = clamp(Math.round(h * 0.08f), 2, 6);
+        int cleanX = Math.max(0, x - cleanupPad);
+        int cleanY = Math.max(0, y - cleanupPad);
+        int cleanRight = Math.min(bitmap.getWidth(), x + w + cleanupPad);
+        int cleanBottom = Math.min(bitmap.getHeight(), y + h + cleanupPad);
+        eraseRasterTextPreserveBackground(
+                cleanX, cleanY,
+                Math.max(1, cleanRight - cleanX),
+                Math.max(1, cleanBottom - cleanY));
 
         if (text.trim().isEmpty()) return;
 
@@ -1813,71 +1822,67 @@ public final class LocalEditorEngine {
         float targetCenterX = x + w / 2f;
         float targetCenterY = y + h / 2f;
         float targetInkWidth = Math.max(1f, w * 0.90f);
-        float targetInkHeight = Math.max(6f,
-                (h * 0.80f) / Math.max(1, lines.length));
+        float targetStackHeight = Math.max(6f, h * 0.80f);
 
         if (autoMatch && originalProfile.valid) {
             targetCenterX = x + originalProfile.centerX();
             targetCenterY = y + originalProfile.centerY();
             targetInkWidth = Math.max(1f, originalProfile.width());
-            targetInkHeight = Math.max(6f,
-                    originalProfile.height() / Math.max(1, lines.length));
+            targetStackHeight = Math.max(6f, originalProfile.height());
 
             // Keep the size field meaningful: its default maps to 1.0, while
             // user edits enlarge/reduce the matched original appearance.
             targetInkWidth *= sizeRatio;
-            targetInkHeight *= sizeRatio;
+            targetStackHeight *= sizeRatio;
 
             if (!bold && originalProfile.density >= 0.24f) {
                 paint.setFakeBoldText(true);
             }
         } else {
             targetInkWidth *= sizeRatio;
-            targetInkHeight *= sizeRatio;
+            targetStackHeight *= sizeRatio;
         }
 
-        float baseWidthScale = Math.max(0.5f, Math.min(2.0f,
+        float requestedWidthScale = Math.max(0.5f, Math.min(2.0f,
                 (float) p.optDouble("width_scale", 1.0)));
-        paint.setTextScaleX(baseWidthScale);
 
-        // Fit visible glyph bounds, not FontMetrics. This is especially
-        // important for Arabic because ascender/descender metrics contain a
-        // lot of unused vertical space and previously made replacements tiny.
+        // Measure actual visible ink. For multiline text the target height is
+        // the whole visible stack, including interline spacing—not the glyph
+        // height of every line independently.
         float fitted = requested;
+        paint.setTextScaleX(1f);
         paint.setTextSize(fitted);
 
-        Rect inkBounds = new Rect();
-        String widestLine = "";
-        float widestMeasured = 1f;
         int maxInkHeight = 1;
+        float stackInkHeight = 0f;
         for (String line : lines) {
             String safe = line.isEmpty() ? " " : line;
             Rect b = new Rect();
             paint.getTextBounds(safe, 0, safe.length(), b);
-            if (b.height() > maxInkHeight) maxInkHeight = b.height();
-            float measured = paint.measureText(safe);
-            if (measured > widestMeasured) {
-                widestMeasured = measured;
-                widestLine = safe;
-                inkBounds.set(b);
-            }
+            int bh = Math.max(1, b.height());
+            maxInkHeight = Math.max(maxInkHeight, bh);
+            stackInkHeight += bh;
         }
+        float initialGap = lines.length > 1 ? Math.max(1f, maxInkHeight * 0.22f) : 0f;
+        stackInkHeight += initialGap * Math.max(0, lines.length - 1);
 
-        if (maxInkHeight > 0) {
-            fitted = Math.max(6f, fitted * (targetInkHeight / maxInkHeight));
+        if (stackInkHeight > 0f) {
+            fitted = Math.max(6f, fitted * (targetStackHeight / stackInkHeight));
             paint.setTextSize(fitted);
         }
 
-        // Re-measure after height fitting, then adjust horizontal scale before
-        // shrinking text height. This keeps Arabic replacement height visually
-        // consistent with the original word.
-        widestMeasured = 1f;
+        // Fit width from actual raster ink bounds, not typographic advance.
+        // This preserves visible width for Arabic side bearings/overhangs.
+        float widestInk = 1f;
         for (String line : lines) {
             String safe = line.isEmpty() ? " " : line;
-            widestMeasured = Math.max(widestMeasured, paint.measureText(safe));
+            Rect b = new Rect();
+            paint.getTextBounds(safe, 0, safe.length(), b);
+            widestInk = Math.max(widestInk, Math.max(1f, b.width()));
         }
 
-        float adjustedScaleX = baseWidthScale * (targetInkWidth / widestMeasured);
+        float desiredWidth = targetInkWidth * requestedWidthScale;
+        float adjustedScaleX = desiredWidth / widestInk;
         if (adjustedScaleX < 0.58f) {
             float shrink = adjustedScaleX / 0.58f;
             fitted = Math.max(6f, fitted * shrink);
@@ -1886,28 +1891,56 @@ public final class LocalEditorEngine {
         }
         adjustedScaleX = Math.max(0.58f, Math.min(1.55f, adjustedScaleX));
         paint.setTextScaleX(adjustedScaleX);
-        paint.setTextAlign(Paint.Align.CENTER);
+        paint.setTextAlign(Paint.Align.LEFT);
 
-        if (lines.length == 1) {
-            String line = lines[0].isEmpty() ? " " : lines[0];
+        // Re-measure final visible bounds after text size/scale are fixed.
+        Rect[] finalBounds = new Rect[lines.length];
+        float finalStackHeight = 0f;
+        int finalMaxHeight = 1;
+        for (int i = 0; i < lines.length; i++) {
+            String safe = lines[i].isEmpty() ? " " : lines[i];
             Rect b = new Rect();
-            paint.getTextBounds(line, 0, line.length(), b);
+            paint.getTextBounds(safe, 0, safe.length(), b);
+            finalBounds[i] = b;
+            finalMaxHeight = Math.max(finalMaxHeight, Math.max(1, b.height()));
+            finalStackHeight += Math.max(1, b.height());
+        }
+        float finalGap = lines.length > 1 ? Math.max(1f, finalMaxHeight * 0.22f) : 0f;
+        finalStackHeight += finalGap * Math.max(0, lines.length - 1);
 
-            // Baseline derived from actual ink bounds keeps the visible Arabic
-            // glyphs centered on the old raster text, rather than centering the
-            // font's invisible metric box.
-            float baseline = targetCenterY - (b.top + b.bottom) / 2f;
-            canvas.drawText(lines[0], targetCenterX, baseline, paint);
-            return;
+        // A final safety fit guarantees multiline visible ink + spacing stays
+        // inside the original raster profile.
+        if (finalStackHeight > targetStackHeight && finalStackHeight > 0f) {
+            float shrink = targetStackHeight / finalStackHeight;
+            fitted = Math.max(6f, fitted * shrink);
+            paint.setTextSize(fitted);
+
+            finalStackHeight = 0f;
+            finalMaxHeight = 1;
+            for (int i = 0; i < lines.length; i++) {
+                String safe = lines[i].isEmpty() ? " " : lines[i];
+                Rect b = new Rect();
+                paint.getTextBounds(safe, 0, safe.length(), b);
+                finalBounds[i] = b;
+                finalMaxHeight = Math.max(finalMaxHeight, Math.max(1, b.height()));
+                finalStackHeight += Math.max(1, b.height());
+            }
+            finalGap = lines.length > 1 ? Math.max(1f, finalMaxHeight * 0.22f) : 0f;
+            finalStackHeight += finalGap * Math.max(0, lines.length - 1);
         }
 
-        Paint.FontMetrics fm = paint.getFontMetrics();
-        float lineHeight = Math.max(fitted * 1.08f, fm.descent - fm.ascent);
-        float totalHeight = lineHeight * lines.length;
-        float baseline = targetCenterY - totalHeight / 2f - fm.ascent;
-        for (String line : lines) {
-            canvas.drawText(line, targetCenterX, baseline, paint);
-            baseline += lineHeight;
+        float visibleTop = targetCenterY - finalStackHeight / 2f;
+        for (int i = 0; i < lines.length; i++) {
+            Rect b = finalBounds[i];
+            String drawLine = lines[i];
+
+            // Center the actual ink rectangle, compensating side bearings and
+            // glyph overhangs instead of centering Paint's text advance.
+            float drawX = targetCenterX - (b.left + b.right) / 2f;
+            float baseline = visibleTop - b.top;
+            canvas.drawText(drawLine, drawX, baseline, paint);
+
+            visibleTop += Math.max(1, b.height()) + finalGap;
         }
     }
 
@@ -1956,7 +1989,6 @@ public final class LocalEditorEngine {
         int[] src = new int[count];
         bitmap.getPixels(src, 0, width, left, top, width, height);
 
-        int borderColor = estimateRegionBorderColor(src, width, height);
         int radius = clamp(Math.round(height * 0.10f), 2, 10);
 
         int[] diffs = new int[count];
@@ -1967,11 +1999,12 @@ public final class LocalEditorEngine {
                 int i = yy * width + xx;
                 int local = ringAverageColor(src, width, height, xx, yy, radius);
                 int dLocal = colorDistance(src[i], local);
-                int dBorder = colorDistance(src[i], borderColor);
-                int d = Math.max(dLocal, dBorder);
-                diffs[i] = d;
-                sum += d;
-                sumSq += (double) d * d;
+
+                // Local contrast identifies character strokes while rejecting
+                // broad smooth gradients that merely differ from the border.
+                diffs[i] = dLocal;
+                sum += dLocal;
+                sumSq += (double) dLocal * dLocal;
             }
         }
 
