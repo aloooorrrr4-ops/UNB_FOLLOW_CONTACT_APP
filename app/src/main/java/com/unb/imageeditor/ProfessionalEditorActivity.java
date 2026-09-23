@@ -8,6 +8,7 @@ import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
+import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
@@ -57,6 +58,7 @@ public class ProfessionalEditorActivity extends Activity {
 
     private EditorCanvasView canvas;
     private final LocalEditorEngine localEngine = new LocalEditorEngine();
+    private final LocalTextRegionDetector textRegionDetector = new LocalTextRegionDetector();
     private final ExecutorService localExecutor = Executors.newSingleThreadExecutor();
     private String projectId;
     private byte[] sourceBytes;
@@ -88,6 +90,8 @@ public class ProfessionalEditorActivity extends Activity {
     private int contrastValue = 0;
     private int saturationValue = 0;
     private String foregroundColor = "#ffffff";
+    private final List<RectF> detectedTextRegions = new ArrayList<>();
+    private RectF selectedTextRegion;
     private float cloneSourceX = Float.NaN;
     private float cloneSourceY = Float.NaN;
     private float cropAspectRatio = 0f;
@@ -254,6 +258,8 @@ public class ProfessionalEditorActivity extends Activity {
                 lastImageTapY = imageY;
                 if ("color_picker".equals(activeTool)) {
                     pickLocalColor(imageX, imageY);
+                } else if ("text_detect".equals(activeTool)) {
+                    selectDetectedTextRegion(imageX, imageY);
                 } else if ("fill".equals(activeTool) && projectId != null) {
                     applyRemote("fill", jsonOf("color", foregroundColor));
                 } else if ("fuzzy_select".equals(activeTool) && projectId != null) {
@@ -648,6 +654,19 @@ public class ProfessionalEditorActivity extends Activity {
         } else if ("saturation_adjust".equals(id)) {
             addAdjustmentSlider(toolOptions, "التشبع", "saturation", saturationValue,
                     value -> saturationValue = value);
+        } else if ("text_detect".equals(id)) {
+            toolOptions.addView(actionButton("اكتشاف النص", v -> detectTextRegions()));
+            toolOptions.addView(actionButton("قص المحدد", v -> cropSelectedTextRegion()));
+            toolOptions.addView(actionButton("مسح التحديد", v -> {
+                selectedTextRegion = null;
+                detectedTextRegions.clear();
+                if (canvas != null) canvas.clearDetectedTextRegions();
+                setStatus("تم مسح تحديد النص");
+            }));
+            TextView help = label("اكتشاف محلي لمناطق النص. اضغط على الإطار المطلوب ثم قص المحدد.",
+                    11, MUTED, false);
+            help.setPadding(dp(10), 0, dp(10), 0);
+            toolOptions.addView(help, new LinearLayout.LayoutParams(dp(250), dp(82)));
         } else if ("crop".equals(id)) {
             cropAspectRatio = 0f;
             toolOptions.addView(actionButton("يدوي", v -> {
@@ -923,6 +942,78 @@ public class ProfessionalEditorActivity extends Activity {
         foregroundColor = String.format("#%06X", (0xFFFFFF & color));
         canvas.setStrokePreview(brushSize, color);
         setStatus("اللون الحالي " + foregroundColor + "  •  X " + x + " Y " + y);
+    }
+
+    private void detectTextRegions() {
+        if (!localEngine.hasImage() || busy) {
+            if (!localEngine.hasImage()) toast("افتح صورة أولاً");
+            return;
+        }
+
+        setBusy(true);
+        setStatus("جاري اكتشاف مناطق النص محليًا...");
+
+        localExecutor.execute(() -> {
+            try {
+                Bitmap source = localEngine.current();
+                List<RectF> regions = textRegionDetector.detect(source);
+
+                runOnUiThread(() -> {
+                    detectedTextRegions.clear();
+                    detectedTextRegions.addAll(regions);
+                    selectedTextRegion = null;
+                    if (canvas != null) canvas.setDetectedTextRegions(regions);
+                    setBusy(false);
+                    setStatus("تم اكتشاف " + regions.size() + " منطقة نص — اضغط على الإطار المطلوب");
+                    addHistory("كشف النص");
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    setBusy(false);
+                    setStatus("فشل اكتشاف النص");
+                    toast(shortText(e.getMessage()));
+                });
+            }
+        });
+    }
+
+    private void selectDetectedTextRegion(float imageX, float imageY) {
+        RectF best = null;
+        float bestArea = Float.MAX_VALUE;
+
+        for (RectF region : detectedTextRegions) {
+            if (!region.contains(imageX, imageY)) continue;
+            float area = region.width() * region.height();
+            if (area < bestArea) {
+                bestArea = area;
+                best = region;
+            }
+        }
+
+        selectedTextRegion = best == null ? null : new RectF(best);
+        if (canvas != null) canvas.setSelectedTextRegion(selectedTextRegion);
+
+        if (selectedTextRegion == null) {
+            setStatus("لم يتم تحديد نص — اضغط داخل أحد الإطارات الزرقاء");
+        } else {
+            setStatus("تم تحديد النص • " +
+                    Math.round(selectedTextRegion.width()) + "×" +
+                    Math.round(selectedTextRegion.height()));
+        }
+    }
+
+    private void cropSelectedTextRegion() {
+        if (selectedTextRegion == null) {
+            toast("حدد إطار النص أولاً");
+            return;
+        }
+
+        int x = Math.max(0, Math.round(selectedTextRegion.left));
+        int y = Math.max(0, Math.round(selectedTextRegion.top));
+        int w = Math.max(1, Math.round(selectedTextRegion.width()));
+        int h = Math.max(1, Math.round(selectedTextRegion.height()));
+
+        applyRemote("crop", jsonOf("x", x, "y", y, "width", w, "height", h));
     }
 
     private int parseColorSafe(String color) {
@@ -1573,6 +1664,9 @@ public class ProfessionalEditorActivity extends Activity {
                     sourceBytes = bytes;
                     sourceName = name;
                     resetAdjustmentValues();
+                    detectedTextRegions.clear();
+                    selectedTextRegion = null;
+                    if (canvas != null) canvas.clearDetectedTextRegions();
                     projectId = "LOCAL";
                     canvas.setBitmap(frame);
                     projectText.setText("Offline • " +
@@ -1612,6 +1706,9 @@ public class ProfessionalEditorActivity extends Activity {
                             !"contrast".equals(operation) &&
                             !"saturation".equals(operation)) {
                         resetAdjustmentValues();
+                        detectedTextRegions.clear();
+                        selectedTextRegion = null;
+                        if (canvas != null) canvas.clearDetectedTextRegions();
                     }
                     setBusy(false);
                     projectId = "LOCAL";
