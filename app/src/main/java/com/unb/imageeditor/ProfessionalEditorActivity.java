@@ -2671,18 +2671,53 @@ public class ProfessionalEditorActivity extends Activity {
                 break;
 
             case "فلاتر":
-                showChoice("فلاتر GEGL", new String[]{
+                showChoice("فلاتر محلية", new String[]{
                         "Gaussian Blur", "Unsharp Mask", "Noise Reduction",
                         "Bloom", "Emboss", "Edge", "Oilify", "Pixelize",
                         "Mosaic", "Motion Blur", "Color Temperature"
                 }, index -> {
-                    String[] ops = {
-                            "gaussian_blur", "unsharp_mask", "noise_reduction",
-                            "bloom", "emboss", "edge", "oilify", "pixelize",
-                            "mosaic", "motion_blur", "color_temperature"
-                    };
-                    if (index >= 0 && index < ops.length) {
-                        applyRemote(ops[index], new JSONObject());
+                    switch (index) {
+                        case 0:
+                            showNumericOperationDialog("Gaussian Blur • Radius 1-30",
+                                    "gaussian_blur", "radius", 4, 1, 30, false);
+                            break;
+                        case 1:
+                            showNumericOperationDialog("Unsharp • Amount 0-300%",
+                                    "unsharp_mask", "amount", 115, 0, 300, true);
+                            break;
+                        case 2:
+                            showNumericOperationDialog("Noise Reduction • Radius 1-10",
+                                    "noise_reduction", "radius", 1, 1, 10, false);
+                            break;
+                        case 3:
+                            showNumericOperationDialog("Bloom • Strength 0-100%",
+                                    "bloom", "strength", 35, 0, 100, true);
+                            break;
+                        case 4:
+                            applyRemote("emboss", new JSONObject());
+                            break;
+                        case 5:
+                            applyRemote("edge", new JSONObject());
+                            break;
+                        case 6:
+                            applyRemote("oilify", new JSONObject());
+                            break;
+                        case 7:
+                            showNumericOperationDialog("Pixelize • Size 2-100",
+                                    "pixelize", "size", 12, 2, 100, false);
+                            break;
+                        case 8:
+                            showNumericOperationDialog("Mosaic • Size 2-100",
+                                    "mosaic", "size", 18, 2, 100, false);
+                            break;
+                        case 9:
+                            showNumericOperationDialog("Motion Blur • Radius 2-50",
+                                    "motion_blur", "radius", 9, 2, 50, false);
+                            break;
+                        case 10:
+                            showNumericOperationDialog("Color Temperature -100 إلى +100",
+                                    "color_temperature", "value", 20, -100, 100, false);
+                            break;
                     }
                 });
                 break;
