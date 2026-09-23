@@ -28,12 +28,12 @@ public class EditorCanvasView extends View {
 
     private static final Set<String> STROKE_MODES = new HashSet<>(Arrays.asList(
             "brush", "pencil", "eraser", "clone", "heal", "smudge",
-            "dodge_burn", "gradient", "select", "free_select", "crop"
+            "dodge_burn", "gradient", "select", "free_select", "crop", "color_picker"
     ));
 
     private static final Set<String> DETACHED_POINTER_MODES = new HashSet<>(Arrays.asList(
             "brush", "pencil", "eraser", "clone", "heal", "smudge",
-            "dodge_burn", "gradient", "select", "free_select", "crop"
+            "dodge_burn", "gradient", "select", "free_select", "crop", "color_picker"
     ));
 
     private final Paint checkerA = new Paint(Paint.ANTI_ALIAS_FLAG);
