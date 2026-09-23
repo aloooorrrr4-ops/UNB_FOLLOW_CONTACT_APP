@@ -1187,6 +1187,7 @@ public class ProfessionalEditorActivity extends Activity {
                     @Override
                     public void onSuccess(JSONObject health) {
                         if (!health.optBoolean("gimp_scriptfu", false)) {
+                            probe.close();
                             runOnUiThread(() -> {
                                 setStatus("الخادم متصل لكن محرك GIMP غير جاهز");
                                 toast("GIMP Script-Fu غير متصل");
@@ -1198,6 +1199,7 @@ public class ProfessionalEditorActivity extends Activity {
                                 new EditorApiClient.Callback<JSONObject>() {
                             @Override
                             public void onSuccess(JSONObject response) {
+                                probe.close();
                                 runOnUiThread(() -> {
                                     setStatus("اختبار ناجح — الإعدادات لم تُحفظ بعد");
                                     toast("الاتصال والمحرك يعملان");
@@ -1206,6 +1208,7 @@ public class ProfessionalEditorActivity extends Activity {
 
                             @Override
                             public void onError(String message) {
+                                probe.close();
                                 runOnUiThread(() -> {
                                     setStatus("فشل المصادقة/واجهة المحرر: " + shortText(message));
                                     toast("فشل اختبار المحرر");
@@ -1216,6 +1219,7 @@ public class ProfessionalEditorActivity extends Activity {
 
                     @Override
                     public void onError(String message) {
+                        probe.close();
                         runOnUiThread(() -> {
                             setStatus("فشل الاتصال: " + shortText(message));
                             toast("السيرفر غير متصل");
