@@ -40,6 +40,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class ProfessionalEditorActivity extends Activity {
 
@@ -82,6 +83,10 @@ public class ProfessionalEditorActivity extends Activity {
     private float lastImageTapY = 0f;
     private int brushSize = 45;
     private int brushOpacity = 100;
+    private int pointerOffsetDp = 92;
+    private int brightnessValue = 0;
+    private int contrastValue = 0;
+    private int saturationValue = 0;
     private String foregroundColor = "#ffffff";
     private float cloneSourceX = Float.NaN;
     private float cloneSourceY = Float.NaN;
@@ -92,6 +97,8 @@ public class ProfessionalEditorActivity extends Activity {
     private final List<String> history = new ArrayList<>();
     private boolean busy = false;
     private String pendingHistoryAction = null;
+    private final AtomicInteger adjustmentGeneration = new AtomicInteger();
+    private String activeAdjustmentOperation = null;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -265,6 +272,7 @@ public class ProfessionalEditorActivity extends Activity {
                 handleCanvasStroke(imagePoints);
             }
         });
+        v.setPointerOffsetDp(pointerOffsetDp);
         return v;
     }
 
@@ -585,16 +593,20 @@ public class ProfessionalEditorActivity extends Activity {
         }
 
         if (Arrays.asList("brush", "pencil", "eraser", "clone", "heal", "smudge", "dodge_burn").contains(id)) {
-            addSlider(toolOptions, "الحجم", 1, 300, brushSize, value -> {
+            addLiveSlider(toolOptions, "الحجم", 1, 300, brushSize, value -> {
                 brushSize = value;
                 if (canvas != null) {
                     canvas.setStrokePreview(brushSize, parseColorSafe(foregroundColor));
                 }
             });
-            addSlider(toolOptions, "العتامة", 0, 100, brushOpacity,
+            addLiveSlider(toolOptions, "العتامة", 0, 100, brushOpacity,
                     value -> brushOpacity = value);
             addSlider(toolOptions, "الصلابة", 0, 100, 70, null);
             addSlider(toolOptions, "التباعد", 1, 200, 20, null);
+            addLiveSlider(toolOptions, "ارتفاع الرأس", 48, 160, pointerOffsetDp, value -> {
+                pointerOffsetDp = value;
+                if (canvas != null) canvas.setPointerOffsetDp(pointerOffsetDp);
+            });
 
             if ("clone".equals(id) || "heal".equals(id)) {
                 toolOptions.addView(actionButton("تحديد المصدر", v -> {
@@ -628,14 +640,14 @@ public class ProfessionalEditorActivity extends Activity {
             toolOptions.addView(actionButton("لون النص", v ->
                     toast("لون النص الحالي " + foregroundColor)));
         } else if ("brightness_adjust".equals(id)) {
-            addSlider(toolOptions, "السطوع", -100, 100, 0,
-                    value -> applyRemote("brightness", json("value", value)));
+            addAdjustmentSlider(toolOptions, "السطوع", "brightness", brightnessValue,
+                    value -> brightnessValue = value);
         } else if ("contrast_adjust".equals(id)) {
-            addSlider(toolOptions, "التباين", -100, 100, 0,
-                    value -> applyRemote("contrast", json("value", value)));
+            addAdjustmentSlider(toolOptions, "التباين", "contrast", contrastValue,
+                    value -> contrastValue = value);
         } else if ("saturation_adjust".equals(id)) {
-            addSlider(toolOptions, "التشبع", -100, 100, 0,
-                    value -> applyRemote("saturation", json("value", value)));
+            addAdjustmentSlider(toolOptions, "التشبع", "saturation", saturationValue,
+                    value -> saturationValue = value);
         } else if ("crop".equals(id)) {
             cropAspectRatio = 0f;
             toolOptions.addView(actionButton("يدوي", v -> {
@@ -658,9 +670,14 @@ public class ProfessionalEditorActivity extends Activity {
                 cropAspectRatio = 9f / 16f;
                 setStatus("القص بنسبة 9:16");
             }));
-            TextView help = label("اسحب على الصورة لتنفيذ القص", 11, MUTED, false);
+            addLiveSlider(toolOptions, "ارتفاع الرأس", 48, 160, pointerOffsetDp, value -> {
+                pointerOffsetDp = value;
+                if (canvas != null) canvas.setPointerOffsetDp(pointerOffsetDp);
+            });
+            TextView help = label("المس من أسفل، والقص يعمل عند رأس المؤشر فوق إصبعك",
+                    11, MUTED, false);
             help.setPadding(dp(10), 0, dp(10), 0);
-            toolOptions.addView(help, new LinearLayout.LayoutParams(dp(190), dp(82)));
+            toolOptions.addView(help, new LinearLayout.LayoutParams(dp(240), dp(82)));
         } else if ("select".equals(id)) {
             toolOptions.addView(actionButton("مستطيل", v ->
                     setStatus("اسحب لتحديد مستطيل")));
@@ -737,6 +754,12 @@ public class ProfessionalEditorActivity extends Activity {
 
         lastImageTapX = points[points.length - 2];
         lastImageTapY = points[points.length - 1];
+
+        if ("color_picker".equals(activeTool)) {
+            pickLocalColor(lastImageTapX, lastImageTapY);
+            canvas.clearStrokePreview();
+            return;
+        }
 
         if ("select".equals(activeTool)) {
             if (points.length < 4) {
