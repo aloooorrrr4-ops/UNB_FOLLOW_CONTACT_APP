@@ -101,6 +101,46 @@ public final class LocalEditorEngine {
         clearAdjustmentPipeline();
     }
 
+    public synchronized Bitmap addImageLayer(Bitmap source, String name,
+                                             float centerX, float centerY,
+                                             float scale, float rotation) {
+        requireImage();
+        if (source == null) throw new IllegalArgumentException("الصورة الإضافية غير صالحة");
+
+        syncActiveLayer();
+
+        Bitmap layerBitmap = Bitmap.createBitmap(width(), height(), Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(layerBitmap);
+        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+
+        canvas.save();
+        canvas.translate(
+                Math.max(0f, Math.min(width(), centerX)),
+                Math.max(0f, Math.min(height(), centerY)));
+        canvas.rotate(rotation);
+        float safeScale = Math.max(0.03f, Math.min(12f, scale));
+        canvas.scale(safeScale, safeScale);
+        canvas.drawBitmap(source,
+                -source.getWidth() / 2f,
+                -source.getHeight() / 2f,
+                paint);
+        canvas.restore();
+
+        String clean = name == null ? "" : name.trim();
+        if (clean.isEmpty()) clean = "Image " + (layers.size() + 1);
+        Layer layer = new Layer(clean, layerBitmap);
+        layers.add(layer);
+        activeLayerIndex = layers.size() - 1;
+        bitmap = layer.bitmap;
+
+        undo.clear();
+        redo.clear();
+        selection = null;
+        selectionMask = null;
+        clearAdjustmentPipeline();
+        return compositeLayers();
+    }
+
     public synchronized boolean hasImage() {
         return bitmap != null;
     }
@@ -1809,9 +1849,9 @@ public final class LocalEditorEngine {
         Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.SUBPIXEL_TEXT_FLAG);
         paint.setColor(foreground);
         String fontFamily = p.optString("font", "sans-serif");
-        boolean bold = p.optBoolean("bold", false);
-        paint.setTypeface(Typeface.create(fontFamily,
-                bold ? Typeface.BOLD : Typeface.NORMAL));
+        int weight = clamp(p.optInt("weight",
+                p.optBoolean("bold", false) ? 700 : 400), 100, 900);
+        paint.setTypeface(weightedTypeface(fontFamily, weight));
 
         float requested = Math.max(6f, (float) p.optDouble("size", h * 0.72f));
         String[] lines = text.split("\\n", -1);
@@ -1835,7 +1875,7 @@ public final class LocalEditorEngine {
             targetInkWidth *= sizeRatio;
             targetStackHeight *= sizeRatio;
 
-            if (!bold && originalProfile.density >= 0.24f) {
+            if (weight < 600 && originalProfile.density >= 0.24f) {
                 paint.setFakeBoldText(true);
             }
         } else {
@@ -2349,6 +2389,18 @@ public final class LocalEditorEngine {
         return Math.max(rgbDistance, da);
     }
 
+    private Typeface weightedTypeface(String family, int weight) {
+        String safeFamily = family == null || family.trim().isEmpty()
+                ? "sans-serif" : family;
+        Typeface base = Typeface.create(safeFamily, Typeface.NORMAL);
+        int safeWeight = clamp(weight, 100, 900);
+        if (android.os.Build.VERSION.SDK_INT >= 28) {
+            return Typeface.create(base, safeWeight, false);
+        }
+        return Typeface.create(safeFamily,
+                safeWeight >= 650 ? Typeface.BOLD : Typeface.NORMAL);
+    }
+
     private boolean containsRtl(String text) {
         if (text == null) return false;
         for (int i = 0; i < text.length(); i++) {
@@ -2371,9 +2423,10 @@ public final class LocalEditorEngine {
         float size = Math.max(4f, (float) p.optDouble("size", 42));
         paint.setTextSize(size);
         paint.setTextAlign(Paint.Align.CENTER);
-        paint.setTypeface(Typeface.create(
-                p.optString("font", "sans-serif"),
-                p.optBoolean("bold", false) ? Typeface.BOLD : Typeface.NORMAL));
+        String fontFamily = p.optString("font", "sans-serif");
+        int weight = clamp(p.optInt("weight",
+                p.optBoolean("bold", false) ? 700 : 400), 100, 900);
+        paint.setTypeface(weightedTypeface(fontFamily, weight));
         paint.setTextScaleX(Math.max(0.5f, Math.min(2.0f,
                 (float) p.optDouble("width_scale", 1.0))));
 
