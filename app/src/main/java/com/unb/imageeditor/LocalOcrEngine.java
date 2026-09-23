@@ -57,7 +57,7 @@ public final class LocalOcrEngine {
             int confidence = api.meanConfidence();
             return new Result(text, confidence);
         } finally {
-            api.end();
+            api.recycle();
             if (input != source && !input.isRecycled()) input.recycle();
         }
     }
