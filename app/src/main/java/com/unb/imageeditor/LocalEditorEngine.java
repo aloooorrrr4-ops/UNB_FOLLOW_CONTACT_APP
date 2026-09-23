@@ -394,6 +394,12 @@ public final class LocalEditorEngine {
                 case "fill":
                     fill(parseColor(p.optString("color", "#000000")));
                     break;
+                case "pattern_fill":
+                    patternFill(p);
+                    break;
+                case "channel_extract":
+                    channelExtract(p.optString("channel", "R"));
+                    break;
                 case "paintbrush":
                 case "brush":
                     stroke(p, false, false);
@@ -937,6 +943,64 @@ public final class LocalEditorEngine {
             int c = px[i];
             px[i] = Color.argb(Color.alpha(c),
                     map[0][Color.red(c)], map[1][Color.green(c)], map[2][Color.blue(c)]);
+        }
+        setPixels(px);
+    }
+
+    private void patternFill(JSONObject p) {
+        String style = p.optString("style", "checker").toLowerCase();
+        int fg = parseColor(p.optString("foreground", "#ffffff"));
+        int bg = parseColor(p.optString("background", "#000000"));
+        int size = Math.max(4, p.optInt("size", 24));
+
+        int left = selection == null ? 0 : selection.left;
+        int top = selection == null ? 0 : selection.top;
+        int right = selection == null ? bitmap.getWidth() : selection.right;
+        int bottom = selection == null ? bitmap.getHeight() : selection.bottom;
+
+        Canvas canvas = new Canvas(bitmap);
+        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+        paint.setColor(bg);
+        canvas.drawRect(left, top, right, bottom, paint);
+
+        paint.setColor(fg);
+        if ("stripes".equals(style)) {
+            int stripe = Math.max(2, size / 2);
+            for (int x = left; x < right; x += size) {
+                canvas.drawRect(x, top, Math.min(right, x + stripe), bottom, paint);
+            }
+        } else if ("dots".equals(style)) {
+            float radius = Math.max(1f, size * 0.22f);
+            for (int y = top + size / 2; y < bottom; y += size) {
+                for (int x = left + size / 2; x < right; x += size) {
+                    canvas.drawCircle(x, y, radius, paint);
+                }
+            }
+        } else {
+            for (int y = top; y < bottom; y += size) {
+                for (int x = left; x < right; x += size) {
+                    if ((((x - left) / size) + ((y - top) / size)) % 2 == 0) {
+                        canvas.drawRect(x, y,
+                                Math.min(right, x + size),
+                                Math.min(bottom, y + size), paint);
+                    }
+                }
+            }
+        }
+    }
+
+    private void channelExtract(String channel) {
+        String ch = channel == null ? "R" : channel.toUpperCase();
+        int[] px = pixels();
+        for (int i = 0; i < px.length; i++) {
+            int c = px[i];
+            int v;
+            if ("G".equals(ch)) v = Color.green(c);
+            else if ("B".equals(ch)) v = Color.blue(c);
+            else if ("A".equals(ch) || "ALPHA".equals(ch)) v = Color.alpha(c);
+            else v = Color.red(c);
+            px[i] = Color.argb(255, v, v, v);
         }
         setPixels(px);
     }
