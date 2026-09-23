@@ -692,19 +692,19 @@ public class ProfessionalEditorActivity extends Activity {
             }
         }
 
+        // On phones the bottom strip must contain ONLY the selected tool's
+        // properties. Generic image color controls belong to the Colors menu,
+        // otherwise tapping Text/Crop/Eraser appears to open the wrong panel.
         if (desktopLayout) {
             toolOptions.addView(divider());
             toolOptions.addView(label("ضبط سريع للصورة", 14, TEXT, true));
-        } else {
-            toolOptions.addView(verticalDivider());
+            addSlider(toolOptions, "السطوع", -100, 100, 0,
+                    value -> applyRemote("brightness", json("value", value)));
+            addSlider(toolOptions, "التباين", -100, 100, 0,
+                    value -> applyRemote("contrast", json("value", value)));
+            addSlider(toolOptions, "التشبع", -100, 100, 0,
+                    value -> applyRemote("saturation", json("value", value)));
         }
-
-        addSlider(toolOptions, "السطوع", -100, 100, 0,
-                value -> applyRemote("brightness", json("value", value)));
-        addSlider(toolOptions, "التباين", -100, 100, 0,
-                value -> applyRemote("contrast", json("value", value)));
-        addSlider(toolOptions, "التشبع", -100, 100, 0,
-                value -> applyRemote("saturation", json("value", value)));
     }
 
     private void handleCanvasStroke(float[] points) {
