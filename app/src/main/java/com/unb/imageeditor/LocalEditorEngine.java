@@ -40,21 +40,28 @@ public final class LocalEditorEngine {
         public final boolean visible;
         public final int opacity;
         public final boolean active;
+        public final boolean hasMask;
+        public final String blendMode;
 
-        LayerInfo(int index, String name, boolean visible, int opacity, boolean active) {
+        LayerInfo(int index, String name, boolean visible, int opacity, boolean active,
+                  boolean hasMask, String blendMode) {
             this.index = index;
             this.name = name;
             this.visible = visible;
             this.opacity = opacity;
             this.active = active;
+            this.hasMask = hasMask;
+            this.blendMode = blendMode;
         }
     }
 
     private static final class Layer {
         String name;
         Bitmap bitmap;
+        Bitmap mask;
         boolean visible = true;
         int opacity = 255;
+        String blendMode = "normal";
 
         Layer(String name, Bitmap bitmap) {
             this.name = name;
@@ -102,7 +109,7 @@ public final class LocalEditorEngine {
         for (int i = layers.size() - 1; i >= 0; i--) {
             Layer layer = layers.get(i);
             result.add(new LayerInfo(i, layer.name, layer.visible, layer.opacity,
-                    i == activeLayerIndex));
+                    i == activeLayerIndex, layer.mask != null, layer.blendMode));
         }
         return result;
     }
@@ -273,6 +280,17 @@ public final class LocalEditorEngine {
             case "set_layer_opacity":
                 return setLayerOpacity(p.optInt("index", activeLayerIndex),
                         p.optInt("opacity", 255));
+            case "set_layer_blend_mode":
+                return setLayerBlendMode(p.optInt("index", activeLayerIndex),
+                        p.optString("mode", "normal"));
+            case "add_layer_mask":
+                return addLayerMask();
+            case "invert_layer_mask":
+                return invertLayerMask();
+            case "apply_layer_mask":
+                return applyLayerMask();
+            case "remove_layer_mask":
+                return removeLayerMask();
             case "merge_down":
                 return mergeDown();
             case "flatten":
@@ -501,6 +519,8 @@ public final class LocalEditorEngine {
         Layer copyLayer = new Layer(source.name + " copy", copy(source.bitmap));
         copyLayer.visible = source.visible;
         copyLayer.opacity = source.opacity;
+        copyLayer.blendMode = source.blendMode;
+        copyLayer.mask = source.mask == null ? null : copy(source.mask);
         layers.add(activeLayerIndex + 1, copyLayer);
         activeLayerIndex++;
         bitmap = copyLayer.bitmap;
@@ -552,6 +572,117 @@ public final class LocalEditorEngine {
         return compositeLayers();
     }
 
+    private Bitmap setLayerBlendMode(int index, String mode) {
+        if (index < 0 || index >= layers.size()) {
+            throw new IllegalArgumentException("طبقة غير موجودة");
+        }
+        String normalized = normalizeBlendMode(mode);
+        layers.get(index).blendMode = normalized;
+        return compositeLayers();
+    }
+
+    private String normalizeBlendMode(String mode) {
+        String m = mode == null ? "normal" : mode.trim().toLowerCase();
+        switch (m) {
+            case "multiply":
+            case "screen":
+            case "add":
+            case "darken":
+            case "lighten":
+                return m;
+            default:
+                return "normal";
+        }
+    }
+
+    private Bitmap addLayerMask() {
+        Layer layer = activeLayer();
+        Bitmap mask = Bitmap.createBitmap(width(), height(), Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(mask);
+        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        paint.setColor(Color.WHITE);
+
+        if (selection == null) {
+            canvas.drawRect(0, 0, width(), height(), paint);
+        } else {
+            paint.setColor(Color.BLACK);
+            canvas.drawRect(0, 0, width(), height(), paint);
+            paint.setColor(Color.WHITE);
+            canvas.drawRect(selection, paint);
+        }
+
+        layer.mask = mask;
+        return compositeLayers();
+    }
+
+    private Bitmap invertLayerMask() {
+        Layer layer = activeLayer();
+        if (layer.mask == null) throw new IllegalStateException("لا يوجد قناع للطبقة");
+
+        int w = layer.mask.getWidth();
+        int h = layer.mask.getHeight();
+        int[] px = new int[w * h];
+        layer.mask.getPixels(px, 0, w, 0, 0, w, h);
+        for (int i = 0; i < px.length; i++) {
+            int v = 255 - Color.red(px[i]);
+            px[i] = Color.argb(255, v, v, v);
+        }
+        layer.mask.setPixels(px, 0, w, 0, 0, w, h);
+        return compositeLayers();
+    }
+
+    private Bitmap applyLayerMask() {
+        Layer layer = activeLayer();
+        if (layer.mask == null) throw new IllegalStateException("لا يوجد قناع للطبقة");
+
+        Bitmap masked = maskedLayerBitmap(layer);
+        layer.bitmap = masked;
+        layer.mask = null;
+        bitmap = layer.bitmap;
+        return compositeLayers();
+    }
+
+    private Bitmap removeLayerMask() {
+        Layer layer = activeLayer();
+        if (layer.mask == null) throw new IllegalStateException("لا يوجد قناع للطبقة");
+        layer.mask = null;
+        return compositeLayers();
+    }
+
+    private Bitmap maskedLayerBitmap(Layer layer) {
+        Bitmap out = Bitmap.createBitmap(width(), height(), Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(out);
+        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+        canvas.drawBitmap(layer.bitmap, 0, 0, paint);
+
+        Paint maskPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+        maskPaint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.DST_IN));
+
+        Bitmap alphaMask = Bitmap.createBitmap(width(), height(), Bitmap.Config.ARGB_8888);
+        int[] src = new int[width() * height()];
+        int[] dst = new int[src.length];
+        layer.mask.getPixels(src, 0, width(), 0, 0, width(), height());
+        for (int i = 0; i < src.length; i++) {
+            int a = Color.red(src[i]);
+            dst[i] = Color.argb(a, 255, 255, 255);
+        }
+        alphaMask.setPixels(dst, 0, width(), 0, 0, width(), height());
+        canvas.drawBitmap(alphaMask, 0, 0, maskPaint);
+        maskPaint.setXfermode(null);
+        return out;
+    }
+
+    private PorterDuff.Mode porterDuffForBlend(String mode) {
+        switch (normalizeBlendMode(mode)) {
+            case "multiply": return PorterDuff.Mode.MULTIPLY;
+            case "screen": return PorterDuff.Mode.SCREEN;
+            case "add": return PorterDuff.Mode.ADD;
+            case "darken": return PorterDuff.Mode.DARKEN;
+            case "lighten": return PorterDuff.Mode.LIGHTEN;
+            default: return null;
+        }
+    }
+
     private Bitmap mergeDown() {
         if (activeLayerIndex <= 0 || layers.size() <= 1) {
             throw new IllegalStateException("لا توجد طبقة أسفلها للدمج");
@@ -564,13 +695,24 @@ public final class LocalEditorEngine {
 
         Paint lowerPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
         lowerPaint.setAlpha(lower.opacity);
-        if (lower.visible) canvas.drawBitmap(lower.bitmap, 0, 0, lowerPaint);
+        if (lower.visible) {
+            Bitmap lowerBitmap = lower.mask == null ? lower.bitmap : maskedLayerBitmap(lower);
+            canvas.drawBitmap(lowerBitmap, 0, 0, lowerPaint);
+        }
 
         Paint topPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
         topPaint.setAlpha(top.opacity);
-        if (top.visible) canvas.drawBitmap(top.bitmap, 0, 0, topPaint);
+        PorterDuff.Mode topMode = porterDuffForBlend(top.blendMode);
+        if (topMode != null) topPaint.setXfermode(new PorterDuffXfermode(topMode));
+        if (top.visible) {
+            Bitmap topBitmap = top.mask == null ? top.bitmap : maskedLayerBitmap(top);
+            canvas.drawBitmap(topBitmap, 0, 0, topPaint);
+        }
+        topPaint.setXfermode(null);
 
         lower.bitmap = merged;
+        lower.mask = null;
+        lower.blendMode = "normal";
         lower.opacity = 255;
         lower.visible = true;
         lower.name = lower.name + " + " + top.name;
@@ -637,9 +779,15 @@ public final class LocalEditorEngine {
         for (Layer layer : layers) {
             if (!layer.visible) continue;
             paint.setAlpha(layer.opacity);
-            canvas.drawBitmap(layer.bitmap, 0, 0, paint);
+            PorterDuff.Mode mode = porterDuffForBlend(layer.blendMode);
+            if (mode != null) paint.setXfermode(new PorterDuffXfermode(mode));
+            else paint.setXfermode(null);
+
+            Bitmap draw = layer.mask == null ? layer.bitmap : maskedLayerBitmap(layer);
+            canvas.drawBitmap(draw, 0, 0, paint);
         }
         paint.setAlpha(255);
+        paint.setXfermode(null);
         return out;
     }
 
