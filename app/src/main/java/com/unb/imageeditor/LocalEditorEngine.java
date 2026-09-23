@@ -12,6 +12,7 @@ import android.graphics.PorterDuff;
 import android.graphics.PorterDuffXfermode;
 import android.graphics.Rect;
 import android.graphics.Shader;
+import android.graphics.Typeface;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -282,6 +283,9 @@ public final class LocalEditorEngine {
                     break;
                 case "add_text":
                     addText(p);
+                    break;
+                case "replace_text_region":
+                    replaceTextRegion(p);
                     break;
                 case "flatten":
                 case "merge_visible":
@@ -633,6 +637,69 @@ public final class LocalEditorEngine {
                 ? new Rect(0, 0, bitmap.getWidth(), bitmap.getHeight())
                 : new Rect(selection);
         canvas.drawRect(target, paint);
+    }
+
+    private void replaceTextRegion(JSONObject p) {
+        int x = clamp(p.optInt("x", 0), 0, bitmap.getWidth() - 1);
+        int y = clamp(p.optInt("y", 0), 0, bitmap.getHeight() - 1);
+        int w = Math.max(1, Math.min(p.optInt("width", 1), bitmap.getWidth() - x));
+        int h = Math.max(1, Math.min(p.optInt("height", 1), bitmap.getHeight() - y));
+
+        String text = p.optString("text", "");
+        int background = parseColor(p.optString("background", "#ffffff"));
+        int foreground = parseColor(p.optString("color", "#000000"));
+
+        Canvas canvas = new Canvas(bitmap);
+        Paint bg = new Paint(Paint.ANTI_ALIAS_FLAG);
+        bg.setColor(background);
+        canvas.drawRect(x, y, x + w, y + h, bg);
+
+        if (text.trim().isEmpty()) return;
+
+        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.SUBPIXEL_TEXT_FLAG);
+        paint.setColor(foreground);
+        paint.setTypeface(Typeface.create("sans-serif", Typeface.NORMAL));
+
+        float requested = Math.max(6f, (float) p.optDouble("size", h * 0.72f));
+        String[] lines = text.split("\\n", -1);
+        float maxWidth = Math.max(1f, w - 4f);
+
+        float fitted = requested;
+        for (String line : lines) {
+            paint.setTextSize(fitted);
+            float measured = paint.measureText(line);
+            if (measured > maxWidth && measured > 0f) {
+                fitted = Math.max(6f, fitted * (maxWidth / measured));
+            }
+        }
+        paint.setTextSize(fitted);
+
+        boolean rtl = containsRtl(text);
+        paint.setTextAlign(rtl ? Paint.Align.RIGHT : Paint.Align.LEFT);
+        float tx = rtl ? x + w - 2f : x + 2f;
+
+        Paint.FontMetrics fm = paint.getFontMetrics();
+        float lineHeight = Math.max(fitted * 1.15f, fm.descent - fm.ascent);
+        float baseline = y + Math.max(-fm.ascent, (h - lineHeight * lines.length) / 2f - fm.ascent);
+
+        for (String line : lines) {
+            if (baseline > y + h) break;
+            canvas.drawText(line, tx, baseline, paint);
+            baseline += lineHeight;
+        }
+    }
+
+    private boolean containsRtl(String text) {
+        if (text == null) return false;
+        for (int i = 0; i < text.length(); i++) {
+            byte d = Character.getDirectionality(text.charAt(i));
+            if (d == Character.DIRECTIONALITY_RIGHT_TO_LEFT ||
+                    d == Character.DIRECTIONALITY_RIGHT_TO_LEFT_ARABIC) {
+                return true;
+            }
+            if (d == Character.DIRECTIONALITY_LEFT_TO_RIGHT) return false;
+        }
+        return false;
     }
 
     private void addText(JSONObject p) {
