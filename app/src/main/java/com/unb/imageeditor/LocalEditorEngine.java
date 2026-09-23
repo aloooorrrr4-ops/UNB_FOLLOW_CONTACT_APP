@@ -39,6 +39,10 @@ public final class LocalEditorEngine {
     private String adjustmentOperation;
     private int adjustmentValue;
 
+    private Bitmap reusableAdjustmentBase;
+    private String reusableAdjustmentOperation;
+    private int reusableAdjustmentValue;
+
     public synchronized void open(Bitmap source) {
         if (source == null) throw new IllegalArgumentException("الصورة غير صالحة");
         undo.clear();
@@ -46,6 +50,7 @@ public final class LocalEditorEngine {
         bitmap = mutable(source);
         selection = null;
         clearAdjustmentSession();
+        clearReusableAdjustment();
     }
 
     public synchronized boolean hasImage() {
@@ -75,6 +80,7 @@ public final class LocalEditorEngine {
     public synchronized Bitmap undo() {
         requireImage();
         clearAdjustmentSession();
+        clearReusableAdjustment();
         if (undo.isEmpty()) throw new IllegalStateException("لا توجد خطوة أقدم");
         redo.addLast(copy(bitmap));
         trim(redo);
@@ -86,6 +92,7 @@ public final class LocalEditorEngine {
     public synchronized Bitmap redo() {
         requireImage();
         clearAdjustmentSession();
+        clearReusableAdjustment();
         if (redo.isEmpty()) throw new IllegalStateException("لا توجد خطوة لإعادتها");
         undo.addLast(copy(bitmap));
         trim(undo);
@@ -94,20 +101,31 @@ public final class LocalEditorEngine {
         return bitmap;
     }
 
-    public synchronized void beginAdjustment(String operation) {
+    public synchronized int beginAdjustment(String operation, int requestedValue) {
         requireImage();
         String op = normalizeAdjustment(operation);
         clearAdjustmentSession();
+
+        if (reusableAdjustmentBase != null &&
+                op.equals(reusableAdjustmentOperation) &&
+                requestedValue == reusableAdjustmentValue) {
+            adjustmentBase = copy(reusableAdjustmentBase);
+            adjustmentOperation = op;
+            adjustmentValue = reusableAdjustmentValue;
+            return reusableAdjustmentValue;
+        }
+
         adjustmentBase = copy(bitmap);
         adjustmentOperation = op;
         adjustmentValue = 0;
+        return 0;
     }
 
     public synchronized Bitmap previewAdjustment(String operation, int value) {
         requireImage();
         String op = normalizeAdjustment(operation);
         if (adjustmentBase == null || !op.equals(adjustmentOperation)) {
-            beginAdjustment(op);
+            beginAdjustment(op, 0);
         }
 
         adjustmentValue = Math.max(-100, Math.min(100, value));
@@ -129,10 +147,15 @@ public final class LocalEditorEngine {
 
         if (adjustmentValue == 0) {
             bitmap = adjustmentBase;
+            clearReusableAdjustment();
         } else {
             undo.addLast(adjustmentBase);
             trim(undo);
             redo.clear();
+
+            reusableAdjustmentBase = copy(adjustmentBase);
+            reusableAdjustmentOperation = adjustmentOperation;
+            reusableAdjustmentValue = adjustmentValue;
         }
 
         adjustmentBase = null;
@@ -167,9 +190,16 @@ public final class LocalEditorEngine {
         adjustmentValue = 0;
     }
 
+    private void clearReusableAdjustment() {
+        reusableAdjustmentBase = null;
+        reusableAdjustmentOperation = null;
+        reusableAdjustmentValue = 0;
+    }
+
     public synchronized Bitmap apply(String operation, JSONObject params) {
         requireImage();
         clearAdjustmentSession();
+        clearReusableAdjustment();
         String op = operation == null ? "" : operation.trim().toLowerCase();
         JSONObject p = params == null ? new JSONObject() : params;
 
