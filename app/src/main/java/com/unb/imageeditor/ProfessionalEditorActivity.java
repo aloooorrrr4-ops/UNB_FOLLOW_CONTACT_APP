@@ -1537,15 +1537,16 @@ public class ProfessionalEditorActivity extends Activity {
                     recognizedText = "";
                     recognizedTextConfidence = 0;
                     activeTool = "text_detect";
+                    pointerWorkEnabled = true;
                     if (canvas != null) {
                         canvas.setDetectedTextRegions(regions);
                         canvas.setInteractionMode("text_select");
-                        canvas.setPointerActionEnabled(pointerWorkEnabled);
+                        canvas.setPointerActionEnabled(true);
                         canvas.showPointerNow();
                     }
                     setBusy(false);
                     setStatus("تم اكتشاف " + regions.size() +
-                            " منطقة نص — حرّك المؤشر فوق الكلمة المطلوبة");
+                            " منطقة نص — اضغط مباشرة على أي إطار أزرق لتحديده");
                     addHistory("كشف النصوص " + regions.size());
                 });
             } catch (Exception e) {
@@ -1617,13 +1618,37 @@ public class ProfessionalEditorActivity extends Activity {
 
     private void selectDetectedTextRegion(float imageX, float imageY) {
         RectF best = null;
-        float bestArea = Float.MAX_VALUE;
+        float bestScore = Float.MAX_VALUE;
 
+        // First prefer an exact hit. If the text is very small, allow a small
+        // halo around the detected box so numbers and short Arabic words are
+        // easy to select with a finger.
         for (RectF region : detectedTextRegions) {
-            if (!region.contains(imageX, imageY)) continue;
-            float area = region.width() * region.height();
-            if (area < bestArea) {
-                bestArea = area;
+            float area = Math.max(1f, region.width() * region.height());
+            if (region.contains(imageX, imageY)) {
+                if (area < bestScore) {
+                    bestScore = area;
+                    best = region;
+                }
+                continue;
+            }
+
+            float halo = Math.max(4f, Math.min(14f, region.height() * 0.45f));
+            RectF expanded = new RectF(
+                    region.left - halo,
+                    region.top - halo,
+                    region.right + halo,
+                    region.bottom + halo);
+            if (!expanded.contains(imageX, imageY)) continue;
+
+            float cx = region.centerX();
+            float cy = region.centerY();
+            float dx = imageX - cx;
+            float dy = imageY - cy;
+            float distancePenalty = dx * dx + dy * dy;
+            float score = area + distancePenalty * 0.25f;
+            if (score < bestScore) {
+                bestScore = score;
                 best = region;
             }
         }
@@ -1634,27 +1659,37 @@ public class ProfessionalEditorActivity extends Activity {
         if (canvas != null) canvas.setSelectedTextRegion(selectedTextRegion);
 
         if (selectedTextRegion == null) {
-            setStatus("لم يتم تحديد نص — اضغط داخل أحد الإطارات الزرقاء");
+            setStatus("لم يتم تحديد نص — اضغط على أحد الإطارات الزرقاء");
+            toast("اضغط مباشرة داخل إطار النص الأزرق");
         } else {
             setStatus("تم تحديد النص • " +
                     Math.round(selectedTextRegion.width()) + "×" +
-                    Math.round(selectedTextRegion.height()));
+                    Math.round(selectedTextRegion.height()) +
+                    " — الآن استخدم تعديل المحدد أو قص المحدد أو حذف");
         }
+    }
+
+    private boolean selectTextAtPointerNow() {
+        if (canvas == null) return false;
+        float[] p = canvas.getPointerImagePosition();
+        if (p == null || p.length < 2) return false;
+        selectDetectedTextRegion(p[0], p[1]);
+        return selectedTextRegion != null;
     }
 
     private void selectTextAtPointer() {
-        if (canvas == null) return;
-        float[] p = canvas.getPointerImagePosition();
-        if (p == null || p.length < 2) {
-            toast("المؤشر غير جاهز");
-            return;
+        if (!selectTextAtPointerNow()) {
+            toast("ضع رأس المؤشر داخل إطار النص أو اضغط على الإطار مباشرة");
         }
-        selectDetectedTextRegion(p[0], p[1]);
+    }
+
+    private boolean ensureSelectedTextRegion() {
+        return selectedTextRegion != null || selectTextAtPointerNow();
     }
 
     private void recognizeSelectedText(boolean openEditorAfter) {
-        if (selectedTextRegion == null) {
-            toast("حدد النص بالمؤشر أولاً");
+        if (!ensureSelectedTextRegion()) {
+            toast("اضغط على إطار النص أو ضع رأس المؤشر داخله");
             return;
         }
         if (busy) return;
@@ -1796,8 +1831,8 @@ public class ProfessionalEditorActivity extends Activity {
     }
 
     private void deleteSelectedTextRegion() {
-        if (selectedTextRegion == null) {
-            toast("حدد النص أولاً");
+        if (!ensureSelectedTextRegion()) {
+            toast("اضغط على إطار النص أو ضع رأس المؤشر داخله ثم اضغط حذف");
             return;
         }
         replaceSelectedTextRegion("", Math.max(8, selectedTextRegion.height() * 0.7));
@@ -1845,8 +1880,8 @@ public class ProfessionalEditorActivity extends Activity {
     }
 
     private void cropSelectedTextRegion() {
-        if (selectedTextRegion == null) {
-            toast("حدد إطار النص أولاً");
+        if (!ensureSelectedTextRegion()) {
+            toast("اضغط على إطار النص أو ضع رأس المؤشر داخله ثم اضغط قص المحدد");
             return;
         }
 
