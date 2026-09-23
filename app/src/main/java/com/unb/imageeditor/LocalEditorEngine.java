@@ -1783,10 +1783,14 @@ public final class LocalEditorEngine {
         String text = p.optString("text", "");
         int foreground = parseColor(p.optString("color", "#000000"));
 
-        // Preserve the original artwork/background. The old implementation
-        // painted one flat rectangle over the whole OCR box, which destroyed
-        // gradients, logos and patterns behind the text. Instead, detect
-        // character-like high-contrast pixels and inpaint only those pixels.
+        // Measure the original raster glyphs before removing them. OCR boxes
+        // include padding and Android font metrics do not match visible Arabic
+        // ink height well, so the replacement must be fitted to the actual
+        // pixels rather than only to the OCR rectangle.
+        RasterTextProfile originalProfile = analyzeRasterTextProfile(x, y, w, h);
+
+        // Preserve the original artwork/background while removing the old
+        // character pixels.
         eraseRasterTextPreserveBackground(x, y, w, h);
 
         if (text.trim().isEmpty()) return;
@@ -1802,61 +1806,206 @@ public final class LocalEditorEngine {
 
         float requested = Math.max(6f, (float) p.optDouble("size", h * 0.72f));
         String[] lines = text.split("\\n", -1);
-        float maxWidth = Math.max(1f, w - 4f);
-        float targetWidth = Math.max(1f, maxWidth * 0.92f);
+        float sizeRatio = Math.max(0.35f, Math.min(3.0f,
+                (float) p.optDouble("size_ratio", 1.0)));
+        boolean autoMatch = p.optBoolean("auto_match", true);
 
-        // Preserve the requested/original-region font height first. The old
-        // implementation shrank the whole font whenever the replacement text
-        // was wider. Only reduce height when it genuinely cannot fit vertically.
-        float fitted = requested;
-        paint.setTextSize(fitted);
-        Paint.FontMetrics initialFm = paint.getFontMetrics();
-        float glyphHeight = Math.max(1f, initialFm.descent - initialFm.ascent);
-        float availableLineHeight = Math.max(6f,
-                (h * 0.88f) / Math.max(1, lines.length));
-        if (glyphHeight > availableLineHeight) {
-            fitted = Math.max(6f, fitted * (availableLineHeight / glyphHeight));
-            paint.setTextSize(fitted);
+        float targetCenterX = x + w / 2f;
+        float targetCenterY = y + h / 2f;
+        float targetInkWidth = Math.max(1f, w * 0.90f);
+        float targetInkHeight = Math.max(6f,
+                (h * 0.80f) / Math.max(1, lines.length));
+
+        if (autoMatch && originalProfile.valid) {
+            targetCenterX = x + originalProfile.centerX();
+            targetCenterY = y + originalProfile.centerY();
+            targetInkWidth = Math.max(1f, originalProfile.width());
+            targetInkHeight = Math.max(6f,
+                    originalProfile.height() / Math.max(1, lines.length));
+
+            // Keep the size field meaningful: its default maps to 1.0, while
+            // user edits enlarge/reduce the matched original appearance.
+            targetInkWidth *= sizeRatio;
+            targetInkHeight *= sizeRatio;
+
+            if (!bold && originalProfile.density >= 0.24f) {
+                paint.setFakeBoldText(true);
+            }
+        } else {
+            targetInkWidth *= sizeRatio;
+            targetInkHeight *= sizeRatio;
         }
 
         float baseWidthScale = Math.max(0.5f, Math.min(2.0f,
                 (float) p.optDouble("width_scale", 1.0)));
         paint.setTextScaleX(baseWidthScale);
 
-        float widest = 1f;
+        // Fit visible glyph bounds, not FontMetrics. This is especially
+        // important for Arabic because ascender/descender metrics contain a
+        // lot of unused vertical space and previously made replacements tiny.
+        float fitted = requested;
+        paint.setTextSize(fitted);
+
+        Rect inkBounds = new Rect();
+        String widestLine = "";
+        float widestMeasured = 1f;
+        int maxInkHeight = 1;
         for (String line : lines) {
-            widest = Math.max(widest, paint.measureText(line));
+            String safe = line.isEmpty() ? " " : line;
+            Rect b = new Rect();
+            paint.getTextBounds(safe, 0, safe.length(), b);
+            if (b.height() > maxInkHeight) maxInkHeight = b.height();
+            float measured = paint.measureText(safe);
+            if (measured > widestMeasured) {
+                widestMeasured = measured;
+                widestLine = safe;
+                inkBounds.set(b);
+            }
         }
 
-        // Match the width of the old selected region mostly by horizontal
-        // scaling, not by shrinking font height. Only fall back to reducing
-        // font size if the required horizontal compression would be extreme.
-        float widthFactor = targetWidth / widest;
-        float adjustedScaleX = baseWidthScale * widthFactor;
-        if (adjustedScaleX < 0.62f) {
-            float shrink = adjustedScaleX / 0.62f;
+        if (maxInkHeight > 0) {
+            fitted = Math.max(6f, fitted * (targetInkHeight / maxInkHeight));
+            paint.setTextSize(fitted);
+        }
+
+        // Re-measure after height fitting, then adjust horizontal scale before
+        // shrinking text height. This keeps Arabic replacement height visually
+        // consistent with the original word.
+        widestMeasured = 1f;
+        for (String line : lines) {
+            String safe = line.isEmpty() ? " " : line;
+            widestMeasured = Math.max(widestMeasured, paint.measureText(safe));
+        }
+
+        float adjustedScaleX = baseWidthScale * (targetInkWidth / widestMeasured);
+        if (adjustedScaleX < 0.58f) {
+            float shrink = adjustedScaleX / 0.58f;
             fitted = Math.max(6f, fitted * shrink);
             paint.setTextSize(fitted);
-            adjustedScaleX = 0.62f;
+            adjustedScaleX = 0.58f;
         }
-        adjustedScaleX = Math.max(0.62f, Math.min(1.45f, adjustedScaleX));
+        adjustedScaleX = Math.max(0.58f, Math.min(1.55f, adjustedScaleX));
         paint.setTextScaleX(adjustedScaleX);
-
-        // Replacement text is centered in the original text box so Arabic
-        // words remain in the same visual slot even when character counts differ.
         paint.setTextAlign(Paint.Align.CENTER);
-        float tx = x + w / 2f;
+
+        if (lines.length == 1) {
+            String line = lines[0].isEmpty() ? " " : lines[0];
+            Rect b = new Rect();
+            paint.getTextBounds(line, 0, line.length(), b);
+
+            // Baseline derived from actual ink bounds keeps the visible Arabic
+            // glyphs centered on the old raster text, rather than centering the
+            // font's invisible metric box.
+            float baseline = targetCenterY - (b.top + b.bottom) / 2f;
+            canvas.drawText(lines[0], targetCenterX, baseline, paint);
+            return;
+        }
 
         Paint.FontMetrics fm = paint.getFontMetrics();
         float lineHeight = Math.max(fitted * 1.08f, fm.descent - fm.ascent);
         float totalHeight = lineHeight * lines.length;
-        float baseline = y + (h - totalHeight) / 2f - fm.ascent;
-
+        float baseline = targetCenterY - totalHeight / 2f - fm.ascent;
         for (String line : lines) {
-            if (baseline > y + h + Math.abs(fm.ascent)) break;
-            canvas.drawText(line, tx, baseline, paint);
+            canvas.drawText(line, targetCenterX, baseline, paint);
             baseline += lineHeight;
         }
+    }
+
+    private static final class RasterTextProfile {
+        final boolean valid;
+        final int minX;
+        final int minY;
+        final int maxX;
+        final int maxY;
+        final float density;
+
+        RasterTextProfile(boolean valid, int minX, int minY, int maxX, int maxY,
+                          float density) {
+            this.valid = valid;
+            this.minX = minX;
+            this.minY = minY;
+            this.maxX = maxX;
+            this.maxY = maxY;
+            this.density = density;
+        }
+
+        float width() {
+            return valid ? Math.max(1f, maxX - minX + 1f) : 0f;
+        }
+
+        float height() {
+            return valid ? Math.max(1f, maxY - minY + 1f) : 0f;
+        }
+
+        float centerX() {
+            return (minX + maxX + 1f) / 2f;
+        }
+
+        float centerY() {
+            return (minY + maxY + 1f) / 2f;
+        }
+    }
+
+    private RasterTextProfile analyzeRasterTextProfile(int left, int top,
+                                                        int width, int height) {
+        if (width < 2 || height < 2) {
+            return new RasterTextProfile(false, 0, 0, 0, 0, 0f);
+        }
+
+        int count = width * height;
+        int[] src = new int[count];
+        bitmap.getPixels(src, 0, width, left, top, width, height);
+
+        int borderColor = estimateRegionBorderColor(src, width, height);
+        int radius = clamp(Math.round(height * 0.10f), 2, 10);
+
+        int[] diffs = new int[count];
+        double sum = 0.0;
+        double sumSq = 0.0;
+        for (int yy = 0; yy < height; yy++) {
+            for (int xx = 0; xx < width; xx++) {
+                int i = yy * width + xx;
+                int local = ringAverageColor(src, width, height, xx, yy, radius);
+                int dLocal = colorDistance(src[i], local);
+                int dBorder = colorDistance(src[i], borderColor);
+                int d = Math.max(dLocal, dBorder);
+                diffs[i] = d;
+                sum += d;
+                sumSq += (double) d * d;
+            }
+        }
+
+        double mean = sum / Math.max(1, count);
+        double variance = Math.max(0.0, sumSq / Math.max(1, count) - mean * mean);
+        double std = Math.sqrt(variance);
+        int threshold = clamp((int) Math.round(mean + std * 0.85), 22, 70);
+
+        boolean[] mask = new boolean[count];
+        for (int i = 0; i < count; i++) {
+            if (diffs[i] >= threshold) mask[i] = true;
+        }
+        mask = filterLikelyGlyphComponents(mask, width, height);
+
+        int minX = width, minY = height, maxX = -1, maxY = -1, ink = 0;
+        for (int yy = 0; yy < height; yy++) {
+            for (int xx = 0; xx < width; xx++) {
+                int i = yy * width + xx;
+                if (!mask[i]) continue;
+                ink++;
+                if (xx < minX) minX = xx;
+                if (xx > maxX) maxX = xx;
+                if (yy < minY) minY = yy;
+                if (yy > maxY) maxY = yy;
+            }
+        }
+
+        if (ink < 3 || maxX < minX || maxY < minY) {
+            return new RasterTextProfile(false, 0, 0, 0, 0, 0f);
+        }
+
+        int boxArea = Math.max(1, (maxX - minX + 1) * (maxY - minY + 1));
+        return new RasterTextProfile(true, minX, minY, maxX, maxY,
+                Math.min(1f, ink / (float) boxArea));
     }
 
     private void eraseRasterTextPreserveBackground(int left, int top, int width, int height) {
@@ -1890,7 +2039,7 @@ public final class LocalEditorEngine {
         double mean = sum / Math.max(1, count);
         double variance = Math.max(0.0, sumSq / Math.max(1, count) - mean * mean);
         double std = Math.sqrt(variance);
-        int threshold = clamp((int) Math.round(mean + std * 1.15), 28, 78);
+        int threshold = clamp((int) Math.round(mean + std * 0.95), 24, 72);
 
         boolean[] mask = new boolean[count];
         int masked = 0;
@@ -1906,9 +2055,9 @@ public final class LocalEditorEngine {
         // nothing, while still requiring clear separation from the border tone.
         int minimumUsefulMask = Math.max(8, count / 1200);
         if (masked < minimumUsefulMask) {
-            int relaxed = Math.max(22, threshold - 12);
+            int relaxed = Math.max(18, threshold - 12);
             for (int i = 0; i < count; i++) {
-                if (!mask[i] && localDiff[i] >= relaxed && borderDiff[i] >= 34) {
+                if (!mask[i] && localDiff[i] >= relaxed && borderDiff[i] >= 28) {
                     mask[i] = true;
                     masked++;
                 }
@@ -1925,15 +2074,22 @@ public final class LocalEditorEngine {
         for (boolean value : mask) if (value) masked++;
         if (masked == 0) return;
 
-        // Include antialiased glyph edges without expanding far into artwork.
+        // Include antialiased glyph edges. Two or three pixels are often
+        // needed on high-resolution Arabic lettering to remove the pale rim
+        // left by OCR-box replacement.
+        int expandRadius = clamp(Math.round(height * 0.025f), 1, 3);
         boolean[] expanded = mask.clone();
-        for (int yy = 1; yy < height - 1; yy++) {
-            for (int xx = 1; xx < width - 1; xx++) {
+        for (int yy = 0; yy < height; yy++) {
+            for (int xx = 0; xx < width; xx++) {
                 int i = yy * width + xx;
                 if (!mask[i]) continue;
-                for (int dy = -1; dy <= 1; dy++) {
-                    for (int dx = -1; dx <= 1; dx++) {
-                        expanded[(yy + dy) * width + (xx + dx)] = true;
+                for (int dy = -expandRadius; dy <= expandRadius; dy++) {
+                    int ny = yy + dy;
+                    if (ny < 0 || ny >= height) continue;
+                    for (int dx = -expandRadius; dx <= expandRadius; dx++) {
+                        int nx = xx + dx;
+                        if (nx < 0 || nx >= width) continue;
+                        expanded[ny * width + nx] = true;
                     }
                 }
             }

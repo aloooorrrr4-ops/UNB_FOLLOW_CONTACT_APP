@@ -1823,6 +1823,9 @@ public class ProfessionalEditorActivity extends Activity {
         RectF region = new RectF(selectedTextRegion);
         String background = sampleRegionBackground(region);
 
+        double defaultSize = Math.max(8.0, region.height() * 0.70);
+        double sizeRatio = Math.max(0.35, Math.min(3.0, size / defaultSize));
+
         applyRemote("replace_text_region", jsonOf(
                 "x", Math.round(region.left),
                 "y", Math.round(region.top),
@@ -1830,6 +1833,8 @@ public class ProfessionalEditorActivity extends Activity {
                 "height", Math.max(1, Math.round(region.height())),
                 "text", replacement == null ? "" : replacement,
                 "size", size,
+                "size_ratio", sizeRatio,
+                "auto_match", true,
                 "font", textFontFamily,
                 "bold", textBold,
                 "width_scale", textWidthPercent / 100.0,

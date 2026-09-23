@@ -10,8 +10,8 @@ android {
         applicationId "com.unb.imageeditor"
         minSdk 26
         targetSdk 35
-        versionCode 42
-        versionName "1.7.3-alpha-text-selection-safe"
+        versionCode 43
+        versionName "1.7.4-alpha-smart-text-replace"
     }
 
     buildTypes {
