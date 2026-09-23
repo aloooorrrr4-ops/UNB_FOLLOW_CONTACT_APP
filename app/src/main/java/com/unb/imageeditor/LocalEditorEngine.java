@@ -1889,6 +1889,14 @@ public final class LocalEditorEngine {
 
         if (masked == 0) return;
 
+        // Reject obvious non-glyph components before inpainting. This keeps
+        // long rules, borders and other high-contrast artwork from being
+        // mistaken for text merely because they contrast with the background.
+        mask = filterLikelyGlyphComponents(mask, width, height);
+        masked = 0;
+        for (boolean value : mask) if (value) masked++;
+        if (masked == 0) return;
+
         // Include antialiased glyph edges without expanding far into artwork.
         boolean[] expanded = mask.clone();
         for (int yy = 1; yy < height - 1; yy++) {
@@ -1995,39 +2003,124 @@ public final class LocalEditorEngine {
                 (int) (bb / samples));
     }
 
-    private int ringAverageColor(int[] px, int width, int height,
-                                 int x, int y, int radius) {
-        int[][] offsets = new int[][]{
-                {-radius, 0}, {radius, 0}, {0, -radius}, {0, radius},
-                {-radius, -radius}, {radius, -radius},
-                {-radius, radius}, {radius, radius}
-        };
+    private boolean[] filterLikelyGlyphComponents(boolean[] candidate,
+                                                  int width, int height) {
+        int count = width * height;
+        boolean[] visited = new boolean[count];
+        boolean[] accepted = new boolean[count];
+        int[] queue = new int[count];
 
-        long aa = 0, rr = 0, gg = 0, bb = 0;
-        int samples = 0;
-        for (int[] offset : offsets) {
-            int sx = clamp(x + offset[0], 0, width - 1);
-            int sy = clamp(y + offset[1], 0, height - 1);
-            int c = px[sy * width + sx];
-            aa += Color.alpha(c);
-            rr += Color.red(c);
-            gg += Color.green(c);
-            bb += Color.blue(c);
-            samples++;
+        int maxReasonableArea = Math.max(24, (int) (count * 0.42f));
+        int longHorizontal = Math.max(12, Math.round(width * 0.55f));
+        int longVertical = Math.max(12, Math.round(height * 0.55f));
+        int thinHorizontalHeight = Math.max(2, Math.round(height * 0.10f));
+        int thinVerticalWidth = Math.max(2, Math.round(width * 0.10f));
+
+        for (int start = 0; start < count; start++) {
+            if (!candidate[start] || visited[start]) continue;
+
+            int head = 0;
+            int tail = 0;
+            queue[tail++] = start;
+            visited[start] = true;
+
+            int minX = width, minY = height, maxX = -1, maxY = -1;
+            int area = 0;
+            boolean touchesLeft = false, touchesRight = false;
+            boolean touchesTop = false, touchesBottom = false;
+
+            while (head < tail) {
+                int index = queue[head++];
+                int x = index % width;
+                int y = index / width;
+                area++;
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+                if (y < minY) minY = y;
+                if (y > maxY) maxY = y;
+                if (x == 0) touchesLeft = true;
+                if (x == width - 1) touchesRight = true;
+                if (y == 0) touchesTop = true;
+                if (y == height - 1) touchesBottom = true;
+
+                for (int dy = -1; dy <= 1; dy++) {
+                    int ny = y + dy;
+                    if (ny < 0 || ny >= height) continue;
+                    for (int dx = -1; dx <= 1; dx++) {
+                        if (dx == 0 && dy == 0) continue;
+                        int nx = x + dx;
+                        if (nx < 0 || nx >= width) continue;
+                        int ni = ny * width + nx;
+                        if (!candidate[ni] || visited[ni]) continue;
+                        visited[ni] = true;
+                        queue[tail++] = ni;
+                    }
+                }
+            }
+
+            int boxW = Math.max(1, maxX - minX + 1);
+            int boxH = Math.max(1, maxY - minY + 1);
+            boolean spansOppositeEdges =
+                    (touchesLeft && touchesRight) || (touchesTop && touchesBottom);
+            boolean longThinHorizontal =
+                    boxW >= longHorizontal && boxH <= thinHorizontalHeight;
+            boolean longThinVertical =
+                    boxH >= longVertical && boxW <= thinVerticalWidth;
+            boolean hugeArtwork = area > maxReasonableArea;
+
+            // Arabic words may form a wide connected component, so width alone
+            // is not a rejection criterion. We reject only obviously line-like,
+            // edge-spanning, or implausibly huge components.
+            boolean keep = area >= 2 &&
+                    !spansOppositeEdges &&
+                    !longThinHorizontal &&
+                    !longThinVertical &&
+                    !hugeArtwork;
+
+            if (keep) {
+                for (int i = 0; i < tail; i++) {
+                    accepted[queue[i]] = true;
+                }
+            }
         }
 
-        return Color.argb(
-                (int) (aa / samples),
-                (int) (rr / samples),
-                (int) (gg / samples),
-                (int) (bb / samples));
+        return accepted;
+    }
+
+    private int ringAverageColor(int[] px, int width, int height,
+                                 int x, int y, int radius) {
+        int x0 = clamp(x - radius, 0, width - 1);
+        int x1 = clamp(x + radius, 0, width - 1);
+        int y0 = clamp(y - radius, 0, height - 1);
+        int y1 = clamp(y + radius, 0, height - 1);
+
+        int c1 = px[y * width + x0];
+        int c2 = px[y * width + x1];
+        int c3 = px[y0 * width + x];
+        int c4 = px[y1 * width + x];
+        int c5 = px[y0 * width + x0];
+        int c6 = px[y0 * width + x1];
+        int c7 = px[y1 * width + x0];
+        int c8 = px[y1 * width + x1];
+
+        int alpha = (Color.alpha(c1) + Color.alpha(c2) + Color.alpha(c3) + Color.alpha(c4) +
+                Color.alpha(c5) + Color.alpha(c6) + Color.alpha(c7) + Color.alpha(c8)) / 8;
+        int red = (Color.red(c1) + Color.red(c2) + Color.red(c3) + Color.red(c4) +
+                Color.red(c5) + Color.red(c6) + Color.red(c7) + Color.red(c8)) / 8;
+        int green = (Color.green(c1) + Color.green(c2) + Color.green(c3) + Color.green(c4) +
+                Color.green(c5) + Color.green(c6) + Color.green(c7) + Color.green(c8)) / 8;
+        int blue = (Color.blue(c1) + Color.blue(c2) + Color.blue(c3) + Color.blue(c4) +
+                Color.blue(c5) + Color.blue(c6) + Color.blue(c7) + Color.blue(c8)) / 8;
+
+        return Color.argb(alpha, red, green, blue);
     }
 
     private int colorDistance(int a, int b) {
+        int da = Math.abs(Color.alpha(a) - Color.alpha(b));
         int dr = Math.abs(Color.red(a) - Color.red(b));
         int dg = Math.abs(Color.green(a) - Color.green(b));
         int db = Math.abs(Color.blue(a) - Color.blue(b));
-        return (dr + dg + db) / 3;
+        return (da + dr + dg + db) / 4;
     }
 
     private boolean containsRtl(String text) {

@@ -2746,6 +2746,16 @@ public class ProfessionalEditorActivity extends Activity {
         }
         if (busy) return;
 
+        if (isTransformGeometryOperation(operation) &&
+                canvas != null && canvas.hasTextOverlay()) {
+            toast("ثبّت النص الحالي أو ألغِه قبل القص أو التدوير أو تغيير الحجم");
+            setStatus("النص غير مثبت — ثبّته أو ألغِه قبل تغيير هندسة الصورة");
+            return;
+        }
+
+        final int oldWidth = localEngine.width();
+        final int oldHeight = localEngine.height();
+
         setBusy(true);
         setStatus("تنفيذ " + operation + " محليًا...");
 
@@ -2753,9 +2763,15 @@ public class ProfessionalEditorActivity extends Activity {
             try {
                 Bitmap value = localEngine.apply(operation, params);
                 Bitmap selectionOverlay = localEngine.selectionPreview();
+                final boolean dimensionsChanged =
+                        value.getWidth() != oldWidth || value.getHeight() != oldHeight;
                 runOnUiThread(() -> {
                     if (canvas != null) {
-                        canvas.setBitmapPreserveViewport(value);
+                        if (dimensionsChanged) {
+                            canvas.setBitmap(value);
+                        } else {
+                            canvas.setBitmapPreserveViewport(value);
+                        }
                         if ("add_text".equals(operation)) {
                             canvas.clearTextOverlay();
                         }
@@ -2812,6 +2828,11 @@ public class ProfessionalEditorActivity extends Activity {
     private void remoteHistory(String action) {
         if (!localEngine.hasImage()) return;
 
+        if (canvas != null && canvas.hasTextOverlay()) {
+            toast("ثبّت النص الحالي أو ألغِه قبل التراجع أو الإعادة");
+            return;
+        }
+
         if (activeAdjustmentOperation != null) {
             pendingHistoryAction = action;
             setStatus(("redo".equals(action) ? "الإعادة" : "التراجع") +
@@ -2826,6 +2847,8 @@ public class ProfessionalEditorActivity extends Activity {
             return;
         }
 
+        final int historyOldWidth = localEngine.width();
+        final int historyOldHeight = localEngine.height();
         setBusy(true);
         setStatus("جاري " + action + " محليًا...");
 
@@ -2835,9 +2858,16 @@ public class ProfessionalEditorActivity extends Activity {
                         ? localEngine.redo()
                         : localEngine.undo();
                 Bitmap selectionOverlay = localEngine.selectionPreview();
+                final boolean historyDimensionsChanged =
+                        value.getWidth() != historyOldWidth ||
+                        value.getHeight() != historyOldHeight;
 
                 runOnUiThread(() -> {
-                    canvas.setBitmapPreserveViewport(value);
+                    if (historyDimensionsChanged) {
+                        canvas.setBitmap(value);
+                    } else {
+                        canvas.setBitmapPreserveViewport(value);
+                    }
                     canvas.setSelectionOverlay(selectionOverlay);
                     resetAdjustmentValues();
                     setBusy(false);
@@ -3317,6 +3347,9 @@ public class ProfessionalEditorActivity extends Activity {
         busy = value;
         if (canvas != null) {
             canvas.setTextOverlayEditingEnabled(!value);
+            if (!value && canvas.hasTextOverlay()) {
+                updateTextOverlayStyle();
+            }
         }
     }
 
