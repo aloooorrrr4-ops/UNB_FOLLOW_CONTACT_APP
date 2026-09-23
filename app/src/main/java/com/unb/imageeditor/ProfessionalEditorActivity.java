@@ -1266,18 +1266,14 @@ public class ProfessionalEditorActivity extends Activity {
     private void loadSelectedImage(Uri uri) {
         if (uri == null || busy) return;
 
-        String oldProject = projectId;
-        projectId = null;
-        if (projectText != null) projectText.setText("بدون مشروع");
-        if (oldProject != null) {
-            api.closeProject(oldProject, new EditorApiClient.Callback<JSONObject>() {
-                @Override public void onSuccess(JSONObject value) {}
-                @Override public void onError(String message) {}
-            });
-        }
+        final String oldProject = projectId;
+        final Bitmap oldBitmap = canvas == null ? null : canvas.getBitmap();
+        final String oldSourceName = sourceName;
+        final byte[] oldSourceBytes = sourceBytes;
 
         setBusy(true);
-        setStatus("جاري قراءة الصورة...");
+        setStatus("جاري فحص الصورة الجديدة...");
+
         ioExecutor.execute(() -> {
             try {
                 long declaredSize = querySize(uri);
@@ -1290,34 +1286,70 @@ public class ProfessionalEditorActivity extends Activity {
                 Bitmap preview = decodePreview(bytes, PREVIEW_MAX_DIMENSION);
                 if (preview == null) throw new Exception("صيغة الصورة غير مدعومة");
 
-                sourceBytes = bytes;
-                sourceName = name;
-
                 runOnUiThread(() -> {
-                    canvas.setBitmap(preview);
-                    setStatus("جاري إنشاء مشروع على السيرفر...");
+                    if (oldProject == null && canvas != null) {
+                        canvas.setBitmap(preview);
+                    }
+                    setStatus("الصورة صالحة — جاري إنشاء مشروع جديد على السيرفر...");
                 });
 
                 api.createProject(bytes, name, new EditorApiClient.Callback<EditorApiClient.Project>() {
                     @Override
                     public void onSuccess(EditorApiClient.Project p) {
                         runOnUiThread(() -> {
+                            String projectToClose = oldProject;
+
                             projectId = p.id;
-                            if (p.preview != null) canvas.setBitmap(p.preview);
+                            sourceBytes = bytes;
+                            sourceName = name;
+
+                            if (p.preview != null) {
+                                canvas.setBitmap(p.preview);
+                            } else {
+                                canvas.setBitmap(preview);
+                            }
+
                             projectText.setText("Project " +
                                     projectId.substring(0, Math.min(8, projectId.length())));
                             setBusy(false);
-                            setStatus("المشروع متصل بالسيرفر");
+                            setStatus("المشروع الجديد متصل بالسيرفر");
                             addHistory("فتح " + sourceName);
                             refreshRemotePanels();
+
+                            if (projectToClose != null && !projectToClose.equals(projectId)) {
+                                api.closeProject(projectToClose,
+                                        new EditorApiClient.Callback<JSONObject>() {
+                                    @Override public void onSuccess(JSONObject value) {}
+                                    @Override public void onError(String message) {}
+                                });
+                            }
                         });
                     }
 
                     @Override
                     public void onError(String message) {
                         runOnUiThread(() -> {
-                            projectId = null;
                             setBusy(false);
+
+                            if (oldProject != null) {
+                                projectId = oldProject;
+                                sourceName = oldSourceName;
+                                sourceBytes = oldSourceBytes;
+                                if (oldBitmap != null && canvas != null) {
+                                    canvas.setBitmap(oldBitmap);
+                                }
+                                projectText.setText("Project " +
+                                        oldProject.substring(0, Math.min(8, oldProject.length())));
+                                setStatus("فشل استبدال الصورة — المشروع السابق محفوظ");
+                                toast("لم يتم حذف المشروع السابق");
+                                return;
+                            }
+
+                            projectId = null;
+                            sourceBytes = bytes;
+                            sourceName = name;
+                            if (canvas != null) canvas.setBitmap(preview);
+
                             if (message != null && message.contains("401")) {
                                 setStatus("الصورة محليًا — أدخل API Key من زر سيرفر");
                                 projectText.setText("مصادقة مطلوبة");
@@ -1326,6 +1358,7 @@ public class ProfessionalEditorActivity extends Activity {
                                 projectText.setText("بانتظار تحديث المحرك");
                             } else {
                                 setStatus("الصورة محليًا — السيرفر: " + shortText(message));
+                                projectText.setText("بدون مشروع");
                             }
                             addHistory("فتح محلي " + sourceName);
                             refreshLayers();
@@ -1334,10 +1367,24 @@ public class ProfessionalEditorActivity extends Activity {
                 });
             } catch (Exception e) {
                 runOnUiThread(() -> {
-                    projectId = null;
                     setBusy(false);
+
+                    if (oldProject != null) {
+                        projectId = oldProject;
+                        sourceName = oldSourceName;
+                        sourceBytes = oldSourceBytes;
+                        if (oldBitmap != null && canvas != null) {
+                            canvas.setBitmap(oldBitmap);
+                        }
+                        projectText.setText("Project " +
+                                oldProject.substring(0, Math.min(8, oldProject.length())));
+                        setStatus("الصورة الجديدة غير صالحة — المشروع السابق محفوظ");
+                    } else {
+                        projectId = null;
+                        setStatus("فشل فتح الصورة");
+                    }
+
                     toast("تعذر فتح الصورة: " + e.getMessage());
-                    setStatus("فشل فتح الصورة");
                 });
             }
         });
