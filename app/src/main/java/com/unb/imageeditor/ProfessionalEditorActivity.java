@@ -89,6 +89,8 @@ public class ProfessionalEditorActivity extends Activity {
     private int brushOpacity = 100;
     private int pointerOffsetDp = 92;
     private boolean pointerWorkEnabled = false;
+    private int selectionThreshold = 15;
+    private String dodgeBurnType = "dodge";
     private String eraseFillMode = "eraser";
     private boolean eraserTransparent = true;
     private String colorPickerReturnTool = null;
@@ -680,20 +682,26 @@ public class ProfessionalEditorActivity extends Activity {
             addPointerModeControls(toolOptions);
 
             if ("clone".equals(id) || "heal".equals(id)) {
-                toolOptions.addView(actionButton("تحديد المصدر", v -> {
+                toolOptions.addView(actionButton("خذ المصدر من المؤشر", v ->
+                        setCloneSourceAtPointer()));
+                toolOptions.addView(actionButton("إلغاء المصدر", v -> {
                     cloneSourceX = Float.NaN;
                     cloneSourceY = Float.NaN;
-                    setStatus("المس نقطة المصدر ثم ارسم على الهدف");
+                    setStatus("تم مسح مصدر " + ("heal".equals(id) ? "الترميم" : "الاستنساخ"));
                 }));
             }
 
-            if ("eraser".equals(id)) {
-                toolOptions.addView(actionButton("مسح ناعم", v ->
-                        setStatus("الممحاة الناعمة • اضبط الحجم والعتامة")));
-                toolOptions.addView(actionButton("مسح كامل", v -> {
-                    brushOpacity = 100;
-                    setStatus("الممحاة 100%");
-                }));
+            if ("dodge_burn".equals(id)) {
+                toolOptions.addView(actionButton(
+                        "dodge".equals(dodgeBurnType) ? "إضاءة ✓" : "إضاءة", v -> {
+                            dodgeBurnType = "dodge";
+                            showTool("dodge_burn", "إضاءة/حرق", null);
+                        }));
+                toolOptions.addView(actionButton(
+                        "burn".equals(dodgeBurnType) ? "حرق ✓" : "حرق", v -> {
+                            dodgeBurnType = "burn";
+                            showTool("dodge_burn", "إضاءة/حرق", null);
+                        }));
             }
         } else if ("text".equals(id)) {
             addSlider(toolOptions, "حجم الخط", 6, 300, 42, null);
@@ -788,6 +796,30 @@ public class ProfessionalEditorActivity extends Activity {
                     11, MUTED, false);
             help.setPadding(dp(10), 0, dp(10), 0);
             toolOptions.addView(help, new LinearLayout.LayoutParams(dp(240), dp(82)));
+        } else if ("fuzzy_select".equals(id) || "color_select".equals(id)) {
+            addLiveSlider(toolOptions, "الحساسية", 1, 100, selectionThreshold, value ->
+                    selectionThreshold = value);
+            addLiveSlider(toolOptions, "ارتفاع الرأس", 48, 160, pointerOffsetDp, value -> {
+                pointerOffsetDp = value;
+                if (canvas != null) canvas.setPointerOffsetDp(pointerOffsetDp);
+            });
+
+            if ("color_select".equals(id)) {
+                toolOptions.addView(actionButton("لون " + foregroundColor, v ->
+                        showColorPaletteDialog("لون التحديد", "color_select", "حسب لون")));
+                toolOptions.addView(actionButton("التعرف من الصورة", v ->
+                        startColorPickFor("color_select", "حسب لون")));
+            }
+
+            addPointerModeControls(toolOptions);
+
+            TextView help = label(
+                    "fuzzy_select".equals(id)
+                            ? "حرّك المؤشر إلى المنطقة ثم استخدم تحريك + عمل."
+                            : "يحدد كل البكسلات القريبة من اللون الحالي.",
+                    11, MUTED, false);
+            help.setPadding(dp(10), 0, dp(10), 0);
+            toolOptions.addView(help, new LinearLayout.LayoutParams(dp(250), dp(82)));
         } else if ("select".equals(id)) {
             toolOptions.addView(actionButton("مستطيل", v ->
                     setStatus("اسحب لتحديد مستطيل")));
@@ -1058,6 +1090,23 @@ public class ProfessionalEditorActivity extends Activity {
             return;
         }
 
+        if ("fuzzy_select".equals(activeTool)) {
+            double threshold = Math.max(0.01, Math.min(1.0, selectionThreshold / 100.0));
+            applyRemote("select_contiguous", jsonOf(
+                    "x", lastImageTapX,
+                    "y", lastImageTapY,
+                    "threshold", threshold));
+            return;
+        }
+
+        if ("color_select".equals(activeTool)) {
+            double threshold = Math.max(0.01, Math.min(1.0, selectionThreshold / 100.0));
+            applyRemote("select_color", jsonOf(
+                    "color", foregroundColor,
+                    "threshold", threshold));
+            return;
+        }
+
         if ("select".equals(activeTool)) {
             if (points.length < 4) {
                 canvas.clearStrokePreview();
@@ -1210,13 +1259,26 @@ public class ProfessionalEditorActivity extends Activity {
                     "points", pointsJson(points),
                     "size", brushSize,
                     "exposure", brushOpacity,
-                    "type", "dodge",
+                    "type", dodgeBurnType,
                     "range", "midtones"
             ));
             return;
         }
 
         canvas.clearStrokePreview();
+    }
+
+    private void setCloneSourceAtPointer() {
+        if (canvas == null) return;
+        float[] p = canvas.getPointerImagePosition();
+        if (p == null || p.length < 2) {
+            toast("المؤشر غير جاهز");
+            return;
+        }
+        cloneSourceX = p[0];
+        cloneSourceY = p[1];
+        setStatus("تم أخذ المصدر من المؤشر • X " + Math.round(cloneSourceX) +
+                " Y " + Math.round(cloneSourceY));
     }
 
     private JSONArray pointsJson(float[] points) {
