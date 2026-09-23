@@ -49,6 +49,9 @@ public class EditorCanvasView extends View {
     private final Paint pointerHandleFillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint pointerHandleStrokePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint pointerHandleGripPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint pointerHeadOuterPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint pointerHeadAccentPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint pointerHeadCenterPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint textRegionPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint selectedTextRegionPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint transformPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -155,6 +158,18 @@ public class EditorCanvasView extends View {
         pointerHandleGripPaint.setStrokeWidth(dp(2.2f));
         pointerHandleGripPaint.setStrokeCap(Paint.Cap.ROUND);
         pointerHandleGripPaint.setColor(Color.WHITE);
+
+        pointerHeadOuterPaint.setStyle(Paint.Style.STROKE);
+        pointerHeadOuterPaint.setStrokeWidth(dp(5f));
+        pointerHeadOuterPaint.setColor(Color.argb(225, 0, 0, 0));
+
+        pointerHeadAccentPaint.setStyle(Paint.Style.STROKE);
+        pointerHeadAccentPaint.setStrokeWidth(dp(2.5f));
+        pointerHeadAccentPaint.setStrokeCap(Paint.Cap.ROUND);
+        pointerHeadAccentPaint.setColor(Color.rgb(0, 229, 255));
+
+        pointerHeadCenterPaint.setStyle(Paint.Style.FILL);
+        pointerHeadCenterPaint.setColor(Color.WHITE);
 
         setLayerType(View.LAYER_TYPE_SOFTWARE, null);
 
@@ -842,16 +857,34 @@ public class EditorCanvasView extends View {
                 "fill".equals(interactionMode);
 
         if (paintTool) {
-            float radius = Math.max(dp(3), (previewStrokeSize * zoom) / 2f);
-            pointerPaint.setColor("eraser".equals(interactionMode)
-                    ? Color.rgb(255, 105, 105)
-                    : previewStrokeColor);
-            pointerPaint.setStrokeWidth(dp(1.6f));
-            canvas.drawCircle(pointerHeadX, pointerHeadY, radius, pointerPaint);
-            canvas.drawLine(pointerHeadX - dp(4), pointerHeadY,
-                    pointerHeadX + dp(4), pointerHeadY, pointerPaint);
-            canvas.drawLine(pointerHeadX, pointerHeadY - dp(4),
-                    pointerHeadX, pointerHeadY + dp(4), pointerPaint);
+            float brushRadius = Math.max(dp(3), (previewStrokeSize * zoom) / 2f);
+            float visibleRadius = Math.max(dp(13), brushRadius);
+
+            // High-contrast execution head: black outer rim + cyan inner rim
+            // + white center. The brush/eraser footprint stays visible even
+            // on dark or very bright artwork.
+            canvas.drawCircle(pointerHeadX, pointerHeadY, visibleRadius,
+                    pointerHeadOuterPaint);
+            canvas.drawCircle(pointerHeadX, pointerHeadY, visibleRadius,
+                    pointerHeadAccentPaint);
+
+            float arm = Math.max(dp(8), Math.min(dp(18), visibleRadius * 0.65f));
+            canvas.drawLine(pointerHeadX - arm, pointerHeadY,
+                    pointerHeadX + arm, pointerHeadY, pointerHeadAccentPaint);
+            canvas.drawLine(pointerHeadX, pointerHeadY - arm,
+                    pointerHeadX, pointerHeadY + arm, pointerHeadAccentPaint);
+            canvas.drawCircle(pointerHeadX, pointerHeadY, dp(3.5f),
+                    pointerHeadCenterPaint);
+
+            // Show the exact effective radius as a second ring when the tool
+            // size is larger than the fixed visibility target.
+            if (Math.abs(brushRadius - visibleRadius) > dp(1)) {
+                pointerPaint.setColor("eraser".equals(interactionMode)
+                        ? Color.rgb(255, 105, 105)
+                        : previewStrokeColor);
+                pointerPaint.setStrokeWidth(dp(1.5f));
+                canvas.drawCircle(pointerHeadX, pointerHeadY, brushRadius, pointerPaint);
+            }
         } else {
             pointerPaint.setColor(Color.WHITE);
             pointerPaint.setStrokeWidth(dp(1.5f));
@@ -877,6 +910,66 @@ public class EditorCanvasView extends View {
             float gy = pointerTouchY + i * dp(5);
             canvas.drawLine(pointerTouchX - gripHalf, gy,
                     pointerTouchX + gripHalf, gy, pointerHandleGripPaint);
+        }
+    }
+
+    private void beginPointerHandleDrag(float touchX, float touchY) {
+        pointerHandleDragging = true;
+        pointerHandleLastX = touchX;
+        pointerHandleLastY = touchY;
+        strokePoints.clear();
+
+        // "Move + work" means the orange grip itself drives the active tool
+        // continuously from the detached execution head. "Move only" keeps
+        // exactly the same grip behavior without editing pixels.
+        drawingStroke = pointerActionEnabled &&
+                isStrokeMode() &&
+                !"text_select".equals(interactionMode);
+
+        if (drawingStroke) {
+            addStrokePoint(pointerTouchX, pointerTouchY);
+        }
+    }
+
+    private void movePointerHandleToTouch(float touchX, float touchY) {
+        float dx = touchX - pointerHandleLastX;
+        float dy = touchY - pointerHandleLastY;
+        if (dx == 0f && dy == 0f) return;
+
+        movePointerHandleBy(dx, dy);
+        pointerHandleLastX = touchX;
+        pointerHandleLastY = touchY;
+
+        if (drawingStroke) {
+            addStrokePoint(pointerTouchX, pointerTouchY);
+        }
+    }
+
+    private void finishPointerHandleDrag(boolean cancelled) {
+        if (!pointerHandleDragging) return;
+        pointerHandleDragging = false;
+
+        if (cancelled) {
+            drawingStroke = false;
+            strokePoints.clear();
+            invalidate();
+            return;
+        }
+
+        if ("text_select".equals(interactionMode)) {
+            if (pointerActionEnabled && listener != null) {
+                float[] p = getPointerImagePosition();
+                if (p != null) listener.onTapImage(p[0], p[1]);
+            }
+            invalidate();
+            return;
+        }
+
+        if (drawingStroke) {
+            addStrokePoint(pointerTouchX, pointerTouchY);
+            finishStroke();
+        } else {
+            invalidate();
         }
     }
 
@@ -1089,11 +1182,7 @@ public class EditorCanvasView extends View {
             switch (event.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
                     if (isPointerHandleHit(event.getX(), event.getY())) {
-                        pointerHandleDragging = true;
-                        pointerHandleLastX = event.getX();
-                        pointerHandleLastY = event.getY();
-                        drawingStroke = false;
-                        strokePoints.clear();
+                        beginPointerHandleDrag(event.getX(), event.getY());
                         invalidate();
                         return true;
                     }
@@ -1101,21 +1190,30 @@ public class EditorCanvasView extends View {
 
                 case MotionEvent.ACTION_MOVE:
                     if (pointerHandleDragging) {
-                        float dx = event.getX() - pointerHandleLastX;
-                        float dy = event.getY() - pointerHandleLastY;
-                        movePointerHandleBy(dx, dy);
-                        pointerHandleLastX = event.getX();
-                        pointerHandleLastY = event.getY();
+                        // Consume historical touch samples so long/fast drags
+                        // stay continuous instead of leaving gaps.
+                        for (int i = 0; i < event.getHistorySize(); i++) {
+                            movePointerHandleToTouch(
+                                    event.getHistoricalX(i),
+                                    event.getHistoricalY(i));
+                        }
+                        movePointerHandleToTouch(event.getX(), event.getY());
                         invalidate();
                         return true;
                     }
                     break;
 
                 case MotionEvent.ACTION_UP:
+                    if (pointerHandleDragging) {
+                        movePointerHandleToTouch(event.getX(), event.getY());
+                        finishPointerHandleDrag(false);
+                        return true;
+                    }
+                    break;
+
                 case MotionEvent.ACTION_CANCEL:
                     if (pointerHandleDragging) {
-                        pointerHandleDragging = false;
-                        invalidate();
+                        finishPointerHandleDrag(true);
                         return true;
                     }
                     break;
