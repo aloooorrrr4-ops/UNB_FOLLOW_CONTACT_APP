@@ -745,6 +745,7 @@ public class ProfessionalEditorActivity extends Activity {
                     startColorPickFor("text", "نص")));
 
             toolOptions.addView(actionButton("اكتشاف النصوص", v -> detectTextRegions()));
+            toolOptions.addView(actionButton("تحديد نص يدوي", v -> startManualTextSelection()));
             toolOptions.addView(actionButton("تحديد عند المؤشر", v -> selectTextAtPointer()));
             toolOptions.addView(actionButton("تعرف على المحدد", v -> recognizeSelectedText(false)));
             toolOptions.addView(actionButton("تعديل المحدد", v -> recognizeSelectedText(true)));
@@ -1220,6 +1221,38 @@ public class ProfessionalEditorActivity extends Activity {
             return;
         }
 
+        if ("text_box".equals(activeTool)) {
+            if (points.length < 4) {
+                canvas.clearStrokePreview();
+                return;
+            }
+            float x0 = points[0];
+            float y0 = points[1];
+            float x1 = points[points.length - 2];
+            float y1 = points[points.length - 1];
+            RectF region = new RectF(
+                    Math.min(x0, x1),
+                    Math.min(y0, y1),
+                    Math.max(x0, x1),
+                    Math.max(y0, y1));
+            if (region.width() < 2f || region.height() < 2f) {
+                canvas.clearStrokePreview();
+                toast("ارسم إطارًا حول النص");
+                return;
+            }
+            selectedTextRegion = region;
+            recognizedText = "";
+            recognizedTextConfidence = 0;
+            detectedTextRegions.add(new RectF(region));
+            canvas.setDetectedTextRegions(detectedTextRegions);
+            canvas.setSelectedTextRegion(region);
+            canvas.setInteractionMode("text_select");
+            activeTool = "text_detect";
+            canvas.clearStrokePreview();
+            setStatus("تم تحديد النص يدويًا — يمكنك التعرف عليه أو تعديله أو قصه");
+            return;
+        }
+
         if ("text".equals(activeTool) && "text_select".equals(canvas.getInteractionMode())) {
             selectDetectedTextRegion(lastImageTapX, lastImageTapY);
             canvas.clearStrokePreview();
@@ -1447,6 +1480,17 @@ public class ProfessionalEditorActivity extends Activity {
             colorPickerReturnLabel = null;
             showTool(returnTool, returnLabel, null);
         }
+    }
+
+    private void startManualTextSelection() {
+        if (!localEngine.hasImage() || canvas == null) {
+            toast("افتح صورة أولاً");
+            return;
+        }
+        activeTool = "text_box";
+        canvas.setInteractionMode("select");
+        canvas.setPointerActionEnabled(true);
+        setStatus("اسحب مستطيلاً حول النص المطلوب");
     }
 
     private void detectTextRegions() {
