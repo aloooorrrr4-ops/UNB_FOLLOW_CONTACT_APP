@@ -1887,6 +1887,14 @@ public class ProfessionalEditorActivity extends Activity {
                 applyRemote("merge_down", new JSONObject())));
         layerList.addView(actionButton("Flatten", v ->
                 applyRemote("flatten", new JSONObject())));
+        layerList.addView(actionButton("+ قناع", v ->
+                applyRemote("add_layer_mask", new JSONObject())));
+        layerList.addView(actionButton("عكس القناع", v ->
+                applyRemote("invert_layer_mask", new JSONObject())));
+        layerList.addView(actionButton("تطبيق القناع", v ->
+                applyRemote("apply_layer_mask", new JSONObject())));
+        layerList.addView(actionButton("حذف القناع", v ->
+                applyRemote("remove_layer_mask", new JSONObject())));
 
         List<LocalEditorEngine.LayerInfo> layers = localEngine.layerInfo();
         LocalEditorEngine.LayerInfo active = null;
@@ -1897,7 +1905,8 @@ public class ProfessionalEditorActivity extends Activity {
             if (!desktopLayout) {
                 String text = (info.active ? "● " : "○ ") +
                         info.name + "\n" +
-                        Math.round(info.opacity * 100f / 255f) + "%";
+                        Math.round(info.opacity * 100f / 255f) + "% • " +
+                        info.blendMode + (info.hasMask ? " • Mask" : "");
                 Button card = actionButton(text, v ->
                         applyRemote("set_active_layer", json("index", info.index)));
                 if (info.active) card.setBackground(rounded(Color.rgb(44, 83, 145), 8));
@@ -1922,7 +1931,9 @@ public class ProfessionalEditorActivity extends Activity {
                 name.setOnClickListener(v ->
                         applyRemote("set_active_layer", json("index", info.index)));
 
-                TextView meta = label(Math.round(info.opacity * 100f / 255f) + "%",
+                TextView meta = label(
+                        Math.round(info.opacity * 100f / 255f) + "% • " +
+                                info.blendMode + (info.hasMask ? " • M" : ""),
                         11, MUTED, false);
                 meta.setGravity(Gravity.END);
 
@@ -1940,6 +1951,21 @@ public class ProfessionalEditorActivity extends Activity {
                     applyRemote("set_layer_opacity", jsonOf(
                             "index", activeIndex,
                             "opacity", Math.round(value * 255f / 100f))));
+
+            String activeBlend = active.blendMode;
+            layerList.addView(actionButton("Blend: " + activeBlend, v ->
+                    showChoice("Blend Mode", new String[]{
+                            "Normal", "Multiply", "Screen", "Add", "Darken", "Lighten"
+                    }, index -> {
+                        String[] modes = {
+                                "normal", "multiply", "screen", "add", "darken", "lighten"
+                        };
+                        if (index >= 0 && index < modes.length) {
+                            applyRemote("set_layer_blend_mode", jsonOf(
+                                    "index", activeIndex,
+                                    "mode", modes[index]));
+                        }
+                    })));
         }
     }
 
