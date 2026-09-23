@@ -21,6 +21,7 @@ jobs:
           python3 -m py_compile server/gimp_editor/app.py
           bash -n server/gimp_editor/start_gimp_scriptfu.sh
           bash -n server/gimp_editor/install_staging.sh
+          bash -n server/gimp_editor/setup_https_ip.sh
 
       - name: Set up Java
         uses: actions/setup-java@v5
