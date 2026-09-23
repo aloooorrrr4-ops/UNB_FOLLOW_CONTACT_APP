@@ -48,7 +48,7 @@ systemctl enable --now nginx
 systemctl reload nginx
 
 echo "[3/6] Requesting a short-lived public IP certificate..."
-"$CERTBOT_VENV/bin/certbot" certonly   --non-interactive   --agree-tos   --register-unsafely-without-email   --preferred-profile shortlived   --webroot   --webroot-path "$WEBROOT"   --ip-address "$PUBLIC_IP"
+"$CERTBOT_VENV/bin/certbot" certonly   --non-interactive   --agree-tos   --register-unsafely-without-email   --preferred-profile shortlived   --webroot   --webroot-path "$WEBROOT"   --cert-name "$PUBLIC_IP"   --ip-address "$PUBLIC_IP"
 
 test -s "$CERT_DIR/fullchain.pem"
 test -s "$CERT_DIR/privkey.pem"
