@@ -921,7 +921,6 @@ public class ProfessionalEditorActivity extends Activity {
             return;
         }
         applyRemote("quad_transform", jsonOf("quad", values));
-        canvas.clearTransformQuad();
     }
 
     private void showGradientBackgroundColorDialog() {
@@ -2538,6 +2537,10 @@ public class ProfessionalEditorActivity extends Activity {
                     if (canvas != null) {
                         canvas.clearStrokePreview();
                         canvas.setSelectionOverlay(selectionOverlay);
+                        if ("quad_transform".equals(operation)) {
+                            canvas.setInteractionMode("transform_quad");
+                            canvas.resetTransformQuad();
+                        }
                     }
                     if (!"brightness".equals(operation) &&
                             !"contrast".equals(operation) &&
