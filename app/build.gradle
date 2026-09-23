@@ -23,4 +23,25 @@ android {
 }
 
 dependencies {
+    implementation 'cz.adaptech.tesseract4android:tesseract4android:4.9.0'
 }
+
+def tessdataDir = file("$projectDir/src/main/assets/tessdata")
+
+tasks.register("prepareOfflineOcrData") {
+    outputs.dir(tessdataDir)
+    doLast {
+        tessdataDir.mkdirs()
+        [
+            "ara.traineddata": "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/main/ara.traineddata",
+            "eng.traineddata": "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/main/eng.traineddata"
+        ].each { name, sourceUrl ->
+            def target = new File(tessdataDir, name)
+            if (!target.exists() || target.length() < 1024) {
+                ant.get(src: sourceUrl, dest: target, verbose: true)
+            }
+        }
+    }
+}
+
+preBuild.dependsOn prepareOfflineOcrData
