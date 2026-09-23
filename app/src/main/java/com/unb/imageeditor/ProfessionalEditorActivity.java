@@ -1513,12 +1513,22 @@ public class ProfessionalEditorActivity extends Activity {
         }
 
         setBusy(true);
-        setStatus("جاري اكتشاف مناطق النص محليًا...");
+        setStatus("جاري اكتشاف كل النصوص محليًا...");
 
         localExecutor.execute(() -> {
             try {
                 Bitmap source = localEngine.current();
-                List<RectF> regions = textRegionDetector.detect(source);
+
+                List<RectF> ocrRegions = new ArrayList<>();
+                try {
+                    ocrRegions.addAll(ocrEngine.detectWordRegions(source));
+                } catch (Exception ignoredOcrDetection) {
+                    // The edge detector below remains available as an offline fallback.
+                }
+
+                List<RectF> fallbackRegions = textRegionDetector.detect(source);
+                List<RectF> regions = combineDetectedTextRegions(
+                        ocrRegions, fallbackRegions, source.getWidth(), source.getHeight());
 
                 runOnUiThread(() -> {
                     detectedTextRegions.clear();
@@ -1535,8 +1545,8 @@ public class ProfessionalEditorActivity extends Activity {
                     }
                     setBusy(false);
                     setStatus("تم اكتشاف " + regions.size() +
-                            " منطقة نص — حرّك المؤشر داخل النص ثم حدده");
-                    addHistory("كشف النص");
+                            " منطقة نص — حرّك المؤشر فوق الكلمة المطلوبة");
+                    addHistory("كشف النصوص " + regions.size());
                 });
             } catch (Exception e) {
                 runOnUiThread(() -> {
@@ -1546,6 +1556,63 @@ public class ProfessionalEditorActivity extends Activity {
                 });
             }
         });
+    }
+
+    private List<RectF> combineDetectedTextRegions(List<RectF> ocr,
+                                                   List<RectF> fallback,
+                                                   int imageWidth,
+                                                   int imageHeight) {
+        List<RectF> result = new ArrayList<>();
+        if (ocr != null) {
+            for (RectF box : ocr) {
+                if (isUsefulTextRegion(box, imageWidth, imageHeight)) {
+                    result.add(new RectF(box));
+                }
+            }
+        }
+
+        if (fallback != null) {
+            for (RectF box : fallback) {
+                if (!isUsefulTextRegion(box, imageWidth, imageHeight)) continue;
+
+                boolean alreadyCovered = false;
+                for (RectF existing : result) {
+                    float intersection = rectIntersectionArea(box, existing);
+                    if (intersection <= 0f) continue;
+                    float smaller = Math.max(1f, Math.min(
+                            box.width() * box.height(),
+                            existing.width() * existing.height()));
+                    if (intersection / smaller >= 0.35f) {
+                        alreadyCovered = true;
+                        break;
+                    }
+                }
+
+                if (!alreadyCovered) result.add(new RectF(box));
+            }
+        }
+
+        result.sort((a, b) -> {
+            int top = Float.compare(a.top, b.top);
+            return top != 0 ? top : Float.compare(a.left, b.left);
+        });
+        return result;
+    }
+
+    private boolean isUsefulTextRegion(RectF box, int imageWidth, int imageHeight) {
+        if (box == null || box.width() < 4f || box.height() < 4f) return false;
+        float area = box.width() * box.height();
+        float imageArea = Math.max(1f, imageWidth * (float) imageHeight);
+        return area < imageArea * 0.20f;
+    }
+
+    private float rectIntersectionArea(RectF a, RectF b) {
+        float left = Math.max(a.left, b.left);
+        float top = Math.max(a.top, b.top);
+        float right = Math.min(a.right, b.right);
+        float bottom = Math.min(a.bottom, b.bottom);
+        if (right <= left || bottom <= top) return 0f;
+        return (right - left) * (bottom - top);
     }
 
     private void selectDetectedTextRegion(float imageX, float imageY) {
