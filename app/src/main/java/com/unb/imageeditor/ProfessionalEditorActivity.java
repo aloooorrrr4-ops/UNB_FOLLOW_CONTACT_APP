@@ -1219,10 +1219,14 @@ public class ProfessionalEditorActivity extends Activity {
         }
     }
 
+    private String formatColorWithAlpha(int color) {
+        return String.format("#%08X", color);
+    }
+
     private void applyEraseFillTargetColor(String color) {
         try {
             int parsed = Color.parseColor(color);
-            eraseFillTargetColor = String.format("#%06X", 0xFFFFFF & parsed);
+            eraseFillTargetColor = formatColorWithAlpha(parsed);
             rememberColor(eraseFillTargetColor);
             if (canvas != null) {
                 canvas.setStrokePreview(brushSize, parsed);
@@ -1738,7 +1742,7 @@ public class ProfessionalEditorActivity extends Activity {
         int color = bitmap.getPixel(x, y);
 
         if ("erase_target".equals(colorPickerReturnTool)) {
-            String sampled = String.format("#%06X", (0xFFFFFF & color));
+            String sampled = formatColorWithAlpha(color);
             applyEraseFillTargetColor(sampled);
             colorPickerReturnTool = null;
             colorPickerReturnLabel = null;
