@@ -1909,7 +1909,9 @@ public final class LocalEditorEngine {
                 int localIndex = localRow + rx;
                 if (colorDistance(visible[localIndex], targetColor) > tolerance) continue;
 
-                float coverage = opacity * (selectionAlpha / 255f);
+                // Selection feathering is applied once by applySelectionMask()
+                // after this operation. Here it only gates which pixels are eligible.
+                float coverage = opacity;
                 if (coverage <= 0f) continue;
 
                 int current = src[localIndex];
