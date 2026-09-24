@@ -994,6 +994,70 @@ public final class LocalEditorEngine {
         }
     }
 
+    private Bitmap maskedLayerRegionBitmap(Layer layer, int left, int top,
+                                                  int regionW, int regionH) {
+        Bitmap out = Bitmap.createBitmap(regionW, regionH, Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(out);
+        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+
+        canvas.save();
+        canvas.translate(-left, -top);
+        canvas.drawBitmap(layer.bitmap, 0, 0, paint);
+        canvas.restore();
+
+        int count = regionW * regionH;
+        int[] maskPixels = new int[count];
+        layer.mask.getPixels(maskPixels, 0, regionW, left, top, regionW, regionH);
+        for (int i = 0; i < count; i++) {
+            int alpha = Color.red(maskPixels[i]);
+            maskPixels[i] = Color.argb(alpha, 255, 255, 255);
+        }
+
+        Bitmap alphaMask = Bitmap.createBitmap(
+                regionW, regionH, Bitmap.Config.ARGB_8888);
+        alphaMask.setPixels(maskPixels, 0, regionW, 0, 0, regionW, regionH);
+
+        Paint maskPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+        maskPaint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.DST_IN));
+        canvas.drawBitmap(alphaMask, 0, 0, maskPaint);
+        maskPaint.setXfermode(null);
+        alphaMask.recycle();
+        return out;
+    }
+
+    private Bitmap compositeRegion(int left, int top, int regionW, int regionH) {
+        Bitmap out = Bitmap.createBitmap(regionW, regionH, Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(out);
+        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+
+        boolean hasBackdrop = false;
+        for (Layer layer : layers) {
+            if (!layer.visible) continue;
+
+            paint.setAlpha(layer.opacity);
+            PorterDuff.Mode mode = hasBackdrop ? porterDuffForBlend(layer.blendMode) : null;
+            paint.setXfermode(mode == null ? null : new PorterDuffXfermode(mode));
+
+            if (layer.mask == null) {
+                canvas.save();
+                canvas.translate(-left, -top);
+                canvas.drawBitmap(layer.bitmap, 0, 0, paint);
+                canvas.restore();
+            } else {
+                Bitmap region = maskedLayerRegionBitmap(
+                        layer, left, top, regionW, regionH);
+                canvas.drawBitmap(region, 0, 0, paint);
+                region.recycle();
+            }
+
+            hasBackdrop = true;
+        }
+
+        paint.setAlpha(255);
+        paint.setXfermode(null);
+        return out;
+    }
+
     private Bitmap compositeLayers() {
         if (bitmap == null) return null;
         if (layers.size() <= 1) {
@@ -1864,11 +1928,12 @@ public final class LocalEditorEngine {
         int[] matchPx = new int[count];
         int[] maskPx = new int[count];
 
-        // Match against the same composited pixels the user sees and samples
-        // from the canvas, while still applying the edit to the active layer.
-        Bitmap compositeSnapshot = compositeLayers();
+        // Match against exactly the visible composite, but allocate only the
+        // stroke bounds. This avoids borrowing/recycling a layer-owned bitmap
+        // and avoids a full-canvas ARGB allocation for every matched stroke.
+        Bitmap compositeSnapshot = compositeRegion(left, top, regionW, regionH);
         bitmap.getPixels(src, 0, regionW, left, top, regionW, regionH);
-        compositeSnapshot.getPixels(matchPx, 0, regionW, left, top, regionW, regionH);
+        compositeSnapshot.getPixels(matchPx, 0, regionW, 0, 0, regionW, regionH);
         mask.getPixels(maskPx, 0, regionW, 0, 0, regionW, regionH);
 
         for (int i = 0; i < count; i++) {
@@ -1893,9 +1958,7 @@ public final class LocalEditorEngine {
         }
 
         bitmap.setPixels(src, 0, regionW, left, top, regionW, regionH);
-        if (compositeSnapshot != bitmap && !compositeSnapshot.isRecycled()) {
-            compositeSnapshot.recycle();
-        }
+        compositeSnapshot.recycle();
         mask.recycle();
     }
 
