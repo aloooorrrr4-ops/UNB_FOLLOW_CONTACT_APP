@@ -710,6 +710,12 @@ public class ProfessionalEditorActivity extends Activity {
                         v -> startEraseFillTargetColorPick()));
                 addLiveSlider(toolOptions, "سماحية اللون", 0, 100,
                         eraseFillTolerance, value -> eraseFillTolerance = value);
+
+                toolOptions.addView(actionButton(
+                        localEngine.hasSelection()
+                                ? "تطبيق على التحديد"
+                                : "تطبيق على التحديد (حدد منطقة)",
+                        v -> applyEraseFillToSelection()));
             }
 
             if ("eraser".equals(eraseFillMode)) {
@@ -1461,6 +1467,35 @@ public class ProfessionalEditorActivity extends Activity {
             });
         });
         dialog.show();
+    }
+
+    private void applyEraseFillToSelection() {
+        if (!localEngine.hasImage()) {
+            toast("افتح صورة أولاً");
+            return;
+        }
+        if (!localEngine.hasSelection()) {
+            toast("حدد المنطقة أولاً");
+            setStatus("لا توجد منطقة محددة");
+            return;
+        }
+        if (!eraseFillMatchColor) {
+            toast("فعّل حسب اللون أولاً");
+            return;
+        }
+
+        setStatus(("eraser".equals(eraseFillMode)
+                ? "جاري مسح اللون المستهدف من كامل التحديد..."
+                : "جاري تعبئة اللون المستهدف داخل كامل التحديد..."));
+
+        applyRemote("color_match_selection", jsonOf(
+                "mode", eraseFillMode,
+                "opacity", brushOpacity,
+                "color", foregroundColor,
+                "transparent", eraserTransparent,
+                "target_color", eraseFillTargetColor,
+                "tolerance", eraseFillTolerance
+        ));
     }
 
     private void handleCanvasStroke(float[] points) {
