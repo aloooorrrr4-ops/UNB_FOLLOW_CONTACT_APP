@@ -96,6 +96,10 @@ public class ProfessionalEditorActivity extends Activity {
     private String dodgeBurnType = "dodge";
     private String eraseFillMode = "eraser";
     private boolean eraserTransparent = true;
+    private boolean eraseFillMatchColor = true;
+    private int eraseFillTolerance = 24;
+    private String eraseFillTargetColor = "#ffffff";
+    private boolean eraseTargetPickerInternalTransition = false;
     private String colorPickerReturnTool = null;
     private String colorPickerReturnLabel = null;
     private boolean selectedTextColorPickPending = false;
@@ -597,6 +601,21 @@ public class ProfessionalEditorActivity extends Activity {
     }
 
     private void showTool(String id, String label, Button source) {
+        if ("erase_target".equals(colorPickerReturnTool)) {
+            if ("color_picker".equals(id)) {
+                if (eraseTargetPickerInternalTransition) {
+                    eraseTargetPickerInternalTransition = false;
+                } else {
+                    colorPickerReturnTool = null;
+                    colorPickerReturnLabel = null;
+                }
+            } else {
+                colorPickerReturnTool = null;
+                colorPickerReturnLabel = null;
+                eraseTargetPickerInternalTransition = false;
+            }
+        }
+
         if (selectedTextColorPickPending) {
             if ("color_picker".equals(id)) {
                 if (selectedTextColorPickerInternalTransition) {
@@ -628,7 +647,9 @@ public class ProfessionalEditorActivity extends Activity {
             else canvasMode = id;
             canvas.setInteractionMode(canvasMode);
             canvas.setPointerActionEnabled(pointerWorkEnabled);
-            canvas.setStrokePreview(brushSize, parseColorSafe(foregroundColor));
+            String previewColor = "erase_fill".equals(id) && eraseFillMatchColor
+                    ? eraseFillTargetColor : foregroundColor;
+            canvas.setStrokePreview(brushSize, parseColorSafe(previewColor));
         }
         if (toolOptions == null) return;
 
@@ -650,29 +671,79 @@ public class ProfessionalEditorActivity extends Activity {
         }
 
         if ("erase_fill".equals(id)) {
-            toolOptions.addView(actionButton("ممحاة", v -> {
-                eraseFillMode = "eraser";
-                if (canvas != null) {
-                    canvas.setInteractionMode("eraser");
-                    canvas.setPointerActionEnabled(pointerWorkEnabled);
-                    canvas.showPointerNow();
+            toolOptions.addView(actionButton(
+                    "eraser".equals(eraseFillMode) ? "ممحاة ✓" : "ممحاة",
+                    v -> {
+                        eraseFillMode = "eraser";
+                        showTool("erase_fill", "ممحاة/تعبئة", null);
+                        setStatus("وضع الممحاة");
+                    }));
+            toolOptions.addView(actionButton(
+                    "fill".equals(eraseFillMode) ? "تعبئة ✓" : "تعبئة",
+                    v -> {
+                        eraseFillMode = "fill";
+                        showTool("erase_fill", "ممحاة/تعبئة", null);
+                        setStatus("وضع التعبئة");
+                    }));
+
+            toolOptions.addView(actionButton(
+                    eraseFillMatchColor ? "حسب اللون ✓" : "حسب اللون",
+                    v -> {
+                        eraseFillMatchColor = true;
+                        showTool("erase_fill", "ممحاة/تعبئة", null);
+                        setStatus("سيتم التنفيذ على اللون المستهدف فقط");
+                    }));
+            toolOptions.addView(actionButton(
+                    eraseFillMatchColor ? "عادي" : "عادي ✓",
+                    v -> {
+                        eraseFillMatchColor = false;
+                        showTool("erase_fill", "ممحاة/تعبئة", null);
+                        setStatus("الوضع العادي: التنفيذ على كل البكسلات تحت الأداة");
+                    }));
+
+            if (eraseFillMatchColor) {
+                toolOptions.addView(actionButton(
+                        "اللون المستهدف " + eraseFillTargetColor,
+                        v -> showEraseFillTargetColorDialog()));
+                toolOptions.addView(actionButton(
+                        "التقاط المستهدف من الصورة",
+                        v -> startEraseFillTargetColorPick()));
+                addLiveSlider(toolOptions, "سماحية اللون", 0, 100,
+                        eraseFillTolerance, value -> eraseFillTolerance = value);
+            }
+
+            if ("eraser".equals(eraseFillMode)) {
+                toolOptions.addView(actionButton(
+                        eraserTransparent ? "مسح شفاف ✓" : "مسح شفاف",
+                        v -> {
+                            eraserTransparent = !eraserTransparent;
+                            showTool("erase_fill", "ممحاة/تعبئة", null);
+                        }));
+                if (!eraserTransparent) {
+                    toolOptions.addView(actionButton(
+                            "لون الاستبدال " + foregroundColor,
+                            v -> showColorPaletteDialog(
+                                    "لون الاستبدال", "erase_fill", "ممحاة/تعبئة")));
+                    toolOptions.addView(actionButton(
+                            "التقاط لون الاستبدال",
+                            v -> startColorPickFor("erase_fill", "ممحاة/تعبئة")));
                 }
-                setStatus("وضع الممحاة");
-            }));
-            toolOptions.addView(actionButton("تعبئة", v -> {
-                eraseFillMode = "fill";
-                if (canvas != null) {
-                    canvas.setInteractionMode("fill");
-                    canvas.setPointerActionEnabled(pointerWorkEnabled);
-                    canvas.showPointerNow();
-                }
-                setStatus("وضع التعبئة");
-            }));
+            } else {
+                toolOptions.addView(actionButton(
+                        "لون التعبئة " + foregroundColor,
+                        v -> showColorPaletteDialog(
+                                "لون التعبئة", "erase_fill", "ممحاة/تعبئة")));
+                toolOptions.addView(actionButton(
+                        "التقاط لون التعبئة",
+                        v -> startColorPickFor("erase_fill", "ممحاة/تعبئة")));
+            }
 
             addLiveSlider(toolOptions, "الحجم", 1, 300, brushSize, value -> {
                 brushSize = value;
                 if (canvas != null) {
-                    canvas.setStrokePreview(brushSize, parseColorSafe(foregroundColor));
+                    String preview = eraseFillMatchColor
+                            ? eraseFillTargetColor : foregroundColor;
+                    canvas.setStrokePreview(brushSize, parseColorSafe(preview));
                 }
             });
             addLiveSlider(toolOptions, "العتامة", 0, 100, brushOpacity,
@@ -682,19 +753,18 @@ public class ProfessionalEditorActivity extends Activity {
                 if (canvas != null) canvas.setPointerOffsetDp(pointerOffsetDp);
             });
 
-            toolOptions.addView(actionButton(
-                    eraserTransparent ? "مسح شفاف ✓" : "مسح شفاف",
-                    v -> {
-                        eraserTransparent = !eraserTransparent;
-                        showTool("erase_fill", "ممحاة/تعبئة", null);
-                    }));
-
-            toolOptions.addView(actionButton("اختيار لون", v ->
-                    showColorPaletteDialog("لون الممحاة / التعبئة", "erase_fill", "ممحاة/تعبئة")));
-            toolOptions.addView(actionButton("التعرف من الصورة", v ->
-                    startColorPickFor("erase_fill", "ممحاة/تعبئة")));
-
             addPointerModeControls(toolOptions);
+
+            TextView eraseHelp = label(
+                    eraseFillMatchColor
+                            ? ("الهدف " + eraseFillTargetColor +
+                               " • السماحية " + eraseFillTolerance +
+                               " — الأبيض وبقية الألوان لن تتأثر إذا كانت خارج السماحية.")
+                            : "الوضع العادي يطبق الأداة على كل ما يمر تحته الرأس.",
+                    11, MUTED, false);
+            eraseHelp.setPadding(dp(10), 0, dp(10), 0);
+            toolOptions.addView(eraseHelp,
+                    new LinearLayout.LayoutParams(dp(310), dp(82)));
         } else if (Arrays.asList("brush", "pencil", "clone", "heal", "smudge", "dodge_burn").contains(id)) {
             addLiveSlider(toolOptions, "الحجم", 1, 300, brushSize, value -> {
                 brushSize = value;
@@ -1149,6 +1219,126 @@ public class ProfessionalEditorActivity extends Activity {
         }
     }
 
+    private void applyEraseFillTargetColor(String color) {
+        try {
+            int parsed = Color.parseColor(color);
+            eraseFillTargetColor = String.format("#%06X", 0xFFFFFF & parsed);
+            rememberColor(eraseFillTargetColor);
+            if (canvas != null) {
+                canvas.setStrokePreview(brushSize, parsed);
+            }
+            setStatus("اللون المستهدف " + eraseFillTargetColor);
+        } catch (Exception e) {
+            toast("لون مستهدف غير صحيح");
+        }
+    }
+
+    private void startEraseFillTargetColorPick() {
+        clearPendingSelectedTextColorPick();
+        colorPickerReturnTool = "erase_target";
+        colorPickerReturnLabel = "ممحاة/تعبئة";
+        eraseTargetPickerInternalTransition = true;
+
+        showTool("color_picker", "التقاط اللون المستهدف", null);
+        if (canvas != null) {
+            canvas.setPointerActionEnabled(false);
+            canvas.setStrokePreview(brushSize, parseColorSafe(eraseFillTargetColor));
+            canvas.showPointerNow();
+        }
+        setStatus("حرّك رأس المؤشر فوق اللون المطلوب ثم اضغط التقاط اللون");
+    }
+
+    private void showEraseFillTargetColorDialog() {
+        LinearLayout box = column();
+        box.setPadding(dp(16), dp(10), dp(16), dp(6));
+
+        TextView current = label("اللون المستهدف  " + eraseFillTargetColor,
+                13, TEXT, true);
+        current.setTextDirection(View.TEXT_DIRECTION_LTR);
+        current.setLayoutDirection(View.LAYOUT_DIRECTION_LTR);
+        current.setGravity(Gravity.CENTER);
+        current.setPadding(dp(8), dp(8), dp(8), dp(8));
+        current.setBackground(rounded(parseColorSafe(eraseFillTargetColor), 10));
+        current.setTextColor(colorLuminance(parseColorSafe(eraseFillTargetColor)) > 150
+                ? Color.BLACK : Color.WHITE);
+        box.addView(current, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
+
+        GridLayout grid = new GridLayout(this);
+        int screenWidthDp = getResources().getConfiguration().screenWidthDp;
+        int columns = screenWidthDp < 380 ? 4 : (screenWidthDp < 480 ? 5 : 6);
+        grid.setColumnCount(columns);
+        int[] palette = {
+                0xFFFFFFFF, 0xFFBDBDBD, 0xFF757575, 0xFF212121, 0xFF000000, 0xFFFF1744,
+                0xFFFF5252, 0xFFFF8A80, 0xFFFF9100, 0xFFFFC400, 0xFFFFFF00, 0xFFCDDC39,
+                0xFF76FF03, 0xFF00E676, 0xFF1DE9B6, 0xFF00E5FF, 0xFF40C4FF, 0xFF448AFF,
+                0xFF536DFE, 0xFF7C4DFF, 0xFFB388FF, 0xFFE040FB, 0xFFFF4081, 0xFF795548
+        };
+
+        final AlertDialog[] holder = new AlertDialog[1];
+        int swatchDp = screenWidthDp < 380 ? 42 : 44;
+        for (int color : palette) {
+            String hex = String.format("#%06X", 0xFFFFFF & color);
+            Button swatch = new Button(this);
+            swatch.setText("");
+            swatch.setContentDescription("لون مستهدف " + hex);
+            swatch.setBackground(rounded(color, 7));
+            GridLayout.LayoutParams lp = new GridLayout.LayoutParams();
+            lp.width = dp(swatchDp);
+            lp.height = dp(swatchDp);
+            lp.setMargins(dp(3), dp(3), dp(3), dp(3));
+            swatch.setLayoutParams(lp);
+            swatch.setOnClickListener(v -> {
+                applyEraseFillTargetColor(hex);
+                if (holder[0] != null) holder[0].dismiss();
+                showTool("erase_fill", "ممحاة/تعبئة", null);
+            });
+            grid.addView(swatch);
+        }
+        box.addView(grid);
+
+        EditText hexInput = new EditText(this);
+        hexInput.setHint("#RRGGBB");
+        hexInput.setText(eraseFillTargetColor);
+        hexInput.setTextColor(TEXT);
+        hexInput.setHintTextColor(MUTED);
+        hexInput.setSingleLine(true);
+        hexInput.setTextDirection(View.TEXT_DIRECTION_LTR);
+        hexInput.setLayoutDirection(View.LAYOUT_DIRECTION_LTR);
+        hexInput.setGravity(Gravity.CENTER);
+        box.addView(hexInput);
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("اختيار اللون المستهدف")
+                .setView(box)
+                .setNegativeButton("إلغاء", null)
+                .setNeutralButton("من الصورة", null)
+                .setPositiveButton("تم", null)
+                .create();
+        holder[0] = dialog;
+
+        dialog.setOnShowListener(ignored -> {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+                String value = hexInput.getText().toString().trim();
+                if (!value.startsWith("#")) value = "#" + value;
+                try {
+                    Color.parseColor(value);
+                    applyEraseFillTargetColor(value);
+                    dialog.dismiss();
+                    showTool("erase_fill", "ممحاة/تعبئة", null);
+                } catch (Exception e) {
+                    hexInput.setError("مثال: #22235B");
+                }
+            });
+
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> {
+                dialog.dismiss();
+                startEraseFillTargetColorPick();
+            });
+        });
+        dialog.show();
+    }
+
     private void showColorPaletteDialog(String title, String returnTool, String returnLabel) {
         LinearLayout box = column();
         box.setPadding(dp(16), dp(10), dp(16), dp(6));
@@ -1452,7 +1642,10 @@ public class ProfessionalEditorActivity extends Activity {
                         "points", pointsJson(points),
                         "size", brushSize,
                         "opacity", brushOpacity,
-                        "color", foregroundColor
+                        "color", foregroundColor,
+                        "match_color", eraseFillMatchColor,
+                        "target_color", eraseFillTargetColor,
+                        "tolerance", eraseFillTolerance
                 ));
             } else {
                 applyRemote("eraser", jsonOf(
@@ -1460,7 +1653,10 @@ public class ProfessionalEditorActivity extends Activity {
                         "size", brushSize,
                         "opacity", brushOpacity,
                         "color", foregroundColor,
-                        "transparent", eraserTransparent
+                        "transparent", eraserTransparent,
+                        "match_color", eraseFillMatchColor,
+                        "target_color", eraseFillTargetColor,
+                        "tolerance", eraseFillTolerance
                 ));
             }
             return;
@@ -1540,6 +1736,18 @@ public class ProfessionalEditorActivity extends Activity {
         int x = Math.max(0, Math.min(bitmap.getWidth() - 1, Math.round(imageX)));
         int y = Math.max(0, Math.min(bitmap.getHeight() - 1, Math.round(imageY)));
         int color = bitmap.getPixel(x, y);
+
+        if ("erase_target".equals(colorPickerReturnTool)) {
+            String sampled = String.format("#%06X", (0xFFFFFF & color));
+            applyEraseFillTargetColor(sampled);
+            colorPickerReturnTool = null;
+            colorPickerReturnLabel = null;
+            eraseTargetPickerInternalTransition = false;
+            showTool("erase_fill", "ممحاة/تعبئة", null);
+            setStatus("تم التقاط اللون المستهدف " + eraseFillTargetColor);
+            return;
+        }
+
         boolean textColorTarget = "text".equals(colorPickerReturnTool);
         foregroundColor = String.format("#%06X", (0xFFFFFF & color));
         rememberColor(foregroundColor);

@@ -532,10 +532,18 @@ public final class LocalEditorEngine {
                     stroke(p, true, false);
                     break;
                 case "eraser":
-                    stroke(p, false, true);
+                    if (p.optBoolean("match_color", false)) {
+                        colorMatchedStroke(p, true);
+                    } else {
+                        stroke(p, false, true);
+                    }
                     break;
                 case "fill_stroke":
-                    stroke(p, false, false);
+                    if (p.optBoolean("match_color", false)) {
+                        colorMatchedStroke(p, false);
+                    } else {
+                        stroke(p, false, false);
+                    }
                     break;
                 case "gradient":
                     gradient(p);
@@ -1787,6 +1795,98 @@ public final class LocalEditorEngine {
             x0 = x1;
             y0 = y1;
         }
+    }
+
+    private void colorMatchedStroke(JSONObject p, boolean erase) {
+        JSONArray pts = p.optJSONArray("points");
+        if (pts == null || pts.length() < 2) {
+            throw new IllegalArgumentException("مسار الأداة فارغ");
+        }
+
+        int imageW = bitmap.getWidth();
+        int imageH = bitmap.getHeight();
+        float size = Math.max(1f, (float) p.optDouble("size", 20));
+        float radius = Math.max(0.5f, size / 2f);
+        int tolerance = clamp(p.optInt("tolerance", 24), 0, 255);
+        int targetColor = parseColor(p.optString("target_color",
+                p.optString("color", "#ffffff")));
+        int applyColor = parseColor(p.optString("color", "#ffffff"));
+        float opacity = Math.max(0f, Math.min(1f,
+                (float) p.optDouble("opacity", 100) / 100f));
+        boolean transparent = erase && p.optBoolean("transparent", true);
+
+        float minX = Float.MAX_VALUE;
+        float minY = Float.MAX_VALUE;
+        float maxX = -Float.MAX_VALUE;
+        float maxY = -Float.MAX_VALUE;
+        for (int i = 0; i + 1 < pts.length(); i += 2) {
+            float x = (float) pts.optDouble(i);
+            float y = (float) pts.optDouble(i + 1);
+            minX = Math.min(minX, x);
+            minY = Math.min(minY, y);
+            maxX = Math.max(maxX, x);
+            maxY = Math.max(maxY, y);
+        }
+
+        int left = clamp((int) Math.floor(minX - radius - 2f), 0, imageW - 1);
+        int top = clamp((int) Math.floor(minY - radius - 2f), 0, imageH - 1);
+        int right = clamp((int) Math.ceil(maxX + radius + 2f), left + 1, imageW);
+        int bottom = clamp((int) Math.ceil(maxY + radius + 2f), top + 1, imageH);
+        int regionW = Math.max(1, right - left);
+        int regionH = Math.max(1, bottom - top);
+
+        Bitmap mask = Bitmap.createBitmap(regionW, regionH, Bitmap.Config.ARGB_8888);
+        Canvas maskCanvas = new Canvas(mask);
+        Paint maskPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        maskPaint.setStyle(Paint.Style.STROKE);
+        maskPaint.setStrokeCap(Paint.Cap.ROUND);
+        maskPaint.setStrokeJoin(Paint.Join.ROUND);
+        maskPaint.setStrokeWidth(size);
+        maskPaint.setColor(Color.WHITE);
+
+        float x0 = (float) pts.optDouble(0) - left;
+        float y0 = (float) pts.optDouble(1) - top;
+        if (pts.length() == 2) {
+            maskPaint.setStyle(Paint.Style.FILL);
+            maskCanvas.drawCircle(x0, y0, radius, maskPaint);
+        } else {
+            for (int i = 2; i + 1 < pts.length(); i += 2) {
+                float x1 = (float) pts.optDouble(i) - left;
+                float y1 = (float) pts.optDouble(i + 1) - top;
+                maskCanvas.drawLine(x0, y0, x1, y1, maskPaint);
+                x0 = x1;
+                y0 = y1;
+            }
+        }
+
+        int count = regionW * regionH;
+        int[] src = new int[count];
+        int[] maskPx = new int[count];
+        bitmap.getPixels(src, 0, regionW, left, top, regionW, regionH);
+        mask.getPixels(maskPx, 0, regionW, 0, 0, regionW, regionH);
+
+        for (int i = 0; i < count; i++) {
+            int coverageAlpha = Color.alpha(maskPx[i]);
+            if (coverageAlpha <= 0) continue;
+
+            int current = src[i];
+            if (colorDistance(current, targetColor) > tolerance) continue;
+
+            float coverage = opacity * (coverageAlpha / 255f);
+            if (coverage <= 0f) continue;
+
+            if (transparent) {
+                int oldAlpha = Color.alpha(current);
+                int newAlpha = clamp(Math.round(oldAlpha * (1f - coverage)), 0, 255);
+                src[i] = Color.argb(newAlpha,
+                        Color.red(current), Color.green(current), Color.blue(current));
+            } else {
+                src[i] = blend(current, applyColor, coverage);
+            }
+        }
+
+        bitmap.setPixels(src, 0, regionW, left, top, regionW, regionH);
+        mask.recycle();
     }
 
     private void gradient(JSONObject p) {
