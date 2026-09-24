@@ -169,6 +169,10 @@ public final class LocalEditorEngine {
                 : layers.get(0).bitmap.getHeight();
     }
 
+    public synchronized boolean hasSelection() {
+        return selectionMask != null && selection != null && !selection.isEmpty();
+    }
+
     public synchronized Bitmap selectionPreview() {
         if (selectionMask == null || bitmap == null) return null;
         int w = bitmap.getWidth();
@@ -544,6 +548,10 @@ public final class LocalEditorEngine {
                     } else {
                         stroke(p, false, false);
                     }
+                    break;
+                case "color_match_selection":
+                    colorMatchSelection(p,
+                            "eraser".equalsIgnoreCase(p.optString("mode", "eraser")));
                     break;
                 case "gradient":
                     gradient(p);
@@ -1859,6 +1867,68 @@ public final class LocalEditorEngine {
             x0 = x1;
             y0 = y1;
         }
+    }
+
+    private void colorMatchSelection(JSONObject p, boolean erase) {
+        if (selectionMask == null || selection == null || selection.isEmpty()) {
+            throw new IllegalStateException("حدد منطقة أولاً");
+        }
+
+        int imageW = bitmap.getWidth();
+        int imageH = bitmap.getHeight();
+        int left = clamp(selection.left, 0, imageW - 1);
+        int top = clamp(selection.top, 0, imageH - 1);
+        int right = clamp(selection.right, left + 1, imageW);
+        int bottom = clamp(selection.bottom, top + 1, imageH);
+        int regionW = Math.max(1, right - left);
+        int regionH = Math.max(1, bottom - top);
+        int count = regionW * regionH;
+
+        int tolerance = clamp(p.optInt("tolerance", 24), 0, 255);
+        int targetColor = parseColor(p.optString("target_color",
+                p.optString("color", "#FF000000")));
+        int applyColor = parseColor(p.optString("color", "#FFFFFFFF"));
+        float opacity = Math.max(0f, Math.min(1f,
+                (float) p.optDouble("opacity", 100) / 100f));
+        boolean transparent = erase && p.optBoolean("transparent", true);
+
+        Bitmap visibleRegion = compositeRegion(left, top, regionW, regionH);
+        int[] src = new int[count];
+        int[] visible = new int[count];
+        bitmap.getPixels(src, 0, regionW, left, top, regionW, regionH);
+        visibleRegion.getPixels(visible, 0, regionW, 0, 0, regionW, regionH);
+
+        for (int ry = 0; ry < regionH; ry++) {
+            int globalRow = (top + ry) * imageW;
+            int localRow = ry * regionW;
+            for (int rx = 0; rx < regionW; rx++) {
+                int globalIndex = globalRow + left + rx;
+                int selectionAlpha = selectionMask[globalIndex] & 0xFF;
+                if (selectionAlpha <= 0) continue;
+
+                int localIndex = localRow + rx;
+                if (colorDistance(visible[localIndex], targetColor) > tolerance) continue;
+
+                float coverage = opacity * (selectionAlpha / 255f);
+                if (coverage <= 0f) continue;
+
+                int current = src[localIndex];
+                if (transparent) {
+                    int oldAlpha = Color.alpha(current);
+                    int newAlpha = clamp(Math.round(oldAlpha * (1f - coverage)), 0, 255);
+                    src[localIndex] = Color.argb(
+                            newAlpha,
+                            Color.red(current),
+                            Color.green(current),
+                            Color.blue(current));
+                } else {
+                    src[localIndex] = blend(current, applyColor, coverage);
+                }
+            }
+        }
+
+        bitmap.setPixels(src, 0, regionW, left, top, regionW, regionH);
+        visibleRegion.recycle();
     }
 
     private void colorMatchedStroke(JSONObject p, boolean erase) {
