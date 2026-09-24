@@ -1861,8 +1861,14 @@ public final class LocalEditorEngine {
 
         int count = regionW * regionH;
         int[] src = new int[count];
+        int[] matchPx = new int[count];
         int[] maskPx = new int[count];
+
+        // Match against the same composited pixels the user sees and samples
+        // from the canvas, while still applying the edit to the active layer.
+        Bitmap compositeSnapshot = compositeLayers();
         bitmap.getPixels(src, 0, regionW, left, top, regionW, regionH);
+        compositeSnapshot.getPixels(matchPx, 0, regionW, left, top, regionW, regionH);
         mask.getPixels(maskPx, 0, regionW, 0, 0, regionW, regionH);
 
         for (int i = 0; i < count; i++) {
@@ -1870,7 +1876,8 @@ public final class LocalEditorEngine {
             if (coverageAlpha <= 0) continue;
 
             int current = src[i];
-            if (colorDistance(current, targetColor) > tolerance) continue;
+            int visible = matchPx[i];
+            if (colorDistance(visible, targetColor) > tolerance) continue;
 
             float coverage = opacity * (coverageAlpha / 255f);
             if (coverage <= 0f) continue;
@@ -1886,6 +1893,9 @@ public final class LocalEditorEngine {
         }
 
         bitmap.setPixels(src, 0, regionW, left, top, regionW, regionH);
+        if (compositeSnapshot != bitmap && !compositeSnapshot.isRecycled()) {
+            compositeSnapshot.recycle();
+        }
         mask.recycle();
     }
 
