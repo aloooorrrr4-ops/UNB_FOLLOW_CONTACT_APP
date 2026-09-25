@@ -763,9 +763,13 @@ public class ProfessionalEditorActivity extends Activity {
 
             TextView eraseHelp = label(
                     eraseFillMatchColor
-                            ? ("الهدف " + eraseFillTargetColor +
-                               " • السماحية " + eraseFillTolerance +
-                               " — الأبيض وبقية الألوان لن تتأثر إذا كانت خارج السماحية.")
+                            ? (localEngine.hasSelection()
+                                ? ("الهدف " + eraseFillTargetColor +
+                                   " • السماحية " + eraseFillTolerance +
+                                   " — التحديد ثابت. التنفيذ يزيل اللون من كامل التحديد ويعيد بناء الخلفية الحقيقية.")
+                                : ("الهدف " + eraseFillTargetColor +
+                                   " • السماحية " + eraseFillTolerance +
+                                   " — الأبيض وبقية الألوان لن تتأثر إذا كانت خارج السماحية."))
                             : "الوضع العادي يطبق الأداة على كل ما يمر تحته الرأس.",
                     11, MUTED, false);
             eraseHelp.setPadding(dp(10), 0, dp(10), 0);
@@ -1485,7 +1489,7 @@ public class ProfessionalEditorActivity extends Activity {
         }
 
         setStatus(("eraser".equals(eraseFillMode)
-                ? "جاري مسح اللون المستهدف من كامل التحديد..."
+                ? "جاري إزالة اللون المستهدف وترميم الخلفية داخل التحديد..."
                 : "جاري تعبئة اللون المستهدف داخل كامل التحديد..."));
 
         applyRemote("color_match_selection", jsonOf(
@@ -1493,6 +1497,7 @@ public class ProfessionalEditorActivity extends Activity {
                 "opacity", brushOpacity,
                 "color", foregroundColor,
                 "transparent", eraserTransparent,
+                "restore_background", "eraser".equals(eraseFillMode),
                 "target_color", eraseFillTargetColor,
                 "tolerance", eraseFillTolerance
         ));
@@ -1676,6 +1681,15 @@ public class ProfessionalEditorActivity extends Activity {
         }
 
         if ("erase_fill".equals(activeTool)) {
+            if (eraseFillMatchColor && localEngine.hasSelection()) {
+                // A committed selection defines the whole work area. A tap or
+                // short drag now applies the target-color operation to all of
+                // it instead of limiting the edit to the brush footprint.
+                canvas.clearStrokePreview();
+                applyEraseFillToSelection();
+                return;
+            }
+
             if ("fill".equals(eraseFillMode)) {
                 applyRemote("fill_stroke", jsonOf(
                         "points", pointsJson(points),
@@ -3561,7 +3575,13 @@ public class ProfessionalEditorActivity extends Activity {
                     projectId = "LOCAL";
                     projectText.setText("Offline • " +
                             localEngine.width() + "×" + localEngine.height());
-                    setStatus("تم " + operation + " محليًا");
+                    if ("color_match_selection".equals(operation)) {
+                        setStatus("eraser".equals(eraseFillMode)
+                                ? "تمت إزالة اللون المستهدف وترميم الخلفية داخل التحديد"
+                                : "تمت تعبئة اللون المستهدف داخل التحديد");
+                    } else {
+                        setStatus("تم " + operation + " محليًا");
+                    }
                     addHistory(operation);
                     refreshRemotePanels();
                     flushPendingHistory();
