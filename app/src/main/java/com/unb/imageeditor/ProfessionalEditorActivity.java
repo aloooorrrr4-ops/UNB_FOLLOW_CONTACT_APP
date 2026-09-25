@@ -766,7 +766,11 @@ public class ProfessionalEditorActivity extends Activity {
                             ? (localEngine.hasSelection()
                                 ? ("الهدف " + eraseFillTargetColor +
                                    " • السماحية " + eraseFillTolerance +
-                                   " — التحديد ثابت. التنفيذ يزيل اللون من كامل التحديد ويعيد بناء الخلفية الحقيقية.")
+                                   ("eraser".equals(eraseFillMode)
+                                       ? (eraserTransparent
+                                           ? " — التحديد ثابت. يزيل اللون المستهدف ويحاول ترميم الخلفية المحيطة."
+                                           : " — التحديد ثابت. يستبدل اللون المستهدف بلون الاستبدال المختار.")
+                                       : " — التحديد ثابت. يعبئ اللون المستهدف بلون التعبئة المختار."))
                                 : ("الهدف " + eraseFillTargetColor +
                                    " • السماحية " + eraseFillTolerance +
                                    " — الأبيض وبقية الألوان لن تتأثر إذا كانت خارج السماحية."))

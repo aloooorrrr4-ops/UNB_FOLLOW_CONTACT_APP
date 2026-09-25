@@ -1,0 +1,213 @@
+import java.awt.Font;
+import java.awt.Graphics2D;
+import java.awt.RenderingHints;
+import java.awt.font.TextLayout;
+import java.awt.image.BufferedImage;
+import java.io.File;
+import java.util.Arrays;
+import java.util.HashMap;
+import javax.imageio.ImageIO;
+
+public class SmartRestoreHarness {
+    static final int BLACK = 0xff000000, PINK = 0xffffc0d7, BLUE = 0xff2060ff;
+    Bitmap bitmap;
+    Rect selection;
+    byte[] selectionMask;
+    int[] fringeCalls;
+
+    // Minimal platform boundaries; production methods below remain unchanged
+    // except for a classification-call counter used by the dense-mask test.
+    static class Color {
+        static final int TRANSPARENT = 0, WHITE = 0xffffffff;
+        static int alpha(int c) { return c >>> 24; }
+        static int red(int c) { return c >>> 16 & 255; }
+        static int green(int c) { return c >>> 8 & 255; }
+        static int blue(int c) { return c & 255; }
+        static int argb(int a, int r, int g, int b) { return a << 24 | r << 16 | g << 8 | b; }
+        static int parseColor(String s) {
+            long value = Long.parseLong(s.substring(1), 16);
+            return (int) (s.length() == 7 ? value | 0xff000000L : value);
+        }
+    }
+    static class Rect {
+        int left, top, right, bottom;
+        Rect(int l, int t, int r, int b) { left=l; top=t; right=r; bottom=b; }
+        int width() { return right-left; }
+        int height() { return bottom-top; }
+        boolean isEmpty() { return width() <= 0 || height() <= 0; }
+    }
+    static class Bitmap {
+        final int w, h;
+        final int[] data;
+        Bitmap(int w, int h, int[] pixels) { this.w=w; this.h=h; data=pixels.clone(); }
+        int getWidth() { return w; }
+        int getHeight() { return h; }
+        void getPixels(int[] p, int offset, int stride, int x, int y, int width, int height) {
+            for (int row=0; row<height; row++) System.arraycopy(data, (y+row)*w+x, p, offset+row*stride, width);
+        }
+        void setPixels(int[] p, int offset, int stride, int x, int y, int width, int height) {
+            for (int row=0; row<height; row++) System.arraycopy(p, offset+row*stride, data, (y+row)*w+x, width);
+        }
+        void recycle() {}
+    }
+    static class JSONObject extends HashMap<String,Object> {
+        JSONObject with(String key, Object value) { put(key,value); return this; }
+        int optInt(String k, int fallback) { return containsKey(k) ? ((Number)get(k)).intValue() : fallback; }
+        double optDouble(String k, double fallback) { return containsKey(k) ? ((Number)get(k)).doubleValue() : fallback; }
+        boolean optBoolean(String k, boolean fallback) { return containsKey(k) ? (Boolean)get(k) : fallback; }
+        String optString(String k, String fallback) { return containsKey(k) ? (String)get(k) : fallback; }
+    }
+    Bitmap compositeRegion(int x, int y, int w, int h) {
+        int[] p=new int[w*h];
+        bitmap.getPixels(p,0,w,x,y,w,h);
+        return new Bitmap(w,h,p);
+    }
+    void recordFringe(int x, int y, int w) { fringeCalls[y*w+x]++; }
+    SmartRestoreHarness(int w, int h, int[] input, Rect region) {
+        bitmap=new Bitmap(w,h,input); selection=region;
+        selectionMask=new byte[w*h]; fringeCalls=new int[w*h];
+        for(int y=region.top;y<region.bottom;y++)
+            for(int x=region.left;x<region.right;x++) selectionMask[y*w+x]=(byte)255;
+    }
+    static JSONObject options() { return new JSONObject().with("target_color","#FF000000").with("tolerance",0).with("edge_expand",0); }
+    static void check(boolean result, String message) { if (!result) throw new AssertionError(message); }
+    static int[] solid(int n, int color) { int[] p=new int[n]; Arrays.fill(p,color); return p; }
+    static int[] mirror(int[] p, int w, int h, boolean horizontal) {
+        int[] out=new int[p.length];
+        for(int y=0;y<h;y++) for(int x=0;x<w;x++)
+            out[y*w+x]=p[(horizontal?y:h-1-y)*w+(horizontal?w-1-x:x)];
+        return out;
+    }
+    static void testGradient() {
+        int w=45,h=39; int[] p=new int[w*h];
+        for(int y=0;y<h;y++) for(int x=0;x<w;x++)
+            p[y*w+x]=(x>=12&&x<=32&&y>=9&&y<=29) ? BLACK : Color.argb(255,100+x*3,100+y*3,180);
+        for(int expansion:new int[]{0,1,3}) {
+            SmartRestoreHarness a=new SmartRestoreHarness(w,h,p,new Rect(0,0,w,h));
+            a.colorMatchSelection(options().with("edge_expand",expansion),true);
+            for(int i=0;i<p.length;i++) if(p[i]!=BLACK)
+                check(a.bitmap.data[i]==p[i],"Fringe expansion changed true gradient background");
+            for(boolean horizontal:new boolean[]{true,false}) {
+                SmartRestoreHarness b=new SmartRestoreHarness(w,h,mirror(p,w,h,horizontal),new Rect(0,0,w,h));
+                b.colorMatchSelection(options().with("edge_expand",expansion),true);
+                check(Arrays.equals(a.bitmap.data,mirror(b.bitmap.data,w,h,horizontal)),"Gradient depends on scan direction");
+            }
+            check(a.bitmap.data[19*w+22] != BLACK,"Thick mask center not restored");
+        }
+        System.out.println("PASS gradient is invariant under horizontal and vertical reflection");
+    }
+    static void testDeepMask() {
+        int w=220,h=420; int[] p=new int[w*h];
+        for(int y=0;y<h;y++) for(int x=0;x<w;x++)
+            p[y*w+x]=(x>=20&&x<200&&y>=20&&y<400) ? BLACK : Color.argb(255,230,y/2,190);
+        SmartRestoreHarness a=new SmartRestoreHarness(w,h,p,new Rect(0,0,w,h));
+        a.colorMatchSelection(options(),true);
+        int upper=a.bitmap.data[140*w+110], lower=a.bitmap.data[280*w+110];
+        check(Color.green(lower)-Color.green(upper)>50,"Deep mask center became a flat fallback patch");
+        for(int i=0;i<p.length;i++) {
+            if(p[i]!=BLACK)check(a.bitmap.data[i]==p[i],"Deep restore changed unmasked background");
+            check(a.bitmap.data[i]!=BLACK,"Deep mask still contains target color");
+        }
+        System.out.println("PASS mask deeper than 64 pixels retains varying background at its center");
+    }
+    static void testOutlier() {
+        int w=7,h=7,navy=0xff204080,teal=0xff00ffe0;
+        int[] p=solid(w*h,navy); boolean[] mask=new boolean[w*h];
+        p[3*w+2]=BLACK; mask[3*w+2]=true;
+        p[3*w+3]=0xff102040; p[2*w+4]=teal;
+        SmartRestoreHarness a=new SmartRestoreHarness(w,h,p,new Rect(0,0,w,h));
+        check(a.isTargetRelatedFringe(p,mask,w,h,3,3,BLACK,0,new int[96]),"Single teal outlier hid navy anti-alias fringe");
+        check(!a.isTargetRelatedFringe(p,mask,w,h,4,2,BLACK,0,new int[96]),"Teal artwork classified as fringe");
+        System.out.println("PASS navy fringe survives a nearby teal outlier; teal remains protected");
+    }
+    static void testCandidateCache() {
+        int w=121,h=117; int[] p=solid(w*h,PINK);
+        for(int y=2;y<h-2;y++) for(int x=2;x<w-2;x++) if((x+y)%2==0)p[y*w+x]=BLACK;
+        SmartRestoreHarness a=new SmartRestoreHarness(w,h,p,new Rect(0,0,w,h));
+        a.colorMatchSelection(options().with("edge_expand",3),true);
+        int calls=0;
+        for(int n:a.fringeCalls) { check(n<=1,"Candidate classified more than once"); calls+=n; }
+        check(calls>1000,"Dense fixture did not exercise fringe classification");
+        check(Arrays.equals(a.bitmap.data,solid(w*h,PINK)),"Dense black pattern did not restore pink");
+        System.out.println("PASS dense mask: "+calls+" unique candidates, each classified once");
+    }
+    static void testModesAndSelection() {
+        int w=30,h=24; int[] p=solid(w*h,PINK);
+        for(int y=4;y<20;y++) for(int x=4;x<26;x++)p[y*w+x]=BLACK;
+        Rect r=new Rect(8,6,22,18);
+        SmartRestoreHarness replacement=new SmartRestoreHarness(w,h,p,r);
+        replacement.colorMatchSelection(options().with("transparent",false).with("color","#FF2060FF"),true);
+        for(int i=0;i<p.length;i++) check(replacement.bitmap.data[i]==(replacement.selectionMask[i]!=0?BLUE:p[i]),"Replacement or selection boundary mismatch");
+        SmartRestoreHarness zero=new SmartRestoreHarness(w,h,p,r);
+        zero.colorMatchSelection(options().with("opacity",0),true);
+        check(Arrays.equals(p,zero.bitmap.data),"Zero opacity changed image");
+        SmartRestoreHarness hole=new SmartRestoreHarness(w,h,p,new Rect(0,0,w,h));
+        hole.selectionMask[12*w+15]=0;
+        hole.colorMatchSelection(options(),true);
+        check(hole.bitmap.data[12*w+15]==BLACK,"Selection hole changed");
+        SmartRestoreHarness none=new SmartRestoreHarness(w,h,solid(w*h,PINK),r);
+        none.colorMatchSelection(options(),true);
+        check(Arrays.equals(none.bitmap.data,solid(w*h,PINK)),"No-match edit changed image");
+        System.out.println("PASS replacement, selection boundaries/holes, zero opacity and no matches");
+    }
+    static void testTouchingArtwork() {
+        int w=50,h=35;
+        for(int art:new int[]{BLUE,0xff20c050,0xffff3030}) {
+            int[] p=solid(w*h,PINK);
+            for(int y=8;y<27;y++) {
+                for(int x=20;x<30;x++) p[y*w+x]=BLACK;
+                p[y*w+30]=art;
+            }
+            SmartRestoreHarness a=new SmartRestoreHarness(w,h,p,new Rect(0,0,w,h));
+            a.colorMatchSelection(options().with("edge_expand",1).with("tolerance",24),true);
+            for(int i=0;i<p.length;i++) if(p[i]==art)check(a.bitmap.data[i]==art,"Touching colored art changed");
+        }
+        System.out.println("PASS touching blue, green and red artwork preserved");
+    }
+    static void testArabic(String output) throws Exception {
+        int w=560,h=200;
+        BufferedImage input=new BufferedImage(w,h,BufferedImage.TYPE_INT_ARGB);
+        Graphics2D g=input.createGraphics();
+        g.setColor(new java.awt.Color(PINK,true)); g.fillRect(0,0,w,h);
+        g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING,RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+        Font font=new Font("SansSerif",Font.BOLD,72);
+        g.setColor(java.awt.Color.BLACK);
+        new TextLayout("الصلاحية",font,g.getFontRenderContext()).draw(g,180,130);
+        g.setColor(new java.awt.Color(BLUE,true)); g.fillRect(148,75,18,50);
+        g.setColor(java.awt.Color.BLACK); g.fillRect(20,75,20,50); g.dispose();
+        int[] pixels=input.getRGB(0,0,w,h,null,0,w);
+        SmartRestoreHarness a=new SmartRestoreHarness(w,h,pixels,new Rect(130,35,520,170));
+        a.colorMatchSelection(options().with("tolerance",24).with("edge_expand",1),true);
+        long error=0; int letters=0;
+        for(int i=0;i<pixels.length;i++) {
+            int c=a.bitmap.data[i];
+            if(a.selectionMask[i]==0 || pixels[i]==BLUE || pixels[i]==PINK)
+                check(c==pixels[i],"Background, colored art, or outside selection changed");
+            else {
+                letters++;
+                check(Color.alpha(c)==255,"Text removal created transparent pixels");
+                check(c!=BLACK,"Black text remains inside selection");
+                error+=a.colorDistance(c,PINK);
+            }
+        }
+        check(letters>1000,"Arabic fixture missing glyphs");
+        double mean=error/(double)letters;
+        check(mean<0.5,"Arabic restoration differs too much from pink: "+mean);
+        if(output!=null) {
+            ImageIO.write(input,"png",new File(output,"arabic-before.png"));
+            BufferedImage after=new BufferedImage(w,h,BufferedImage.TYPE_INT_ARGB);
+            after.setRGB(0,0,w,h,a.bitmap.data,0,w);
+            ImageIO.write(after,"png",new File(output,"arabic-after.png"));
+        }
+        System.out.println("PASS Arabic word on pink, opaque restore, blue art preserved; mean RGB distance="+mean);
+    }
+    public static void main(String[] args) throws Exception {
+        int failures=0;
+        for(Runnable test:new Runnable[]{SmartRestoreHarness::testGradient,SmartRestoreHarness::testDeepMask,SmartRestoreHarness::testOutlier,SmartRestoreHarness::testCandidateCache,SmartRestoreHarness::testModesAndSelection,SmartRestoreHarness::testTouchingArtwork}) {
+            try { test.run(); } catch(AssertionError e) { failures++; System.err.println("FAIL "+e.getMessage()); }
+        }
+        try { testArabic(args.length>0?args[0]:null); } catch(AssertionError e) { failures++; System.err.println("FAIL "+e.getMessage()); }
+        if(failures>0) throw new AssertionError(failures+" regression groups failed");
+    }
+    // PRODUCTION_METHODS
+}
