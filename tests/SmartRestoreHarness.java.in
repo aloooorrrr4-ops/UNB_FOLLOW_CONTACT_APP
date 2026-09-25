@@ -203,7 +203,7 @@ public class SmartRestoreHarness {
     }
     public static void main(String[] args) throws Exception {
         int failures=0;
-        for(Runnable test:new Runnable[]{SmartRestoreHarness::testGradient,SmartRestoreHarness::testDeepMask,SmartRestoreHarness::testOutlier,SmartRestoreHarness::testCandidateCache,SmartRestoreHarness::testModesAndSelection,SmartRestoreHarness::testTouchingArtwork}) {
+        for(Runnable test:new Runnable[]{SmartRestoreHarness::testGradient,SmartRestoreHarness::testDeepMask,SmartRestoreHarness::testOutlier,SmartRestoreHarness::testCandidateCache,SmartRestoreHarness::testModesAndSelection,SmartRestoreHarness::testTouchingArtwork,SmartRestoreHarness::testOcrTexture,SmartRestoreHarness::testOcrContaminatedDonors,SmartRestoreHarness::testOcrRules,SmartRestoreHarness::testOcrTightBox}) {
             try { test.run(); } catch(AssertionError e) { failures++; System.err.println("FAIL "+e.getMessage()); }
         }
         try { testArabic(args.length>0?args[0]:null); } catch(AssertionError e) { failures++; System.err.println("FAIL "+e.getMessage()); }
@@ -267,12 +267,13 @@ public class SmartRestoreHarness {
         for(int y=0;y<h;y++)for(int x=0;x<w;x++) {
             boolean edited=false,core=false;
             for(Rect box:boxes) {
-                edited|=x>=box.left-1&&x<box.right+1&&y>=box.top-1&&y<box.bottom+1;
+                // These report boxes allow the bounded two-pixel cleanup rim.
+                edited|=x>=box.left-2&&x<box.right+2&&y>=box.top-2&&y<box.bottom+2;
                 core|=x>=box.left&&x<box.right&&y>=box.top&&y<box.bottom;
             }
             int i=y*w+x;
-            if(!edited)check(a.bitmap.data[i]==before[i],"Screenshot neighboring content changed");
-            if(core)check(Color.red(a.bitmap.data[i])>180,"Screenshot left a dark glyph remnant");
+            if(!edited)check(a.bitmap.data[i]==before[i],"Screenshot neighboring content changed at "+x+","+y+" from "+Integer.toHexString(before[i])+" to "+Integer.toHexString(a.bitmap.data[i]));
+            if(core)check(Color.red(a.bitmap.data[i])>180,"Screenshot left a dark glyph remnant at "+x+","+y+" color "+Integer.toHexString(a.bitmap.data[i]));
         }
         BufferedImage after=new BufferedImage(w,h,BufferedImage.TYPE_INT_ARGB);
         after.setRGB(0,0,w,h,a.bitmap.data,0,w);
@@ -303,6 +304,66 @@ public class SmartRestoreHarness {
         catch(IllegalStateException expected) { rejected=true; }
         check(rejected&&Arrays.equals(unknown.bitmap.data,noContext),"No-context removal silently changed or accepted the image");
         System.out.println("PASS OCR edge contexts, light/dark text, thin stems and no-context handling");
+    }
+    static void testOcrTexture() {
+        int w=100,h=64;int[] background=new int[w*h];
+        for(int y=0;y<h;y++)for(int x=0;x<w;x++)
+            background[y*w+x]=((x/3+y/3)%2==0)?0xffaac4df:0xfff8dca0;
+        int[] p=background.clone();
+        for(int y=20;y<43;y++)for(int x=30;x<68;x++)
+            if(x<35||x>=63||y>=37)p[y*w+x]=BLACK;
+        SmartRestoreHarness a=new SmartRestoreHarness(w,h,p,new Rect(0,0,w,h));
+        a.eraseRasterTextPreserveBackground(28,18,42,27);
+        for(int i=0;i<p.length;i++) {
+            if(p[i]==background[i])check(a.bitmap.data[i]==p[i],"OCR erased unmasked checker texture");
+            else check(a.bitmap.data[i]!=BLACK,"OCR left text on checker texture");
+        }
+        System.out.println("PASS OCR protects original two-color texture outside actual ink");
+    }
+    static void testOcrContaminatedDonors() {
+        int w=100,h=72;
+        for(int art:new int[]{BLUE,BLACK,0xffd52030})for(boolean above:new boolean[]{true,false}) {
+            int[] p=solid(w*h,PINK);
+            for(int y=26;y<45;y++)for(int x=30;x<65;x++)
+                if(x<35||x>=60||y>=40)p[y*w+x]=BLACK;
+            // Covers both the former 3x3 donor row and the outer sample band.
+            int top=above?16:47;
+            for(int y=top;y<top+8;y++)for(int x=25;x<70;x++)p[y*w+x]=art;
+            SmartRestoreHarness a=new SmartRestoreHarness(w,h,p,new Rect(0,0,w,h));
+            a.eraseRasterTextPreserveBackground(28,26,39,19);
+            for(int y=0;y<h;y++)for(int x=0;x<w;x++) {
+                int i=y*w+x;
+                boolean glyph=y>=26&&y<45&&x>=30&&x<65&&(x<35||x>=60||y>=40);
+                check(a.bitmap.data[i]==(glyph?PINK:p[i]),"OCR used a nearby line as a background donor");
+            }
+        }
+        System.out.println("PASS OCR ignores colored and same-ink lines above/below the word");
+    }
+    static void testOcrRules() {
+        int w=100,h=70;int[] p=solid(w*h,PINK);
+        for(int y=18;y<51;y++)for(int x=22;x<24;x++)p[y*w+x]=BLACK;
+        for(int y=23;y<45;y++)for(int x=40;x<46;x++)p[y*w+x]=BLACK;
+        SmartRestoreHarness a=new SmartRestoreHarness(w,h,p,new Rect(0,0,w,h));
+        a.eraseRasterTextPreserveBackground(20,20,40,29);
+        for(int y=0;y<h;y++)for(int x=0;x<w;x++) {
+            int i=y*w+x;
+            check(a.bitmap.data[i]==(x>=40&&x<46&&y>=23&&y<45?PINK:p[i]),"OCR damaged a two-pixel vertical border");
+        }
+        System.out.println("PASS OCR preserves two-pixel full-height borders while removing glyphs");
+    }
+    static void testOcrTightBox() {
+        int w=110,h=90;int[] p=solid(w*h,PINK);
+        // Clipped OCR box excludes three pixels of the connected stroke/rim.
+        for(int y=20;y<68;y++)for(int x=37;x<52;x++)
+            p[y*w+x]=(x==37||x==51)?0xffb08090:BLACK;
+        for(int y=30;y<55;y++)p[y*w+58]=BLUE;
+        SmartRestoreHarness a=new SmartRestoreHarness(w,h,p,new Rect(0,0,w,h));
+        a.eraseRasterTextPreserveBackground(40,20,16,48);
+        for(int y=0;y<h;y++)for(int x=0;x<w;x++) {
+            int i=y*w+x;
+            check(a.bitmap.data[i]==(x>=37&&x<52&&y>=20&&y<68?PINK:p[i]),"OCR clipped a connected rim or erased a neighboring word");
+        }
+        System.out.println("PASS OCR cleans connected ink beyond a tight box and preserves a separate neighbor");
     }
     // PRODUCTION_METHODS
 }
