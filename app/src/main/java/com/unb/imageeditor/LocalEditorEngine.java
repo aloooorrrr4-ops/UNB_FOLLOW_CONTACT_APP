@@ -1933,9 +1933,11 @@ public final class LocalEditorEngine {
                 // dark halo is not left behind after removing black text.
                 int expandRadius = clamp(p.optInt("edge_expand", 1), 0, 3);
                 if (expandRadius > 0) {
-                    boolean[] expanded = removeMask.clone();
+                    // 0 = unclassified, 1 = accepted fringe, 2 = rejected.
+                    // Cache both outcomes against the unchanged base mask so
+                    // each candidate is classified at most once per operation.
+                    byte[] fringeState = new byte[count];
                     for (int ry = 0; ry < regionH; ry++) {
-                        int gy = top + ry;
                         for (int rx = 0; rx < regionW; rx++) {
                             int i = ry * regionW + rx;
                             if (!removeMask[i]) continue;
@@ -1953,25 +1955,27 @@ public final class LocalEditorEngine {
                                     int ni = ny * regionW + nx;
                                     int selectionAlpha =
                                             selectionMask[nGlobalRow + ngx] & 0xFF;
-                                    if (selectionAlpha <= 0 || expanded[ni]) continue;
+                                    if (selectionAlpha <= 0 || removeMask[ni]
+                                            || fringeState[ni] != 0) continue;
 
-                                    if (isTargetRelatedFringe(
+                                    fringeState[ni] = (byte) (isTargetRelatedFringe(
                                             visible, removeMask,
                                             regionW, regionH,
-                                            nx, ny, targetColor, tolerance)) {
-                                        expanded[ni] = true;
-                                    }
+                                            nx, ny, targetColor, tolerance) ? 1 : 2);
                                 }
                             }
                         }
                     }
-                    removeMask = expanded;
+                    for (int i = 0; i < count; i++) {
+                        if (fringeState[i] == 1) removeMask[i] = true;
+                    }
                 }
 
                 int[] out = src.clone();
                 // 0 = safe donor, 1 = pending masked pixel, 2 = blocked
-                // target-colored donor. This single state array is updated
-                // in place, avoiding full-region clones on every pass.
+                // target-colored donor, 3 = filled in the current generation.
+                // Publish new donors only after the whole pass, avoiding both
+                // row-order smearing and full-region clones on every pass.
                 byte[] state = new byte[count];
                 for (int i = 0; i < count; i++) {
                     if (removeMask[i]) {
@@ -2019,13 +2023,16 @@ public final class LocalEditorEngine {
                                         (int) (rr / samples),
                                         (int) (gg / samples),
                                         (int) (bb / samples));
-                                state[i] = 0;
+                                state[i] = 3;
                                 changed = true;
                             }
                         }
                     }
 
                     if (!changed) break;
+                    for (int i = 0; i < count; i++) {
+                        if (state[i] == 3) state[i] = 0;
+                    }
                 }
 
                 // If a very thick character center could not be reached by the
@@ -2101,6 +2108,7 @@ public final class LocalEditorEngine {
 
         long aa = 0, rr = 0, gg = 0, bb = 0;
         int samples = 0;
+        int backgroundDistance = -1;
         for (int dy = -2; dy <= 2; dy++) {
             int ny = y + dy;
             if (ny < 0 || ny >= height) continue;
@@ -2112,7 +2120,17 @@ public final class LocalEditorEngine {
                 if (baseMask[ni]) continue;
 
                 int c = visible[ni];
-                if (colorDistance(c, targetColor) <= directTolerance) continue;
+                int distance = colorDistance(c, targetColor);
+                if (distance <= directTolerance || distance < backgroundDistance) continue;
+                // A target/background mixture is closer to the target than
+                // the background itself. Prefer the farthest local samples
+                // so other anti-aliased pixels do not darken the estimate.
+                // Average ties to keep classification independent of order.
+                if (distance > backgroundDistance) {
+                    backgroundDistance = distance;
+                    aa = rr = gg = bb = 0;
+                    samples = 0;
+                }
                 aa += Color.alpha(c);
                 rr += Color.red(c);
                 gg += Color.green(c);
@@ -2121,7 +2139,7 @@ public final class LocalEditorEngine {
             }
         }
 
-        if (samples < 2) return false;
+        if (samples == 0) return false;
 
         int background = Color.argb(
                 (int) (aa / samples),
@@ -2133,37 +2151,27 @@ public final class LocalEditorEngine {
 
     private boolean liesOnTargetBackgroundBlend(int candidate, int target,
                                                 int background, int tolerance) {
-        double[] t = {
-                Color.alpha(target), Color.red(target),
-                Color.green(target), Color.blue(target)
-        };
-        double[] b = {
-                Color.alpha(background), Color.red(background),
-                Color.green(background), Color.blue(background)
-        };
-        double[] c = {
-                Color.alpha(candidate), Color.red(candidate),
-                Color.green(candidate), Color.blue(candidate)
-        };
-
+        // Read ARGB channels directly; no per-candidate temporary arrays.
         double dot = 0.0;
         double denom = 0.0;
-        for (int i = 0; i < 4; i++) {
-            double v = b[i] - t[i];
-            dot += (c[i] - t[i]) * v;
+        for (int shift = 24; shift >= 0; shift -= 8) {
+            int t = (target >>> shift) & 0xFF;
+            double v = ((background >>> shift) & 0xFF) - t;
+            dot += (((candidate >>> shift) & 0xFF) - t) * v;
             denom += v * v;
         }
         if (denom < 1.0) return false;
 
         double mix = dot / denom;
-        // Very-near-background pixels are not removed; this avoids eating
-        // unrelated artwork that merely touches the glyph.
-        if (mix < 0.02 || mix > 0.90) return false;
+        // Keep true background pixels, but include faint anti-alias coverage
+        // that would otherwise become a dark donor for the restored glyph.
+        if (mix < 0.02 || mix > 0.995) return false;
 
         double error = 0.0;
-        for (int i = 0; i < 4; i++) {
-            double predicted = t[i] + mix * (b[i] - t[i]);
-            error += Math.abs(c[i] - predicted);
+        for (int shift = 24; shift >= 0; shift -= 8) {
+            int t = (target >>> shift) & 0xFF;
+            double predicted = t + mix * (((background >>> shift) & 0xFF) - t);
+            error += Math.abs(((candidate >>> shift) & 0xFF) - predicted);
         }
         error /= 4.0;
 

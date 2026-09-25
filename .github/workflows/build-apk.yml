@@ -33,6 +33,9 @@ jobs:
         with:
           gradle-version: "8.10.2"
 
+      - name: Check smart restore pixel regressions
+        run: python3 tests/check_smart_restore.py
+
       - name: Build debug APK
         run: gradle :app:assembleDebug --no-daemon
 
