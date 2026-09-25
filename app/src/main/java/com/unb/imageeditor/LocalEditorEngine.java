@@ -1883,7 +1883,8 @@ public final class LocalEditorEngine {
         float opacity = Math.max(0f, Math.min(1f,
                 (float) p.optDouble("opacity", 100) / 100f));
         boolean transparent = erase && p.optBoolean("transparent", true);
-        boolean restoreBackground = erase && p.optBoolean("restore_background", true);
+        boolean restoreBackground = erase && transparent &&
+                p.optBoolean("restore_background", true);
 
         int selectionW = Math.max(1, selection.width());
         int selectionH = Math.max(1, selection.height());
@@ -1935,7 +1936,6 @@ public final class LocalEditorEngine {
                     boolean[] expanded = removeMask.clone();
                     for (int ry = 0; ry < regionH; ry++) {
                         int gy = top + ry;
-                        int globalRow = gy * imageW;
                         for (int rx = 0; rx < regionW; rx++) {
                             int i = ry * regionW + rx;
                             if (!removeMask[i]) continue;
@@ -1950,10 +1950,16 @@ public final class LocalEditorEngine {
                                     int nx = rx + dx;
                                     if (nx < 0 || nx >= regionW) continue;
                                     int ngx = left + nx;
+                                    int ni = ny * regionW + nx;
                                     int selectionAlpha =
                                             selectionMask[nGlobalRow + ngx] & 0xFF;
-                                    if (selectionAlpha > 0) {
-                                        expanded[ny * regionW + nx] = true;
+                                    if (selectionAlpha <= 0 || expanded[ni]) continue;
+
+                                    if (isTargetRelatedFringe(
+                                            visible, removeMask,
+                                            regionW, regionH,
+                                            nx, ny, targetColor, tolerance)) {
+                                        expanded[ni] = true;
                                     }
                                 }
                             }
@@ -1963,26 +1969,28 @@ public final class LocalEditorEngine {
                 }
 
                 int[] out = src.clone();
-                boolean[] known = new boolean[count];
-                boolean[] donorSafe = new boolean[count];
-
+                // 0 = safe donor, 1 = pending masked pixel, 2 = blocked
+                // target-colored donor. This single state array is updated
+                // in place, avoiding full-region clones on every pass.
+                byte[] state = new byte[count];
                 for (int i = 0; i < count; i++) {
-                    known[i] = !removeMask[i];
-                    donorSafe[i] = known[i] &&
-                            colorDistance(visible[i], targetColor) > tolerance;
+                    if (removeMask[i]) {
+                        state[i] = 1;
+                    } else if (colorDistance(visible[i], targetColor) <= tolerance) {
+                        state[i] = 2;
+                    } else {
+                        state[i] = 0;
+                    }
                 }
 
                 int maxPasses = Math.min(64, Math.max(regionW, regionH));
                 for (int pass = 0; pass < maxPasses; pass++) {
                     boolean changed = false;
-                    int[] next = out.clone();
-                    boolean[] nextKnown = known.clone();
-                    boolean[] nextDonorSafe = donorSafe.clone();
 
                     for (int ry = 0; ry < regionH; ry++) {
                         for (int rx = 0; rx < regionW; rx++) {
                             int i = ry * regionW + rx;
-                            if (known[i]) continue;
+                            if (state[i] != 1) continue;
 
                             long aa = 0, rr = 0, gg = 0, bb = 0;
                             int samples = 0;
@@ -1994,7 +2002,7 @@ public final class LocalEditorEngine {
                                     int nx = rx + dx;
                                     if (nx < 0 || nx >= regionW) continue;
                                     int ni = ny * regionW + nx;
-                                    if (!known[ni] || !donorSafe[ni]) continue;
+                                    if (state[ni] != 0) continue;
 
                                     int c = out[ni];
                                     aa += Color.alpha(c);
@@ -2006,21 +2014,17 @@ public final class LocalEditorEngine {
                             }
 
                             if (samples >= 2) {
-                                next[i] = Color.argb(
+                                out[i] = Color.argb(
                                         (int) (aa / samples),
                                         (int) (rr / samples),
                                         (int) (gg / samples),
                                         (int) (bb / samples));
-                                nextKnown[i] = true;
-                                nextDonorSafe[i] = true;
+                                state[i] = 0;
                                 changed = true;
                             }
                         }
                     }
 
-                    out = next;
-                    known = nextKnown;
-                    donorSafe = nextDonorSafe;
                     if (!changed) break;
                 }
 
@@ -2031,7 +2035,7 @@ public final class LocalEditorEngine {
                         src, visible, removeMask, targetColor, tolerance,
                         regionW, regionH);
                 for (int i = 0; i < count; i++) {
-                    if (!known[i]) out[i] = fallback;
+                    if (state[i] == 1) out[i] = fallback;
                 }
 
                 // Opacity is still honored. Full opacity gives a clean restore;
@@ -2081,6 +2085,90 @@ public final class LocalEditorEngine {
 
         bitmap.setPixels(src, 0, regionW, left, top, regionW, regionH);
         visibleRegion.recycle();
+    }
+
+    private boolean isTargetRelatedFringe(int[] visible, boolean[] baseMask,
+                                          int width, int height,
+                                          int x, int y,
+                                          int targetColor, int tolerance) {
+        int index = y * width + x;
+        int candidate = visible[index];
+
+        int directTolerance = clamp(tolerance + 12, 0, 255);
+        if (colorDistance(candidate, targetColor) <= directTolerance) {
+            return true;
+        }
+
+        long aa = 0, rr = 0, gg = 0, bb = 0;
+        int samples = 0;
+        for (int dy = -2; dy <= 2; dy++) {
+            int ny = y + dy;
+            if (ny < 0 || ny >= height) continue;
+            for (int dx = -2; dx <= 2; dx++) {
+                if (dx == 0 && dy == 0) continue;
+                int nx = x + dx;
+                if (nx < 0 || nx >= width) continue;
+                int ni = ny * width + nx;
+                if (baseMask[ni]) continue;
+
+                int c = visible[ni];
+                if (colorDistance(c, targetColor) <= directTolerance) continue;
+                aa += Color.alpha(c);
+                rr += Color.red(c);
+                gg += Color.green(c);
+                bb += Color.blue(c);
+                samples++;
+            }
+        }
+
+        if (samples < 2) return false;
+
+        int background = Color.argb(
+                (int) (aa / samples),
+                (int) (rr / samples),
+                (int) (gg / samples),
+                (int) (bb / samples));
+        return liesOnTargetBackgroundBlend(candidate, targetColor, background, tolerance);
+    }
+
+    private boolean liesOnTargetBackgroundBlend(int candidate, int target,
+                                                int background, int tolerance) {
+        double[] t = {
+                Color.alpha(target), Color.red(target),
+                Color.green(target), Color.blue(target)
+        };
+        double[] b = {
+                Color.alpha(background), Color.red(background),
+                Color.green(background), Color.blue(background)
+        };
+        double[] c = {
+                Color.alpha(candidate), Color.red(candidate),
+                Color.green(candidate), Color.blue(candidate)
+        };
+
+        double dot = 0.0;
+        double denom = 0.0;
+        for (int i = 0; i < 4; i++) {
+            double v = b[i] - t[i];
+            dot += (c[i] - t[i]) * v;
+            denom += v * v;
+        }
+        if (denom < 1.0) return false;
+
+        double mix = dot / denom;
+        // Very-near-background pixels are not removed; this avoids eating
+        // unrelated artwork that merely touches the glyph.
+        if (mix < 0.02 || mix > 0.90) return false;
+
+        double error = 0.0;
+        for (int i = 0; i < 4; i++) {
+            double predicted = t[i] + mix * (b[i] - t[i]);
+            error += Math.abs(c[i] - predicted);
+        }
+        error /= 4.0;
+
+        double maxError = Math.max(10.0, 12.0 + tolerance * 0.20);
+        return error <= maxError;
     }
 
     private int estimateMatchedBackgroundColor(int[] src, int[] visible,
