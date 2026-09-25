@@ -10,8 +10,8 @@ android {
         applicationId "com.unb.imageeditor"
         minSdk 26
         targetSdk 35
-        versionCode 54
-        versionName "1.10.3-alpha-color-match-selection"
+        versionCode 55
+        versionName "1.10.4-alpha-smart-selection-restore"
     }
 
     buildTypes {
