@@ -1876,14 +1876,6 @@ public final class LocalEditorEngine {
 
         int imageW = bitmap.getWidth();
         int imageH = bitmap.getHeight();
-        int left = clamp(selection.left, 0, imageW - 1);
-        int top = clamp(selection.top, 0, imageH - 1);
-        int right = clamp(selection.right, left + 1, imageW);
-        int bottom = clamp(selection.bottom, top + 1, imageH);
-        int regionW = Math.max(1, right - left);
-        int regionH = Math.max(1, bottom - top);
-        int count = regionW * regionH;
-
         int tolerance = clamp(p.optInt("tolerance", 24), 0, 255);
         int targetColor = parseColor(p.optString("target_color",
                 p.optString("color", "#FF000000")));
@@ -1891,6 +1883,21 @@ public final class LocalEditorEngine {
         float opacity = Math.max(0f, Math.min(1f,
                 (float) p.optDouble("opacity", 100) / 100f));
         boolean transparent = erase && p.optBoolean("transparent", true);
+        boolean restoreBackground = erase && p.optBoolean("restore_background", true);
+
+        int selectionW = Math.max(1, selection.width());
+        int selectionH = Math.max(1, selection.height());
+        int pad = restoreBackground
+                ? clamp(Math.round(Math.max(selectionW, selectionH) * 0.10f), 4, 24)
+                : 0;
+
+        int left = clamp(selection.left - pad, 0, imageW - 1);
+        int top = clamp(selection.top - pad, 0, imageH - 1);
+        int right = clamp(selection.right + pad, left + 1, imageW);
+        int bottom = clamp(selection.bottom + pad, top + 1, imageH);
+        int regionW = Math.max(1, right - left);
+        int regionH = Math.max(1, bottom - top);
+        int count = regionW * regionH;
 
         Bitmap visibleRegion = compositeRegion(left, top, regionW, regionH);
         int[] src = new int[count];
@@ -1898,39 +1905,242 @@ public final class LocalEditorEngine {
         bitmap.getPixels(src, 0, regionW, left, top, regionW, regionH);
         visibleRegion.getPixels(visible, 0, regionW, 0, 0, regionW, regionH);
 
+        if (restoreBackground) {
+            boolean[] removeMask = new boolean[count];
+            int matched = 0;
+
+            for (int ry = 0; ry < regionH; ry++) {
+                int gy = top + ry;
+                int globalRow = gy * imageW;
+                int localRow = ry * regionW;
+                for (int rx = 0; rx < regionW; rx++) {
+                    int gx = left + rx;
+                    int globalIndex = globalRow + gx;
+                    int selectionAlpha = selectionMask[globalIndex] & 0xFF;
+                    if (selectionAlpha <= 0) continue;
+
+                    int localIndex = localRow + rx;
+                    if (colorDistance(visible[localIndex], targetColor) <= tolerance) {
+                        removeMask[localIndex] = true;
+                        matched++;
+                    }
+                }
+            }
+
+            if (matched > 0) {
+                // Include the anti-aliased fringe around target glyphs so a
+                // dark halo is not left behind after removing black text.
+                int expandRadius = clamp(p.optInt("edge_expand", 1), 0, 3);
+                if (expandRadius > 0) {
+                    boolean[] expanded = removeMask.clone();
+                    for (int ry = 0; ry < regionH; ry++) {
+                        int gy = top + ry;
+                        int globalRow = gy * imageW;
+                        for (int rx = 0; rx < regionW; rx++) {
+                            int i = ry * regionW + rx;
+                            if (!removeMask[i]) continue;
+
+                            for (int dy = -expandRadius; dy <= expandRadius; dy++) {
+                                int ny = ry + dy;
+                                if (ny < 0 || ny >= regionH) continue;
+                                int ngy = top + ny;
+                                int nGlobalRow = ngy * imageW;
+
+                                for (int dx = -expandRadius; dx <= expandRadius; dx++) {
+                                    int nx = rx + dx;
+                                    if (nx < 0 || nx >= regionW) continue;
+                                    int ngx = left + nx;
+                                    int selectionAlpha =
+                                            selectionMask[nGlobalRow + ngx] & 0xFF;
+                                    if (selectionAlpha > 0) {
+                                        expanded[ny * regionW + nx] = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    removeMask = expanded;
+                }
+
+                int[] out = src.clone();
+                boolean[] known = new boolean[count];
+                boolean[] donorSafe = new boolean[count];
+
+                for (int i = 0; i < count; i++) {
+                    known[i] = !removeMask[i];
+                    donorSafe[i] = known[i] &&
+                            colorDistance(visible[i], targetColor) > tolerance;
+                }
+
+                int maxPasses = Math.min(64, Math.max(regionW, regionH));
+                for (int pass = 0; pass < maxPasses; pass++) {
+                    boolean changed = false;
+                    int[] next = out.clone();
+                    boolean[] nextKnown = known.clone();
+                    boolean[] nextDonorSafe = donorSafe.clone();
+
+                    for (int ry = 0; ry < regionH; ry++) {
+                        for (int rx = 0; rx < regionW; rx++) {
+                            int i = ry * regionW + rx;
+                            if (known[i]) continue;
+
+                            long aa = 0, rr = 0, gg = 0, bb = 0;
+                            int samples = 0;
+                            for (int dy = -1; dy <= 1; dy++) {
+                                int ny = ry + dy;
+                                if (ny < 0 || ny >= regionH) continue;
+                                for (int dx = -1; dx <= 1; dx++) {
+                                    if (dx == 0 && dy == 0) continue;
+                                    int nx = rx + dx;
+                                    if (nx < 0 || nx >= regionW) continue;
+                                    int ni = ny * regionW + nx;
+                                    if (!known[ni] || !donorSafe[ni]) continue;
+
+                                    int c = out[ni];
+                                    aa += Color.alpha(c);
+                                    rr += Color.red(c);
+                                    gg += Color.green(c);
+                                    bb += Color.blue(c);
+                                    samples++;
+                                }
+                            }
+
+                            if (samples >= 2) {
+                                next[i] = Color.argb(
+                                        (int) (aa / samples),
+                                        (int) (rr / samples),
+                                        (int) (gg / samples),
+                                        (int) (bb / samples));
+                                nextKnown[i] = true;
+                                nextDonorSafe[i] = true;
+                                changed = true;
+                            }
+                        }
+                    }
+
+                    out = next;
+                    known = nextKnown;
+                    donorSafe = nextDonorSafe;
+                    if (!changed) break;
+                }
+
+                // If a very thick character center could not be reached by the
+                // wavefront, use the nearest local background estimate rather
+                // than making that center transparent.
+                int fallback = estimateMatchedBackgroundColor(
+                        src, visible, removeMask, targetColor, tolerance,
+                        regionW, regionH);
+                for (int i = 0; i < count; i++) {
+                    if (!known[i]) out[i] = fallback;
+                }
+
+                // Opacity is still honored. Full opacity gives a clean restore;
+                // lower opacity blends the reconstructed background gradually.
+                if (opacity < 0.999f) {
+                    for (int i = 0; i < count; i++) {
+                        if (removeMask[i]) {
+                            out[i] = blend(src[i], out[i], opacity);
+                        }
+                    }
+                }
+
+                bitmap.setPixels(out, 0, regionW, left, top, regionW, regionH);
+            }
+
+            visibleRegion.recycle();
+            return;
+        }
+
         for (int ry = 0; ry < regionH; ry++) {
-            int globalRow = (top + ry) * imageW;
+            int gy = top + ry;
+            int globalRow = gy * imageW;
             int localRow = ry * regionW;
             for (int rx = 0; rx < regionW; rx++) {
-                int globalIndex = globalRow + left + rx;
+                int gx = left + rx;
+                int globalIndex = globalRow + gx;
                 int selectionAlpha = selectionMask[globalIndex] & 0xFF;
                 if (selectionAlpha <= 0) continue;
 
                 int localIndex = localRow + rx;
                 if (colorDistance(visible[localIndex], targetColor) > tolerance) continue;
 
-                // Selection feathering is applied once by applySelectionMask()
-                // after this operation. Here it only gates which pixels are eligible.
-                float coverage = opacity;
-                if (coverage <= 0f) continue;
-
                 int current = src[localIndex];
                 if (transparent) {
                     int oldAlpha = Color.alpha(current);
-                    int newAlpha = clamp(Math.round(oldAlpha * (1f - coverage)), 0, 255);
+                    int newAlpha = clamp(Math.round(oldAlpha * (1f - opacity)), 0, 255);
                     src[localIndex] = Color.argb(
                             newAlpha,
                             Color.red(current),
                             Color.green(current),
                             Color.blue(current));
                 } else {
-                    src[localIndex] = blend(current, applyColor, coverage);
+                    src[localIndex] = blend(current, applyColor, opacity);
                 }
             }
         }
 
         bitmap.setPixels(src, 0, regionW, left, top, regionW, regionH);
         visibleRegion.recycle();
+    }
+
+    private int estimateMatchedBackgroundColor(int[] src, int[] visible,
+                                               boolean[] removeMask,
+                                               int targetColor, int tolerance,
+                                               int width, int height) {
+        long aa = 0, rr = 0, gg = 0, bb = 0;
+        int samples = 0;
+
+        // Prefer pixels immediately around the masked glyphs; this preserves
+        // the real local background (solid fills and smooth gradients alike).
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                int i = y * width + x;
+                if (removeMask[i]) continue;
+                if (colorDistance(visible[i], targetColor) <= tolerance) continue;
+
+                boolean nearMask = false;
+                for (int dy = -2; dy <= 2 && !nearMask; dy++) {
+                    int ny = y + dy;
+                    if (ny < 0 || ny >= height) continue;
+                    for (int dx = -2; dx <= 2; dx++) {
+                        int nx = x + dx;
+                        if (nx < 0 || nx >= width) continue;
+                        if (removeMask[ny * width + nx]) {
+                            nearMask = true;
+                            break;
+                        }
+                    }
+                }
+                if (!nearMask) continue;
+
+                int c = src[i];
+                aa += Color.alpha(c);
+                rr += Color.red(c);
+                gg += Color.green(c);
+                bb += Color.blue(c);
+                samples++;
+            }
+        }
+
+        if (samples == 0) {
+            for (int i = 0; i < src.length; i++) {
+                if (removeMask[i]) continue;
+                if (colorDistance(visible[i], targetColor) <= tolerance) continue;
+                int c = src[i];
+                aa += Color.alpha(c);
+                rr += Color.red(c);
+                gg += Color.green(c);
+                bb += Color.blue(c);
+                samples++;
+            }
+        }
+
+        if (samples == 0) return Color.TRANSPARENT;
+        return Color.argb(
+                (int) (aa / samples),
+                (int) (rr / samples),
+                (int) (gg / samples),
+                (int) (bb / samples));
     }
 
     private void colorMatchedStroke(JSONObject p, boolean erase) {
