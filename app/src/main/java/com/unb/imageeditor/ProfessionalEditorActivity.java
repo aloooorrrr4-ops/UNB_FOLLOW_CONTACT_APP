@@ -1489,7 +1489,9 @@ public class ProfessionalEditorActivity extends Activity {
         }
 
         setStatus(("eraser".equals(eraseFillMode)
-                ? "جاري إزالة اللون المستهدف وترميم الخلفية داخل التحديد..."
+                ? (eraserTransparent
+                    ? "جاري إزالة اللون المستهدف وترميم الخلفية داخل التحديد..."
+                    : "جاري استبدال اللون المستهدف داخل التحديد...")
                 : "جاري تعبئة اللون المستهدف داخل كامل التحديد..."));
 
         applyRemote("color_match_selection", jsonOf(
@@ -1497,7 +1499,8 @@ public class ProfessionalEditorActivity extends Activity {
                 "opacity", brushOpacity,
                 "color", foregroundColor,
                 "transparent", eraserTransparent,
-                "restore_background", "eraser".equals(eraseFillMode),
+                "restore_background",
+                        "eraser".equals(eraseFillMode) && eraserTransparent,
                 "target_color", eraseFillTargetColor,
                 "tolerance", eraseFillTolerance
         ));
@@ -3577,7 +3580,9 @@ public class ProfessionalEditorActivity extends Activity {
                             localEngine.width() + "×" + localEngine.height());
                     if ("color_match_selection".equals(operation)) {
                         setStatus("eraser".equals(eraseFillMode)
-                                ? "تمت إزالة اللون المستهدف وترميم الخلفية داخل التحديد"
+                                ? (eraserTransparent
+                                    ? "تمت إزالة اللون المستهدف وترميم الخلفية داخل التحديد"
+                                    : "تم استبدال اللون المستهدف داخل التحديد")
                                 : "تمت تعبئة اللون المستهدف داخل التحديد");
                     } else {
                         setStatus("تم " + operation + " محليًا");
