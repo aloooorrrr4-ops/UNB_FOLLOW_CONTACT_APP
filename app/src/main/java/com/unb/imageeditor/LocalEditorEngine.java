@@ -21,6 +21,7 @@ import org.json.JSONObject;
 import java.io.ByteArrayOutputStream;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Deque;
 import java.util.List;
 
@@ -1937,6 +1938,7 @@ public final class LocalEditorEngine {
                     // Cache both outcomes against the unchanged base mask so
                     // each candidate is classified at most once per operation.
                     byte[] fringeState = new byte[count];
+                    int[] fringeSamples = new int[4 * 24];
                     for (int ry = 0; ry < regionH; ry++) {
                         for (int rx = 0; rx < regionW; rx++) {
                             int i = ry * regionW + rx;
@@ -1961,7 +1963,7 @@ public final class LocalEditorEngine {
                                     fringeState[ni] = (byte) (isTargetRelatedFringe(
                                             visible, removeMask,
                                             regionW, regionH,
-                                            nx, ny, targetColor, tolerance) ? 1 : 2);
+                                            nx, ny, targetColor, tolerance, fringeSamples) ? 1 : 2);
                                 }
                             }
                         }
@@ -1972,77 +1974,89 @@ public final class LocalEditorEngine {
                 }
 
                 int[] out = src.clone();
-                // 0 = safe donor, 1 = pending masked pixel, 2 = blocked
-                // target-colored donor, 3 = filled in the current generation.
-                // Publish new donors only after the whole pass, avoiding both
-                // row-order smearing and full-region clones on every pass.
+                // 0 = safe donor, 1 = pending, 2 = blocked, 3 = queued.
+                // Each masked pixel enters the compact queue at most once.
+                // Generation boundaries keep newly filled pixels out of the
+                // donor pool until every pixel in that generation is ready.
                 byte[] state = new byte[count];
+                int pendingCount = 0;
                 for (int i = 0; i < count; i++) {
                     if (removeMask[i]) {
                         state[i] = 1;
+                        pendingCount++;
                     } else if (colorDistance(visible[i], targetColor) <= tolerance) {
                         state[i] = 2;
-                    } else {
-                        state[i] = 0;
+                    }
+                }
+                int[] frontier = new int[pendingCount];
+                int tail = 0;
+                for (int i = 0; i < count; i++) {
+                    if (state[i] == 1 && hasRestoreDonors(state, regionW, regionH, i)) {
+                        state[i] = 3;
+                        frontier[tail++] = i;
                     }
                 }
 
-                int maxPasses = Math.min(64, Math.max(regionW, regionH));
-                for (int pass = 0; pass < maxPasses; pass++) {
-                    boolean changed = false;
-
-                    for (int ry = 0; ry < regionH; ry++) {
-                        for (int rx = 0; rx < regionW; rx++) {
-                            int i = ry * regionW + rx;
-                            if (state[i] != 1) continue;
-
-                            long aa = 0, rr = 0, gg = 0, bb = 0;
-                            int samples = 0;
-                            for (int dy = -1; dy <= 1; dy++) {
-                                int ny = ry + dy;
-                                if (ny < 0 || ny >= regionH) continue;
-                                for (int dx = -1; dx <= 1; dx++) {
-                                    if (dx == 0 && dy == 0) continue;
-                                    int nx = rx + dx;
-                                    if (nx < 0 || nx >= regionW) continue;
-                                    int ni = ny * regionW + nx;
-                                    if (state[ni] != 0) continue;
-
-                                    int c = out[ni];
-                                    aa += Color.alpha(c);
-                                    rr += Color.red(c);
-                                    gg += Color.green(c);
-                                    bb += Color.blue(c);
-                                    samples++;
-                                }
+                int head = 0;
+                while (head < tail) {
+                    int generationEnd = tail;
+                    for (int cursor = head; cursor < generationEnd; cursor++) {
+                        int i = frontier[cursor];
+                        int rx = i % regionW, ry = i / regionW;
+                        long aa = 0, rr = 0, gg = 0, bb = 0;
+                        int samples = 0;
+                        for (int dy = -1; dy <= 1; dy++) {
+                            int ny = ry + dy;
+                            if (ny < 0 || ny >= regionH) continue;
+                            for (int dx = -1; dx <= 1; dx++) {
+                                int nx = rx + dx;
+                                if (nx < 0 || nx >= regionW) continue;
+                                int ni = ny * regionW + nx;
+                                if (state[ni] != 0) continue;
+                                int c = out[ni];
+                                aa += Color.alpha(c);
+                                rr += Color.red(c);
+                                gg += Color.green(c);
+                                bb += Color.blue(c);
+                                samples++;
                             }
-
-                            if (samples >= 2) {
-                                out[i] = Color.argb(
-                                        (int) (aa / samples),
-                                        (int) (rr / samples),
-                                        (int) (gg / samples),
-                                        (int) (bb / samples));
-                                state[i] = 3;
-                                changed = true;
+                        }
+                        out[i] = Color.argb((int) (aa / samples), (int) (rr / samples),
+                                (int) (gg / samples), (int) (bb / samples));
+                    }
+                    // Publish the entire generation before finding its next frontier.
+                    for (int cursor = head; cursor < generationEnd; cursor++) {
+                        state[frontier[cursor]] = 0;
+                    }
+                    for (int cursor = head; cursor < generationEnd; cursor++) {
+                        int i = frontier[cursor];
+                        int rx = i % regionW, ry = i / regionW;
+                        for (int dy = -1; dy <= 1; dy++) {
+                            int ny = ry + dy;
+                            if (ny < 0 || ny >= regionH) continue;
+                            for (int dx = -1; dx <= 1; dx++) {
+                                int nx = rx + dx;
+                                if (nx < 0 || nx >= regionW) continue;
+                                int ni = ny * regionW + nx;
+                                if (state[ni] == 1 && hasRestoreDonors(state, regionW, regionH, ni)) {
+                                    state[ni] = 3;
+                                    frontier[tail++] = ni;
+                                }
                             }
                         }
                     }
-
-                    if (!changed) break;
-                    for (int i = 0; i < count; i++) {
-                        if (state[i] == 3) state[i] = 0;
-                    }
+                    head = generationEnd;
                 }
 
-                // If a very thick character center could not be reached by the
-                // wavefront, use the nearest local background estimate rather
-                // than making that center transparent.
-                int fallback = estimateMatchedBackgroundColor(
-                        src, visible, removeMask, targetColor, tolerance,
-                        regionW, regionH);
-                for (int i = 0; i < count; i++) {
-                    if (state[i] == 1) out[i] = fallback;
+                // Only donor-isolated components remain pending after the
+                // frontier is exhausted; use the existing local fallback.
+                if (tail < pendingCount) {
+                    int fallback = estimateMatchedBackgroundColor(
+                            src, visible, removeMask, targetColor, tolerance,
+                            regionW, regionH);
+                    for (int i = 0; i < count; i++) {
+                        if (state[i] == 1) out[i] = fallback;
+                    }
                 }
 
                 // Opacity is still honored. Full opacity gives a clean restore;
@@ -2094,21 +2108,31 @@ public final class LocalEditorEngine {
         visibleRegion.recycle();
     }
 
+    private boolean hasRestoreDonors(byte[] state, int width, int height, int index) {
+        int x = index % width, y = index / width;
+        int donors = 0;
+        for (int dy = -1; dy <= 1; dy++) {
+            int ny = y + dy;
+            if (ny < 0 || ny >= height) continue;
+            for (int dx = -1; dx <= 1; dx++) {
+                int nx = x + dx;
+                if (nx < 0 || nx >= width) continue;
+                if (state[ny * width + nx] == 0 && ++donors >= 2) return true;
+            }
+        }
+        return false;
+    }
+
     private boolean isTargetRelatedFringe(int[] visible, boolean[] baseMask,
                                           int width, int height,
                                           int x, int y,
-                                          int targetColor, int tolerance) {
-        int index = y * width + x;
-        int candidate = visible[index];
-
+                                          int targetColor, int tolerance,
+                                          int[] scratch) {
+        int candidate = visible[y * width + x];
         int directTolerance = clamp(tolerance + 12, 0, 255);
-        if (colorDistance(candidate, targetColor) <= directTolerance) {
-            return true;
-        }
+        if (colorDistance(candidate, targetColor) <= directTolerance) return true;
 
-        long aa = 0, rr = 0, gg = 0, bb = 0;
         int samples = 0;
-        int backgroundDistance = -1;
         for (int dy = -2; dy <= 2; dy++) {
             int ny = y + dy;
             if (ny < 0 || ny >= height) continue;
@@ -2118,34 +2142,27 @@ public final class LocalEditorEngine {
                 if (nx < 0 || nx >= width) continue;
                 int ni = ny * width + nx;
                 if (baseMask[ni]) continue;
-
                 int c = visible[ni];
-                int distance = colorDistance(c, targetColor);
-                if (distance <= directTolerance || distance < backgroundDistance) continue;
-                // A target/background mixture is closer to the target than
-                // the background itself. Prefer the farthest local samples
-                // so other anti-aliased pixels do not darken the estimate.
-                // Average ties to keep classification independent of order.
-                if (distance > backgroundDistance) {
-                    backgroundDistance = distance;
-                    aa = rr = gg = bb = 0;
-                    samples = 0;
-                }
-                aa += Color.alpha(c);
-                rr += Color.red(c);
-                gg += Color.green(c);
-                bb += Color.blue(c);
+                if (colorDistance(c, targetColor) <= directTolerance) continue;
+                scratch[samples] = Color.alpha(c);
+                scratch[24 + samples] = Color.red(c);
+                scratch[48 + samples] = Color.green(c);
+                scratch[72 + samples] = Color.blue(c);
                 samples++;
             }
         }
-
-        if (samples == 0) return false;
-
-        int background = Color.argb(
-                (int) (aa / samples),
-                (int) (rr / samples),
-                (int) (gg / samples),
-                (int) (bb / samples));
+        if (samples < 3) return false;
+        // A channel median ignores isolated color outliers and avoids averaging
+        // the dark anti-alias fringe into the background. Reuse one small
+        // workspace for every candidate; there are no per-pixel allocations.
+        for (int channel = 0; channel < 4; channel++) {
+            Arrays.sort(scratch, channel * 24, channel * 24 + samples);
+        }
+        int middle = samples / 2;
+        int background = Color.argb(scratch[middle], scratch[24 + middle],
+                scratch[48 + middle], scratch[72 + middle]);
+        // Small local gradient differences are background, not text coverage.
+        if (colorDistance(candidate, background) <= 4) return false;
         return liesOnTargetBackgroundBlend(candidate, targetColor, background, tolerance);
     }
 

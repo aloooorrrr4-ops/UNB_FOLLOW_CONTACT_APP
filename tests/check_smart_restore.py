@@ -34,7 +34,7 @@ def method(name):
 
 
 methods = "\n".join(method(name) for name in (
-    "colorMatchSelection", "isTargetRelatedFringe", "liesOnTargetBackgroundBlend",
+    "colorMatchSelection", "hasRestoreDonors", "isTargetRelatedFringe", "liesOnTargetBackgroundBlend",
     "estimateMatchedBackgroundColor", "colorDistance", "blend", "parseColor", "clamp"))
 template = (ROOT / "tests/SmartRestoreHarness.java.in").read_text()
 with tempfile.TemporaryDirectory(prefix="smart-restore-") as folder:

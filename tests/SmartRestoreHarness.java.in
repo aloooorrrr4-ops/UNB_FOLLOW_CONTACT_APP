@@ -85,6 +85,8 @@ public class SmartRestoreHarness {
         for(int expansion:new int[]{0,1,3}) {
             SmartRestoreHarness a=new SmartRestoreHarness(w,h,p,new Rect(0,0,w,h));
             a.colorMatchSelection(options().with("edge_expand",expansion),true);
+            for(int i=0;i<p.length;i++) if(p[i]!=BLACK)
+                check(a.bitmap.data[i]==p[i],"Fringe expansion changed true gradient background");
             for(boolean horizontal:new boolean[]{true,false}) {
                 SmartRestoreHarness b=new SmartRestoreHarness(w,h,mirror(p,w,h,horizontal),new Rect(0,0,w,h));
                 b.colorMatchSelection(options().with("edge_expand",expansion),true);
@@ -93,6 +95,30 @@ public class SmartRestoreHarness {
             check(a.bitmap.data[19*w+22] != BLACK,"Thick mask center not restored");
         }
         System.out.println("PASS gradient is invariant under horizontal and vertical reflection");
+    }
+    static void testDeepMask() {
+        int w=220,h=420; int[] p=new int[w*h];
+        for(int y=0;y<h;y++) for(int x=0;x<w;x++)
+            p[y*w+x]=(x>=20&&x<200&&y>=20&&y<400) ? BLACK : Color.argb(255,230,y/2,190);
+        SmartRestoreHarness a=new SmartRestoreHarness(w,h,p,new Rect(0,0,w,h));
+        a.colorMatchSelection(options(),true);
+        int upper=a.bitmap.data[140*w+110], lower=a.bitmap.data[280*w+110];
+        check(Color.green(lower)-Color.green(upper)>50,"Deep mask center became a flat fallback patch");
+        for(int i=0;i<p.length;i++) {
+            if(p[i]!=BLACK)check(a.bitmap.data[i]==p[i],"Deep restore changed unmasked background");
+            check(a.bitmap.data[i]!=BLACK,"Deep mask still contains target color");
+        }
+        System.out.println("PASS mask deeper than 64 pixels retains varying background at its center");
+    }
+    static void testOutlier() {
+        int w=7,h=7,navy=0xff204080,teal=0xff00ffe0;
+        int[] p=solid(w*h,navy); boolean[] mask=new boolean[w*h];
+        p[3*w+2]=BLACK; mask[3*w+2]=true;
+        p[3*w+3]=0xff102040; p[2*w+4]=teal;
+        SmartRestoreHarness a=new SmartRestoreHarness(w,h,p,new Rect(0,0,w,h));
+        check(a.isTargetRelatedFringe(p,mask,w,h,3,3,BLACK,0,new int[96]),"Single teal outlier hid navy anti-alias fringe");
+        check(!a.isTargetRelatedFringe(p,mask,w,h,4,2,BLACK,0,new int[96]),"Teal artwork classified as fringe");
+        System.out.println("PASS navy fringe survives a nearby teal outlier; teal remains protected");
     }
     static void testCandidateCache() {
         int w=121,h=117; int[] p=solid(w*h,PINK);
@@ -177,7 +203,7 @@ public class SmartRestoreHarness {
     }
     public static void main(String[] args) throws Exception {
         int failures=0;
-        for(Runnable test:new Runnable[]{SmartRestoreHarness::testGradient,SmartRestoreHarness::testCandidateCache,SmartRestoreHarness::testModesAndSelection,SmartRestoreHarness::testTouchingArtwork}) {
+        for(Runnable test:new Runnable[]{SmartRestoreHarness::testGradient,SmartRestoreHarness::testDeepMask,SmartRestoreHarness::testOutlier,SmartRestoreHarness::testCandidateCache,SmartRestoreHarness::testModesAndSelection,SmartRestoreHarness::testTouchingArtwork}) {
             try { test.run(); } catch(AssertionError e) { failures++; System.err.println("FAIL "+e.getMessage()); }
         }
         try { testArabic(args.length>0?args[0]:null); } catch(AssertionError e) { failures++; System.err.println("FAIL "+e.getMessage()); }
