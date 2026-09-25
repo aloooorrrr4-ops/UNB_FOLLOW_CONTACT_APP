@@ -2397,18 +2397,9 @@ public final class LocalEditorEngine {
         // pixels rather than only to the OCR rectangle.
         RasterTextProfile originalProfile = analyzeRasterTextProfile(x, y, w, h);
 
-        // Preserve the original artwork/background while removing the old
-        // character pixels. OCR boxes can clip anti-aliased glyph rims, so
-        // clean a very small padded area without changing the replacement box.
-        int cleanupPad = clamp(Math.round(h * 0.08f), 2, 6);
-        int cleanX = Math.max(0, x - cleanupPad);
-        int cleanY = Math.max(0, y - cleanupPad);
-        int cleanRight = Math.min(bitmap.getWidth(), x + w + cleanupPad);
-        int cleanBottom = Math.min(bitmap.getHeight(), y + h + cleanupPad);
-        eraseRasterTextPreserveBackground(
-                cleanX, cleanY,
-                Math.max(1, cleanRight - cleanX),
-                Math.max(1, cleanBottom - cleanY));
+        // Keep the original OCR box for strong glyph evidence. The eraser
+        // admits connected ink in a bounded cleanup margin around that box.
+        eraseRasterTextPreserveBackground(x, y, w, h);
 
         if (text.trim().isEmpty()) return;
 
@@ -2653,152 +2644,235 @@ public final class LocalEditorEngine {
     private void eraseRasterTextPreserveBackground(int left, int top, int width, int height) {
         if (width < 2 || height < 2) return;
 
-        int count = width * height;
-        int[] src = new int[count];
-        bitmap.getPixels(src, 0, width, left, top, width, height);
+        int cleanup = clamp(Math.round(height * 0.08f), 2, 6);
+        int pad = cleanup + 6;
+        int readLeft = Math.max(0, left - pad);
+        int readTop = Math.max(0, top - pad);
+        int readRight = Math.min(bitmap.getWidth(), left + width + pad);
+        int readBottom = Math.min(bitmap.getHeight(), top + height + pad);
+        int rw = readRight - readLeft, rh = readBottom - readTop;
+        int[] src = new int[rw * rh];
+        bitmap.getPixels(src, 0, rw, readLeft, readTop, rw, rh);
 
-        int borderColor = estimateRegionBorderColor(src, width, height);
-        int radius = clamp(Math.round(height * 0.12f), 3, 12);
-
-        int[] localDiff = new int[count];
-        int[] borderDiff = new int[count];
-        double sum = 0.0;
-        double sumSq = 0.0;
-
-        for (int yy = 0; yy < height; yy++) {
-            for (int xx = 0; xx < width; xx++) {
-                int i = yy * width + xx;
-                int local = ringAverageColor(src, width, height, xx, yy, radius);
-                int dLocal = colorDistance(src[i], local);
-                int dBorder = colorDistance(src[i], borderColor);
-                localDiff[i] = dLocal;
-                borderDiff[i] = dBorder;
-                sum += dLocal;
-                sumSq += (double) dLocal * dLocal;
-            }
+        int coreLeft = left - readLeft, coreTop = top - readTop;
+        int coreRight = coreLeft + width, coreBottom = coreTop + height;
+        int editLeft = Math.max(0, coreLeft - cleanup), editTop = Math.max(0, coreTop - cleanup);
+        int editRight = Math.min(rw, coreRight + cleanup), editBottom = Math.min(rh, coreBottom + cleanup);
+        boolean hasTop = editTop >= 3, hasBottom = rh - editBottom >= 3;
+        boolean hasLeft = editLeft >= 3, hasRight = rw - editRight >= 3;
+        boolean vertical = (hasTop && hasBottom)
+                || (!(hasLeft && hasRight) && (hasTop || hasBottom));
+        if (!hasTop && !hasBottom && !hasLeft && !hasRight) {
+            throw new IllegalStateException("لا توجد خلفية محيطة كافية لحذف النص بأمان");
         }
 
-        double mean = sum / Math.max(1, count);
-        double variance = Math.max(0.0, sumSq / Math.max(1, count) - mean * mean);
-        double std = Math.sqrt(variance);
-        int threshold = clamp((int) Math.round(mean + std * 0.95), 24, 72);
-
-        boolean[] mask = new boolean[count];
-        int masked = 0;
-        for (int i = 0; i < count; i++) {
-            if (localDiff[i] >= threshold && borderDiff[i] >= 24) {
-                mask[i] = true;
-                masked++;
-            }
+        // Colors supported on multiple surrounding sides are evidence of the
+        // original background, including texture. A mismatch with a smooth
+        // interpolation alone is not evidence of a glyph.
+        int[] palette = textBackgroundPalette(src, rw, rh,
+                editLeft, editTop, editRight, editBottom);
+        if (palette.length == 0) {
+            throw new IllegalStateException("تعذر تمييز خلفية النص؛ جرّب تحديدًا أوسع");
         }
-
-        // Tight boxes sometimes make the border estimate less distinct. Use a
-        // slightly more permissive pass only when the first pass found almost
-        // nothing, while still requiring clear separation from the border tone.
-        int minimumUsefulMask = Math.max(8, count / 1200);
-        if (masked < minimumUsefulMask) {
-            int relaxed = Math.max(18, threshold - 12);
-            for (int i = 0; i < count; i++) {
-                if (!mask[i] && localDiff[i] >= relaxed && borderDiff[i] >= 28) {
-                    mask[i] = true;
-                    masked++;
+        int[] reference = new int[src.length];
+        boolean[] known = new boolean[src.length];
+        byte[] candidate = new byte[src.length];
+        int[] scratch = new int[36];
+        // Prefer top/bottom donors for horizontal words; use the other axis
+        // only where neither preferred side contains clean background.
+        for (int direction = 0; direction < 2; direction++) {
+            boolean useVertical = direction == 0 ? vertical : !vertical;
+            int nearEdge = useVertical ? editTop - 2 : editLeft - 2;
+            int farEdge = useVertical ? editBottom + 1 : editRight + 1;
+            boolean hasNear = useVertical ? hasTop : hasLeft;
+            boolean hasFar = useVertical ? hasBottom : hasRight;
+            int outerStart = useVertical ? editLeft : editTop;
+            int outerEnd = useVertical ? editRight : editBottom;
+            int innerStart = useVertical ? editTop : editLeft;
+            int innerEnd = useVertical ? editBottom : editRight;
+            for (int outer = outerStart; outer < outerEnd; outer++) {
+                long near = hasNear ? medianTextBackground(src, rw, rh,
+                        useVertical ? outer : nearEdge, useVertical ? nearEdge : outer,
+                        scratch, palette) : -1L;
+                long far = hasFar ? medianTextBackground(src, rw, rh,
+                        useVertical ? outer : farEdge, useVertical ? farEdge : outer,
+                        scratch, palette) : -1L;
+                if (near < 0 && far < 0) continue;
+                boolean twoSides = near >= 0 && far >= 0;
+                if (near < 0) near = far;
+                if (far < 0) far = near;
+                for (int inner = innerStart; inner < innerEnd; inner++) {
+                    int x = useVertical ? outer : inner, y = useVertical ? inner : outer;
+                    int i = y * rw + x;
+                    if (known[i]) continue;
+                    float fraction = twoSides
+                            ? (inner - nearEdge) / (float) Math.max(1, farEdge - nearEdge) : 0f;
+                    reference[i] = blend((int) near, (int) far, fraction);
+                    known[i] = true;
                 }
             }
         }
-
-        if (masked == 0) return;
-
-        // Reject obvious non-glyph components before inpainting. This keeps
-        // long rules, borders and other high-contrast artwork from being
-        // mistaken for text merely because they contrast with the background.
-        mask = filterLikelyGlyphComponents(mask, width, height);
-        masked = 0;
-        for (boolean value : mask) if (value) masked++;
-        if (masked == 0) return;
-
-        // Include antialiased glyph edges. Two or three pixels are often
-        // needed on high-resolution Arabic lettering to remove the pale rim
-        // left by OCR-box replacement.
-        int expandRadius = clamp(Math.round(height * 0.025f), 1, 3);
-        boolean[] expanded = mask.clone();
-        for (int yy = 0; yy < height; yy++) {
-            for (int xx = 0; xx < width; xx++) {
-                int i = yy * width + xx;
-                if (!mask[i]) continue;
-                for (int dy = -expandRadius; dy <= expandRadius; dy++) {
-                    int ny = yy + dy;
-                    if (ny < 0 || ny >= height) continue;
-                    for (int dx = -expandRadius; dx <= expandRadius; dx++) {
-                        int nx = xx + dx;
-                        if (nx < 0 || nx >= width) continue;
-                        expanded[ny * width + nx] = true;
-                    }
+        for (int y = editTop; y < editBottom; y++) {
+            for (int x = editLeft; x < editRight; x++) {
+                int i = y * rw + x;
+                if (!known[i]) continue;
+                int distance = colorDistance(src[i], reference[i]);
+                int backgroundDistance = textPaletteDistance(src[i], palette);
+                // Preserve supported texture colors exactly. Weak pixels may
+                // join a glyph, but only unsupported colors inside the OCR
+                // box can seed one. A separate word in the margin has no seed.
+                if (distance > 3 && backgroundDistance > 3) {
+                    boolean inside = x >= coreLeft && x < coreRight
+                            && y >= coreTop && y < coreBottom;
+                    candidate[i] = (byte) (inside && distance >= 18
+                            && backgroundDistance >= 18 ? 2 : 1);
                 }
             }
         }
-        mask = expanded;
 
         int[] out = src.clone();
-        boolean[] known = new boolean[count];
-        for (int i = 0; i < count; i++) known[i] = !mask[i];
-
-        // Wavefront inpainting copies only local surrounding artwork into the
-        // removed glyphs, so gradients and decorative backgrounds stay intact.
-        int maxPasses = Math.min(32, Math.max(width, height));
-        for (int pass = 0; pass < maxPasses; pass++) {
-            boolean changed = false;
-            int[] next = out.clone();
-            boolean[] nextKnown = known.clone();
-
-            for (int yy = 0; yy < height; yy++) {
-                for (int xx = 0; xx < width; xx++) {
-                    int i = yy * width + xx;
-                    if (known[i]) continue;
-
-                    long aa = 0, rr = 0, gg = 0, bb = 0;
-                    int samples = 0;
-                    for (int dy = -1; dy <= 1; dy++) {
-                        int ny = yy + dy;
-                        if (ny < 0 || ny >= height) continue;
-                        for (int dx = -1; dx <= 1; dx++) {
-                            if (dx == 0 && dy == 0) continue;
-                            int nx = xx + dx;
-                            if (nx < 0 || nx >= width) continue;
-                            int ni = ny * width + nx;
-                            if (!known[ni]) continue;
-                            int c = out[ni];
-                            aa += Color.alpha(c);
-                            rr += Color.red(c);
-                            gg += Color.green(c);
-                            bb += Color.blue(c);
-                            samples++;
+        int[] queue = new int[(editRight - editLeft) * (editBottom - editTop)];
+        for (int start = 0; start < candidate.length; start++) {
+            if (candidate[start] <= 0) continue;
+            int head = 0, tail = 0;
+            boolean strong = candidate[start] == 2;
+            int ink = src[start];
+            int inkDistance = strong ? colorDistance(ink, reference[start]) : 0;
+            candidate[start] = (byte) -candidate[start];
+            queue[tail++] = start;
+            int minX = rw, minY = rh, maxX = -1, maxY = -1;
+            while (head < tail) {
+                int i = queue[head++], x = i % rw, y = i / rw;
+                minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+                minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+                for (int dy = -1; dy <= 1; dy++) {
+                    int ny = y + dy;
+                    if (ny < editTop || ny >= editBottom) continue;
+                    for (int dx = -1; dx <= 1; dx++) {
+                        int nx = x + dx;
+                        if (nx < editLeft || nx >= editRight) continue;
+                        int ni = ny * rw + nx;
+                        if (candidate[ni] <= 0) continue;
+                        if (candidate[ni] == 2) {
+                            strong = true;
+                            int contrast = colorDistance(src[ni], reference[ni]);
+                            if (contrast > inkDistance) {
+                                ink = src[ni];
+                                inkDistance = contrast;
+                            }
                         }
-                    }
-
-                    if (samples >= 2) {
-                        next[i] = Color.argb(
-                                (int) (aa / samples),
-                                (int) (rr / samples),
-                                (int) (gg / samples),
-                                (int) (bb / samples));
-                        nextKnown[i] = true;
-                        changed = true;
+                        candidate[ni] = (byte) -candidate[ni];
+                        queue[tail++] = ni;
                     }
                 }
             }
-
-            out = next;
-            known = nextKnown;
-            if (!changed) break;
+            // Preserve separate rules/borders; do not reject dense connected
+            // Arabic glyphs or single-pixel dots merely because of their area.
+            int boxW = maxX - minX + 1, boxH = maxY - minY + 1;
+            boolean rule = (boxW >= Math.max(12, width * 0.75f)
+                    && boxH <= Math.max(2, height * 0.08f)
+                    && minX == editLeft && maxX == editRight - 1)
+                    || (boxH >= Math.max(12, height * 0.90f)
+                    && boxW <= Math.max(2, Math.round(width * 0.05f))
+                    && minY == editTop && maxY == editBottom - 1);
+            if (!strong || rule) continue;
+            for (int j = 0; j < tail; j++) {
+                int i = queue[j];
+                // Infer the background from outside the glyph, never from
+                // unremoved ink inside it. Keep all unmasked pixels exact.
+                // Connected JPEG halos can overshoot the background endpoint.
+                // Only ink-like colors and blends toward it belong to a glyph.
+                if (candidate[i] == -2 || colorDistance(src[i], ink) <= 18
+                        || liesOnTargetBackgroundBlend(src[i], ink, reference[i], 0)) {
+                    out[i] = reference[i];
+                }
+            }
         }
+        bitmap.setPixels(out, 0, rw, readLeft, readTop, rw, rh);
+    }
 
-        // Extremely thick isolated glyph centers are rare; if any remain,
-        // fill only those still-masked pixels with the region border estimate.
-        for (int i = 0; i < count; i++) {
-            if (!known[i]) out[i] = borderColor;
+    private long medianTextBackground(int[] src, int width, int height,
+                                      int x, int centerY, int[] scratch, int[] palette) {
+        int count = 0;
+        for (int y = Math.max(0, centerY - 1); y <= Math.min(height - 1, centerY + 1); y++) {
+            for (int nx = Math.max(0, x - 1); nx <= Math.min(width - 1, x + 1); nx++) {
+                int c = src[y * width + nx];
+                if (textPaletteDistance(c, palette) > 12) continue;
+                scratch[count] = Color.alpha(c);
+                scratch[9 + count] = Color.red(c);
+                scratch[18 + count] = Color.green(c);
+                scratch[27 + count] = Color.blue(c);
+                count++;
+            }
         }
+        if (count < 3) return -1L;
+        for (int channel = 0; channel < 4; channel++) {
+            Arrays.sort(scratch, channel * 9, channel * 9 + count);
+        }
+        int middle = count / 2;
+        return Color.argb(scratch[middle], scratch[9 + middle],
+                scratch[18 + middle], scratch[27 + middle]) & 0xffffffffL;
+    }
 
-        bitmap.setPixels(out, 0, width, left, top, width, height);
+    private int textPaletteDistance(int color, int[] palette) {
+        int distance = 255;
+        for (int background : palette) distance = Math.min(distance, colorDistance(color, background));
+        return distance;
+    }
+
+    private int[] textBackgroundPalette(int[] src, int width, int height,
+                                        int left, int top, int right, int bottom) {
+        // Fixed-size color histogram, independent of the image area. Quantize
+        // RGB to 4 bits and alpha to 1 bit; keep the original channel means.
+        int bins = 8192;
+        int[] counts = new int[bins];
+        int[] sideCounts = new int[bins * 4];
+        long[] sums = new long[bins * 4];
+        int available = 0, samples = 0;
+        for (int side = 0; side < 4; side++) {
+            int x0 = side == 2 ? 0 : (side == 3 ? right : left);
+            int x1 = side == 2 ? left : (side == 3 ? width : right);
+            int y0 = side == 0 ? 0 : (side == 1 ? bottom : top);
+            int y1 = side == 0 ? top : (side == 1 ? height : bottom);
+            if (x0 >= x1 || y0 >= y1) continue;
+            available++;
+            for (int y = y0; y < y1; y++) {
+                for (int x = x0; x < x1; x++) {
+                    int c = src[y * width + x];
+                    int bin = (Color.alpha(c) >> 7) << 12 | (Color.red(c) >> 4) << 8
+                            | (Color.green(c) >> 4) << 4 | Color.blue(c) >> 4;
+                    counts[bin]++;
+                    sideCounts[bin * 4 + side]++;
+                    sums[bin * 4] += Color.alpha(c);
+                    sums[bin * 4 + 1] += Color.red(c);
+                    sums[bin * 4 + 2] += Color.green(c);
+                    sums[bin * 4 + 3] += Color.blue(c);
+                    samples++;
+                }
+            }
+        }
+        int[] palette = new int[48];
+        int[] support = new int[48];
+        int size = 0;
+        for (int bin = 0; bin < bins; bin++) {
+            int count = counts[bin], sides = 0;
+            if (count < Math.max(3, samples / 500)) continue;
+            for (int side = 0; side < 4; side++) if (sideCounts[bin * 4 + side] >= 2) sides++;
+            // One nearby line or colored object must not become a donor just
+            // because it dominates the samples on one side of the word.
+            if (sides < Math.min(2, available)) continue;
+            int slot = size;
+            if (size == palette.length) {
+                slot = 0;
+                for (int i = 1; i < size; i++) if (support[i] < support[slot]) slot = i;
+                if (support[slot] >= count) continue;
+            } else size++;
+            support[slot] = count;
+            palette[slot] = Color.argb((int) (sums[bin * 4] / count),
+                    (int) (sums[bin * 4 + 1] / count), (int) (sums[bin * 4 + 2] / count),
+                    (int) (sums[bin * 4 + 3] / count));
+        }
+        return Arrays.copyOf(palette, size);
     }
 
     private int estimateRegionBorderColor(int[] px, int width, int height) {
