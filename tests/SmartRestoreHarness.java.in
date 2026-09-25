@@ -207,7 +207,102 @@ public class SmartRestoreHarness {
             try { test.run(); } catch(AssertionError e) { failures++; System.err.println("FAIL "+e.getMessage()); }
         }
         try { testArabic(args.length>0?args[0]:null); } catch(AssertionError e) { failures++; System.err.println("FAIL "+e.getMessage()); }
+        try { testOcrDelete(args.length>0?args[0]:null); } catch(AssertionError e) { failures++; System.err.println("FAIL "+e.getMessage()); }
+        try { testOcrEdges(); } catch(AssertionError e) { failures++; System.err.println("FAIL "+e.getMessage()); }
+        if(args.length>1) testOcrScreenshot(args[1],args[0]);
         if(failures>0) throw new AssertionError(failures+" regression groups failed");
+    }
+    static void testOcrDelete(String output) throws Exception {
+        for(int size:new int[]{20,72}) {
+            int w=560,h=180;
+            BufferedImage input=new BufferedImage(w,h,BufferedImage.TYPE_INT_ARGB);
+            int[] background=new int[w*h];
+            for(int y=0;y<h;y++) for(int x=0;x<w;x++)
+                background[y*w+x]=Color.argb(255,245-y/9,250-y/10,252-y/12);
+            input.setRGB(0,0,w,h,background,0,w);
+            Graphics2D g=input.createGraphics();
+            g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING,RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+            g.setColor(new java.awt.Color(0xff174561,true));
+            new TextLayout("الصلاحية",new Font("SansSerif",Font.BOLD,size),g.getFontRenderContext()).draw(g,130,110);
+            g.dispose();
+            int[] text=input.getRGB(0,0,w,h,null,0,w);
+            int l=w,t=h,r=0,b=0,ink=0;
+            for(int y=0;y<h;y++)for(int x=0;x<w;x++)if(text[y*w+x]!=background[y*w+x]) {
+                l=Math.min(l,x); t=Math.min(t,y); r=Math.max(r,x+1); b=Math.max(b,y+1); ink++;
+            }
+            // A different word/color immediately beyond the selected word.
+            for(int y=t;y<b;y++)for(int x=r+3;x<r+8;x++)text[y*w+x]=BLUE;
+            SmartRestoreHarness a=new SmartRestoreHarness(w,h,text,new Rect(0,0,w,h));
+            a.eraseRasterTextPreserveBackground(l,t,r-l,b-t);
+            long error=0;int residual=0;
+            for(int i=0;i<text.length;i++) {
+                if(text[i]==BLUE)check(a.bitmap.data[i]==BLUE,"OCR delete damaged neighboring word");
+                else if(text[i]!=background[i]) {
+                    int d=a.colorDistance(a.bitmap.data[i],background[i]); error+=d;
+                    if(d>15)residual++;
+                    check(Color.alpha(a.bitmap.data[i])==255,"OCR delete made a hole");
+                } else check(a.bitmap.data[i]==background[i],"OCR delete changed original background");
+            }
+            if(output!=null) {
+                BufferedImage before=new BufferedImage(w,h,BufferedImage.TYPE_INT_ARGB);
+                before.setRGB(0,0,w,h,text,0,w);
+                BufferedImage after=new BufferedImage(w,h,BufferedImage.TYPE_INT_ARGB);
+                after.setRGB(0,0,w,h,a.bitmap.data,0,w);
+                ImageIO.write(before,"png",new File(output,"ocr-before-"+size+".png"));
+                ImageIO.write(after,"png",new File(output,"ocr-after-"+size+".png"));
+            }
+            check(residual==0,"OCR delete left "+residual+" dark glyph pixels at size "+size);
+            check(error/(double)ink<2,"OCR delete left a visible patch at size "+size);
+        }
+        System.out.println("PASS OCR delete removes small/large navy Arabic text; neighbors and background unchanged");
+    }
+    static void testOcrScreenshot(String path,String output) throws Exception {
+        BufferedImage shot=ImageIO.read(new File(path));
+        check(shot.getWidth()==709&&shot.getHeight()==1536,"Unexpected report screenshot dimensions");
+        int w=590,h=267;
+        int[] before=shot.getRGB(119,576,w,h,null,0,w);
+        SmartRestoreHarness a=new SmartRestoreHarness(w,h,before,new Rect(0,0,w,h));
+        Rect[] boxes={new Rect(148,99,226,126),new Rect(331,99,419,127)};
+        for(Rect box:boxes)a.eraseRasterTextPreserveBackground(box.left,box.top,box.width(),box.height());
+        for(int y=0;y<h;y++)for(int x=0;x<w;x++) {
+            boolean edited=false,core=false;
+            for(Rect box:boxes) {
+                edited|=x>=box.left-1&&x<box.right+1&&y>=box.top-1&&y<box.bottom+1;
+                core|=x>=box.left&&x<box.right&&y>=box.top&&y<box.bottom;
+            }
+            int i=y*w+x;
+            if(!edited)check(a.bitmap.data[i]==before[i],"Screenshot neighboring content changed");
+            if(core)check(Color.red(a.bitmap.data[i])>180,"Screenshot left a dark glyph remnant");
+        }
+        BufferedImage after=new BufferedImage(w,h,BufferedImage.TYPE_INT_ARGB);
+        after.setRGB(0,0,w,h,a.bitmap.data,0,w);
+        ImageIO.write(after,"png",new File(output,"screenshot-ocr-after.png"));
+        System.out.println("PASS local report screenshot: selected words removed, other content exact");
+    }
+    static void testOcrEdges() {
+        for(int edge=0;edge<3;edge++)for(boolean light:new boolean[]{false,true}) {
+            int w=80,h=32,bg=light?0xff183650:PINK,fg=light?0xfff5f8fa:BLACK;
+            int[] p=solid(w*h,bg);
+            int top=edge==0?0:5,bottom=edge==1?h:24;
+            if(edge==2) { top=0;bottom=h; }
+            for(int y=top;y<bottom;y++)for(int x=28;x<35;x++)p[y*w+x]=fg;
+            // The selected box has top-only, bottom-only, or horizontal context.
+            SmartRestoreHarness a=new SmartRestoreHarness(w,h,p,new Rect(0,0,w,h));
+            a.eraseRasterTextPreserveBackground(26,top,12,bottom-top);
+            check(Arrays.equals(a.bitmap.data,solid(w*h,bg)),"OCR image-edge or inverse text restoration failed");
+        }
+        int w=80,h=40;int[] p=solid(w*h,PINK);
+        for(int y=10;y<29;y++)p[y*w+30]=BLACK;
+        SmartRestoreHarness thin=new SmartRestoreHarness(w,h,p,new Rect(0,0,w,h));
+        thin.eraseRasterTextPreserveBackground(28,10,5,19);
+        check(Arrays.equals(thin.bitmap.data,solid(w*h,PINK)),"Thin letter mistaken for a rule");
+        int[] noContext=solid(20*20,BLACK);
+        SmartRestoreHarness unknown=new SmartRestoreHarness(20,20,noContext,new Rect(0,0,20,20));
+        boolean rejected=false;
+        try { unknown.eraseRasterTextPreserveBackground(0,0,20,20); }
+        catch(IllegalStateException expected) { rejected=true; }
+        check(rejected&&Arrays.equals(unknown.bitmap.data,noContext),"No-context removal silently changed or accepted the image");
+        System.out.println("PASS OCR edge contexts, light/dark text, thin stems and no-context handling");
     }
     // PRODUCTION_METHODS
 }

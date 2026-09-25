@@ -15,12 +15,13 @@ ROOT = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser()
 parser.add_argument("--source", type=Path, default=ROOT / "app/src/main/java/com/unb/imageeditor/LocalEditorEngine.java")
 parser.add_argument("--output", type=Path, help="Optional directory for before/after fixture PNGs")
+parser.add_argument("--screenshot", type=Path, help="Optional local 709x1536 OCR-delete report screenshot; never committed")
 args = parser.parse_args()
 source = args.source.read_text()
 
 
 def method(name):
-    match = re.search(r"    private (?:static )?\w+ " + name + r"\(", source)
+    match = re.search(r"    private (?:static )?[\w\[\]]+ " + name + r"\(", source)
     if not match:
         raise RuntimeError(f"Production method missing: {name}")
     # Method endings in this class use four-space indentation; nested blocks
@@ -35,7 +36,9 @@ def method(name):
 
 methods = "\n".join(method(name) for name in (
     "colorMatchSelection", "hasRestoreDonors", "isTargetRelatedFringe", "liesOnTargetBackgroundBlend",
-    "estimateMatchedBackgroundColor", "colorDistance", "blend", "parseColor", "clamp"))
+    "estimateMatchedBackgroundColor", "colorDistance", "blend", "parseColor", "clamp",
+    "eraseRasterTextPreserveBackground", "medianTextBackground", "estimateRegionBorderColor",
+    "filterLikelyGlyphComponents", "ringAverageColor"))
 template = (ROOT / "tests/SmartRestoreHarness.java.in").read_text()
 with tempfile.TemporaryDirectory(prefix="smart-restore-") as folder:
     path = Path(folder) / "SmartRestoreHarness.java"
@@ -45,4 +48,8 @@ with tempfile.TemporaryDirectory(prefix="smart-restore-") as folder:
     if args.output:
         args.output.mkdir(parents=True, exist_ok=True)
         command.append(str(args.output.resolve()))
+    if args.screenshot:
+        if not args.output:
+            parser.error("--screenshot requires --output")
+        command.append(str(args.screenshot.resolve()))
     subprocess.run(command, check=True)
